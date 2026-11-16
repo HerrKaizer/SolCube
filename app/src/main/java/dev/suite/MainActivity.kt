@@ -32,8 +32,6 @@ import java.util.concurrent.Executors
 
 class MainActivity : Activity() {
 
-    private companion object { const val REQ_RESTORE = 42 }
-
     // Palette and widgets borrowed from TapDrop (frosted glass over soft wallpaper glows).
 
     private lateinit var p: Look.Palette
@@ -108,7 +106,6 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         resumed = false
-        io.execute { Backup.autoSave(this) }
         main.removeCallbacksAndMessages(null)
         super.onPause()
     }
@@ -375,10 +372,8 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER
         })
 
-        root.addView(buildBackupCard(), LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 20.dp; bottomMargin = 12.dp })
-
         root.addView(label("Suite ${Updates.current(this)}", 12f, p.sub).apply { gravity = Gravity.CENTER },
-            LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 4.dp })
+            LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 20.dp })
 
         val scroll = ScrollView(this).apply {
             isVerticalScrollBarEnabled = false
@@ -1091,7 +1086,7 @@ class MainActivity : Activity() {
                         background = ripple(null, 16.dp)
                         setOnClickListener { ssids.remove(i); rebuild() }
                     }, LinearLayout.LayoutParams(32.dp, 32.dp))
-                    whenCard.addView(row, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 4.dp })
+                    whenCard.addView(row, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 20.dp })
                 }
                 whenCard.addView(textButton("Add network") {
                     io.execute {
@@ -1113,7 +1108,7 @@ class MainActivity : Activity() {
                         LinearLayout.LayoutParams(44.dp, 32.dp))
                     row.addView(chip("+", false) { t.put("minutes", minOf(120, mins + if (mins >= 5) 5 else 1)); rebuild() },
                         LinearLayout.LayoutParams(44.dp, 32.dp).apply { leftMargin = 6.dp })
-                    whenCard.addView(row, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 4.dp })
+                    whenCard.addView(row, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 20.dp })
                 }
             }
             if (type == "wifi_connect") {
@@ -1305,7 +1300,7 @@ class MainActivity : Activity() {
                 main.post { toast(if (ok) "Running “${r.optString("name")}”" else "Routines engine isn't running (Shizuku?)"); renderRoutineList() }
             }
         }, LinearLayout.LayoutParams(0, 46.dp, 1f).apply { leftMargin = 8.dp })
-        body.addView(buttons, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 4.dp })
+        body.addView(buttons, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 20.dp })
         if (orig != null) body.addView(textButton("Delete routine") {
             SuiteDialog.Builder(this).setMessage("Delete “${r.optString("name")}”?")
                 .setPositiveButton("Delete") { _, _ ->
@@ -1333,7 +1328,7 @@ class MainActivity : Activity() {
         dlg.show()
     }
 
-    // ------------------------------------------------------------------ backup, updates, feedback
+    // ------------------------------------------------------------------ updates, feedback
 
     private lateinit var updateLink: TextView
 
@@ -1349,45 +1344,6 @@ class MainActivity : Activity() {
                 }
             }
         }
-    }
-
-    private fun buildBackupCard(): LinearLayout {
-        val card = card()
-        card.addView(label("Your settings", 18f, p.fg, bold = true))
-        card.addView(label("Installing a new version over this one keeps everything. Suite also saves a copy to " +
-            "Download/Suite/${Backup.NAME} whenever you leave the app — after uninstalling or on a new phone, " +
-            "tap Restore and pick it.", 12.5f, p.sub),
-            LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 6.dp })
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        row.addView(pillButton("Save now", filled = false) {
-            io.execute { val ok = Backup.autoSave(this); main.post { toast(if (ok) "Saved to Download/Suite" else "Couldn't save the backup") } }
-        }, LinearLayout.LayoutParams(0, 44.dp, 1f))
-        row.addView(pillButton("Restore", filled = false) {
-            runCatching {
-                startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*"), REQ_RESTORE)
-            }.onFailure { toast("No file picker found") }
-        }, LinearLayout.LayoutParams(0, 44.dp, 1f).apply { leftMargin = 8.dp })
-        card.addView(row, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 14.dp })
-        return card
-    }
-
-    @Deprecated("Deprecated in Java")
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode != REQ_RESTORE || resultCode != RESULT_OK) return
-        val uri = data?.data ?: return
-        SuiteDialog.Builder(this).setMessage("Replace all current Suite settings with this backup?")
-            .setPositiveButton("Restore") { _, _ ->
-                io.execute {
-                    val text = runCatching { contentResolver.openInputStream(uri)?.use { it.bufferedReader().readText() } }.getOrNull()
-                    val ok = text != null && Backup.import(this, text)
-                    if (ok) Components.reconcile(this)
-                    main.post {
-                        if (ok) { SuiteService.sync(this); toast("Settings restored"); recreate() }
-                        else toast("That isn't a Suite backup file")
-                    }
-                }
-            }.setNegativeButton("Cancel", null).show()
     }
 
     private fun featureRequest() {

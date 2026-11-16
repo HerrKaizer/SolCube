@@ -66,5 +66,5 @@ vivo's background cleaner can stop apps. In Settings → Battery → Background 
 
 - Suite checks GitHub once a day and shows a pop-up with the release notes when a new version is out.
 - Install the new APK over the old one. **Don't uninstall first**: updating keeps all settings and routines.
-- Settings are also included in Android's Google backup, and Suite saves a copy to `Download/Suite/suite-backup.json`. After a reinstall or on a new phone, use **Your settings → Restore** if they didn't come back by themselves.
+- Settings are also part of Android's Google backup, so they come back after a reinstall or on a new phone.
 - Missing something? Tap **Can't find a feature?** in the app, or DM [u/HerrKaizer__](https://www.reddit.com/user/HerrKaizer__/) on Reddit.

@@ -11,8 +11,8 @@ android {
         applicationId = "dev.suite"
         minSdk = 33
         targetSdk = 34
-        versionCode = 23
-        versionName = "2.1.2"   // 2026-11-16: solid pill, styled pop-ups, auto backup, editor removed
+        versionCode = 24
+        versionName = "2.1.3"   // 2026-11-16: settings card removed (updates and Google backup keep settings)
     }
 
     compileOptions {
