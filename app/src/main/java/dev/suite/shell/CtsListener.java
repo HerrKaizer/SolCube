@@ -30,6 +30,12 @@ public class CtsListener {
     static final long maxGapMs = 300;
     static volatile boolean touchEnabled = true;  // two-finger trigger on/off (set from Suite)
     static volatile long freezeMs = 0;            // overlay freeze after the CTS call (set from Suite)
+    // Navigation-bar hold: one finger that lands on the gesture bar (bottom strip, middle of the
+    // width) and stays still. Moving it (swipe up = home/recents, sideways = switch apps) cancels.
+    static volatile boolean navEnabled = false;
+    static volatile long navHoldMs = 450;
+    static final float NAV_STRIP = 0.035f;          // bottom 3.5 % of the height (~110 px; vivo's bar window is 72 px)
+    static final float NAV_SIDE = 0.2f;             // not the outer 20 % on each side (games' corner buttons)
 
     /** End-to-end test (shell-only hook): fresh screenshot, then ripple + CTS with the given freeze. */
     static void test(long freeze) {
@@ -55,6 +61,8 @@ public class CtsListener {
     static final Object lock = new Object();
     static long firstDown = 0;      // time first finger of this touch went down
     static long twoSince = 0;       // time count became 2 (0 = not armed)
+    static long navSince = 0;       // time a single finger went down on the gesture bar (0 = not armed)
+    static int navSlot = -1, nsx, nsy;
     static boolean spent = false;   // fired or cancelled; reset when all fingers lift
     static Capture capture = null;  // screenshot for the current hold
 
@@ -92,7 +100,7 @@ public class CtsListener {
             while (true) {
                 // sleep until two fingers are down (frame() notifies), instead of polling
                 synchronized (lock) {
-                    while (twoSince == 0 || spent) {
+                    while ((twoSince == 0 && navSince == 0) || spent) {
                         try { lock.wait(); } catch (InterruptedException e) { return; }
                     }
                 }
@@ -102,7 +110,21 @@ public class CtsListener {
                 float[] fingers = new float[4];
                 Capture cap = null;
                 synchronized (lock) {
-                    if (twoSince != 0 && !spent) {
+                    if (navSince != 0 && !spent) {
+                        long held = now() - navSince;
+                        if (capture == null && held >= captureAfter(navHoldMs)) {
+                            capture = new Capture();
+                            capture.start();
+                        }
+                        if (held >= navHoldMs) {
+                            spent = true; navSince = 0; fire = true;
+                            cap = capture;
+                            int s = navSlot >= 0 ? navSlot : 0;
+                            fx = (float) x[s] / maxX; fy = (float) y[s] / maxY;
+                            fingers[0] = fingers[2] = fx; fingers[1] = fingers[3] = fy;
+                            L.i("navigation bar hold");
+                        }
+                    } else if (twoSince != 0 && !spent) {
                         long held = now() - twoSince;
                         if (capture == null && held >= captureAfter(holdMs)) {
                             capture = new Capture();
@@ -183,9 +205,34 @@ public class CtsListener {
         for (int i = 0; i < SLOTS; i++) if (id[i] >= 0) count++;
         long t = now();
         synchronized (lock) {
-            if (count == 0 || !touchEnabled) { firstDown = 0; twoSince = 0; spent = false; capture = null; return; }
-            if (firstDown == 0) { firstDown = t; AppKeeper.kick(); }
+            if (count == 0 || (!touchEnabled && !navEnabled)) {
+                firstDown = 0; twoSince = 0; navSince = 0; navSlot = -1; spent = false; capture = null; return;
+            }
+            boolean first = firstDown == 0;
+            if (first) { firstDown = t; AppKeeper.kick(); }
             if (spent) return;
+
+            // navigation-bar hold: armed only by a touch that STARTS on the bar with one finger
+            if (navEnabled) {
+                if (first && count == 1) {
+                    for (int i = 0; i < SLOTS; i++) if (id[i] >= 0) {
+                        if (onNavBar((float) x[i] / maxX, (float) y[i] / maxY)) {
+                            navSince = t; navSlot = i; nsx = x[i]; nsy = y[i];
+                            capture = null;
+                            lock.notifyAll();   // wake the hold timer
+                        }
+                        break;
+                    }
+                } else if (navSince != 0) {
+                    if (count != 1 || id[navSlot] < 0
+                            || Math.abs(x[navSlot] - nsx) > tol || Math.abs(y[navSlot] - nsy) > tol) {
+                        navSince = 0;   // second finger, lifted, or moved (a swipe): not a hold
+                    } else {
+                        return;         // still holding on the bar
+                    }
+                }
+            }
+            if (!touchEnabled) return;
             if (count == 2) {
                 if (twoSince == 0) {
                     if (t - firstDown > maxGapMs) { spent = true; return; } // second finger came too late
@@ -204,6 +251,46 @@ public class CtsListener {
                 spent = true; twoSince = 0; // third finger, or one of the two lifted early
             }
         }
+    }
+
+    static Object wms;
+    static java.lang.reflect.Method rotationM;
+
+    /** Current screen rotation (Surface.ROTATION_*), 0 if it can't be read. */
+    static int rotation() {
+        try {
+            if (rotationM == null) {
+                android.os.IBinder b = (android.os.IBinder) Class.forName("android.os.ServiceManager")
+                        .getMethod("getService", String.class).invoke(null, "window");
+                wms = Class.forName("android.view.IWindowManager$Stub").getMethod("asInterface", android.os.IBinder.class).invoke(null, b);
+                rotationM = wms.getClass().getMethod("getDefaultDisplayRotation");
+            }
+            return (Integer) rotationM.invoke(wms);
+        } catch (Throwable e) {
+            rotationM = null;
+            return 0;
+        }
+    }
+
+    /**
+     * Is this touch (raw 0..1, portrait/natural axes) on the gesture bar as the screen is turned
+     * right now: the bottom strip of the visible screen, away from the sides.
+     */
+    static boolean onNavBar(float ax, float ay) {
+        // most touches are nowhere near an edge: skip the rotation lookup for them
+        float sx0 = NAV_STRIP * maxY / maxX;
+        if (ax > sx0 && ax < 1f - sx0 && ay > NAV_STRIP && ay < 1f - NAV_STRIP) return false;
+        int r = rotation();
+        float sx, sy, strip;
+        switch (r) {
+            case 1: sx = ay; sy = 1f - ax; break;          // ROTATION_90
+            case 2: sx = 1f - ax; sy = 1f - ay; break;     // ROTATION_180
+            case 3: sx = 1f - ay; sy = ax; break;          // ROTATION_270
+            default: sx = ax; sy = ay;
+        }
+        // same height in pixels whichever way round: in landscape the short side is the height
+        strip = (r == 1 || r == 3) ? NAV_STRIP * maxY / maxX : NAV_STRIP;
+        return sy >= 1f - strip && sx >= NAV_SIDE && sx <= 1f - NAV_SIDE;
     }
 
     static Object vims;

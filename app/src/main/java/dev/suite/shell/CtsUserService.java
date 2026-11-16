@@ -47,6 +47,8 @@ public class CtsUserService extends ISuiteService.Stub {
         try {
             JSONObject o = new JSONObject(json);
             CtsListener.freezeMs = Math.max(0, Math.min(600, o.optLong("freeze", 0)));
+            CtsListener.navHoldMs = clamp(o.optLong("navHold", 450));
+            CtsListener.navEnabled = o.optBoolean("nav", false);
             apply(o.optBoolean("touch", true), o.optBoolean("button", true),
                     o.optLong("touchHold", 400), o.optLong("buttonHold", 350));
         } catch (Exception e) {
@@ -77,6 +79,11 @@ public class CtsUserService extends ISuiteService.Stub {
 
     /** /dev/input/eventN of the input device with this name (from /proc/bus/input/devices). */
     static String device(String name, String fallback) {
+        // vivo's SELinux policy denies shell both /proc/bus/input/devices and /sys/class/input/*/name,
+        // so ask getevent (it reads each device's name with an ioctl). Before this, the lookup
+        // always failed and fell back to fixed numbers, which only match some phones' boot order.
+        String byIoctl = deviceFromGetevent(name);
+        if (byIoctl != null) return byIoctl;
         try (java.io.BufferedReader r = new java.io.BufferedReader(new java.io.FileReader("/proc/bus/input/devices"))) {
             String line;
             boolean match = false;
@@ -93,6 +100,27 @@ public class CtsUserService extends ISuiteService.Stub {
         return fallback;
     }
 
+    private static String getevent;   // `getevent -p` output, read once per process
+
+    /** "add device 9: /dev/input/event1" followed by `name: "pmic_pwrkey"` in getevent -p's listing. */
+    static synchronized String deviceFromGetevent(String name) {
+        try {
+            if (getevent == null) getevent = SysSettings.exec("getevent", "-p");
+            String dev = null;
+            for (String line : getevent.split("\n")) {
+                line = line.trim();
+                if (line.startsWith("add device")) dev = line.substring(line.indexOf("/dev/input/")).trim();
+                else if (dev != null && line.startsWith("name:") && line.endsWith("\"" + name + "\"")) {
+                    L.i("found " + name + " at " + dev);
+                    return dev;
+                }
+            }
+        } catch (Exception e) {
+            L.e("getevent", e);
+        }
+        return null;
+    }
+
     private static long clamp(long ms) { return Math.max(200, Math.min(1000, ms)); }
 
     @Override public void destroy() {
@@ -107,6 +135,7 @@ public class CtsUserService extends ISuiteService.Stub {
             o.put("running", listening);
             o.put("touch", listening && CtsListener.touchEnabled);
             o.put("button", listening && PowerKey.started);
+            o.put("nav", listening && CtsListener.navEnabled);
             o.put("log", new JSONArray(L.recent(20)));
             return o.toString();
         } catch (Exception e) {

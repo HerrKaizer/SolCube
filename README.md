@@ -6,7 +6,7 @@ All-in-one Android app for vivo / OriginOS phones. Tested on a vivo X300 Ultra r
 
 ## Features
 
-- **Circle to Search** triggers: two-finger hold and power-button hold, with ripple and haptics
+- **Circle to Search** triggers: two-finger hold, power-button hold and navigation-bar hold, with ripple and haptics
 - **Frame interpolation** for games vivo doesn't support (per-game 45→90 or 60→120 fps, pauses when hot)
 - **Super resolution** toggle
 - **Temperature overlay** (CPU / GPU / battery)
@@ -52,7 +52,7 @@ Shizuku stops when the phone reboots, so repeat step 3 (the pairing is remembere
 ### 5. Circle to Search (optional)
 1. Settings → Apps → Default apps → **Digital assistant app** → choose **Google**.
 2. Make sure the Google app is up to date and Circle to Search is enabled in the Google app settings.
-3. In Suite, enable the Circle to Search card, then hold two fingers on the screen or hold the power button.
+3. In Suite, enable the Circle to Search card, then hold two fingers on the screen, hold the power button, or hold the navigation bar at the bottom.
 
 ### 6. Keep Suite alive (recommended)
 vivo's background cleaner can stop apps. In Settings → Battery → Background power consumption (name varies), allow Suite to run in the background.

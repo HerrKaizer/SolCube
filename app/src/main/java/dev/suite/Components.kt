@@ -142,6 +142,8 @@ object Components {
     const val KEY_CTS_BUTTON = "cts_button"
     const val KEY_TOUCH_HOLD = "cts_touch_hold"
     const val KEY_BUTTON_HOLD = "cts_button_hold"
+    const val KEY_CTS_NAV = "cts_nav"
+    const val KEY_NAV_HOLD = "cts_nav_hold"
     const val HOLD_MIN = 200
     const val HOLD_MAX = 800
 
@@ -158,6 +160,8 @@ object Components {
     fun ctsButton(ctx: Context): Boolean { migrateCts(ctx); return prefs(ctx).getBoolean(KEY_CTS_BUTTON, false) }
     fun touchHold(ctx: Context) = prefs(ctx).getInt(KEY_TOUCH_HOLD, 400)
     fun buttonHold(ctx: Context) = prefs(ctx).getInt(KEY_BUTTON_HOLD, 350)
+    fun ctsNav(ctx: Context) = prefs(ctx).getBoolean(KEY_CTS_NAV, false)
+    fun navHold(ctx: Context) = prefs(ctx).getInt(KEY_NAV_HOLD, 450)
 
     const val KEY_FREEZE = "cts_freeze"
     // Tested 2026-11-15: with the ripple in the accessibility overlay, Circle to Search's screenshot
@@ -169,6 +173,7 @@ object Components {
     fun ctsConfig(ctx: Context): String = JSONObject()
         // two-finger holds happen all the time while playing on the phone-as-pad
         .put("touch", ctsTouch(ctx) && !enabled(ctx, KEY_STREAM)).put("button", ctsButton(ctx))
+        .put("nav", ctsNav(ctx) && !enabled(ctx, KEY_STREAM)).put("navHold", navHold(ctx))
         .put("touchHold", touchHold(ctx)).put("buttonHold", buttonHold(ctx))
         .put("freeze", freeze(ctx)).toString()
 
@@ -176,7 +181,7 @@ object Components {
     fun setCtsTrigger(ctx: Context, key: String, on: Boolean) {
         migrateCts(ctx)
         prefs(ctx).edit().putBoolean(key, on).commit()
-        val any = ctsTouch(ctx) || ctsButton(ctx)
+        val any = ctsTouch(ctx) || ctsButton(ctx) || ctsNav(ctx)
         prefs(ctx).edit().putBoolean(KEY_CTS, any).commit()
         SuiteService.sync(ctx)                    // the ripple overlay lives in the app
         if (!any) { Shell.stop(ctx, Shell.Kind.CTS); return }

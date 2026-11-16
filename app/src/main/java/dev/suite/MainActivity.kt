@@ -68,6 +68,7 @@ class MainActivity : Activity() {
     private lateinit var overlayCard: LinearLayout
     private lateinit var ctsTouch: Section
     private lateinit var ctsButton: Section
+    private lateinit var ctsNav: Section
     private lateinit var ctsNote: TextView
     private lateinit var game: Section
     private lateinit var srSec: Section
@@ -157,7 +158,9 @@ class MainActivity : Activity() {
             detail = ctsDetail(ctsTouch, "Hold two fingers still on the screen"))
         showSection(ctsButton, running = s.cts?.optBoolean("button") == true && ripple,
             detail = ctsDetail(ctsButton, "Hold the power button (screen on)"))
-        val anyCts = enabled(ctsTouch) || enabled(ctsButton)
+        showSection(ctsNav, running = s.cts?.optBoolean("nav") == true && ripple,
+            detail = ctsDetail(ctsNav, "Hold one finger still on the navigation bar at the bottom"))
+        val anyCts = enabled(ctsTouch) || enabled(ctsButton) || enabled(ctsNav)
         ctsNote.text = when {
             !anyCts -> "Pick a trigger below"
             listener && !ripple -> "Listener running, ripple overlay starting…"
@@ -259,7 +262,7 @@ class MainActivity : Activity() {
     private fun toggle(sec: Section) {
         if (sec.key in busy) return
         val on = !enabled(sec)
-        val needsOverlay = sec.key in setOf(Components.KEY_CTS_TOUCH, Components.KEY_CTS_BUTTON, Components.KEY_TEMP)
+        val needsOverlay = sec.key in setOf(Components.KEY_CTS_TOUCH, Components.KEY_CTS_BUTTON, Components.KEY_CTS_NAV, Components.KEY_TEMP)
         if (on && needsOverlay && !Settings.canDrawOverlays(this)) {
             openOverlaySettings()
         }
@@ -267,7 +270,7 @@ class MainActivity : Activity() {
         render()
         io.execute {
             when (sec.key) {
-                Components.KEY_CTS_TOUCH, Components.KEY_CTS_BUTTON -> Components.setCtsTrigger(this, sec.key, on)
+                Components.KEY_CTS_TOUCH, Components.KEY_CTS_BUTTON, Components.KEY_CTS_NAV -> Components.setCtsTrigger(this, sec.key, on)
                 Components.KEY_GAME -> Components.setGame(this, on)
                 Components.KEY_SR -> Components.setSr(this, on)
                 Components.KEY_MIX -> Components.setMix(this, on)
@@ -334,6 +337,10 @@ class MainActivity : Activity() {
             LinearLayout.LayoutParams(MATCH_PARENT, 1.dp).apply { topMargin = 14.dp })
         ctsButton = section(Components.KEY_CTS_BUTTON, "Power-button hold", into = ctsCard)
         addHoldStepper(ctsCard, Components.KEY_BUTTON_HOLD) { Components.buttonHold(this) }
+        ctsCard.addView(View(this).apply { setBackgroundColor(p.stroke) },
+            LinearLayout.LayoutParams(MATCH_PARENT, 1.dp).apply { topMargin = 14.dp })
+        ctsNav = section(Components.KEY_CTS_NAV, "Navigation bar hold", into = ctsCard)
+        addHoldStepper(ctsCard, Components.KEY_NAV_HOLD) { Components.navHold(this) }
         // vivo hides the "default digital assistant" page; Circle to Search needs Google there
         ctsCard.addView(textButton("Default assistant settings") { openDefaultAssistantSettings() },
             LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = 8.dp; leftMargin = (-12).dp })

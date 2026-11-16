@@ -11,8 +11,8 @@ android {
         applicationId = "dev.suite"
         minSdk = 33
         targetSdk = 34
-        versionCode = 24
-        versionName = "2.1.3"   // 2026-11-16: settings card removed (updates and Google backup keep settings)
+        versionCode = 26
+        versionName = "2.1.5"   // 2026-11-16: find input devices by name via getevent (power button on other phones)
     }
 
     compileOptions {
