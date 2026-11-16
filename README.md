@@ -12,7 +12,8 @@ All-in-one Android app for vivo / OriginOS phones. Tested on a vivo X300 Ultra r
 - **Temperature overlay** (CPU / GPU / battery)
 - **Play together**: audio mixing (several apps play at once)
 - **Routines** (beta): Wi-Fi, DND, unlock and time triggers with actions like data, ringer, airplane mode, close apps
-- **Double power press**: open an app (optionally turning NFC on while it is open), or switch sound mode: Ring › Vibrate › Silent, silent on/off, vibrate on/off
+- **Double power press**: open an app (optionally turning NFC on while it is open), Circle to Search, or switch sound mode: Ring › Vibrate › Silent, silent on/off, vibrate on/off. Suite turns on vivo Wallet's double-press switch for you ("Set up double press")
+- **Power button hold**: instead of Circle to Search, the hold can open an app or switch sound mode
 - **Stream to laptop** (beta, scrcpy based)
 
 ## Requirements

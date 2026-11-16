@@ -49,6 +49,7 @@ public class CtsUserService extends ISuiteService.Stub {
             CtsListener.freezeMs = Math.max(0, Math.min(600, o.optLong("freeze", 0)));
             CtsListener.navHoldMs = clamp(o.optLong("navHold", 450));
             CtsListener.navEnabled = o.optBoolean("nav", false);
+            PowerKey.cts = o.optBoolean("buttonCts", true);
             apply(o.optBoolean("touch", true), o.optBoolean("button", true),
                     o.optLong("touchHold", 400), o.optLong("buttonHold", 350));
         } catch (Exception e) {
@@ -148,6 +149,15 @@ public class CtsUserService extends ISuiteService.Stub {
         if (cmd != null && cmd.startsWith("test ")) {
             long ms = Long.parseLong(cmd.substring(5).trim());
             new Thread(() -> CtsListener.test(ms), "cts-test").start();
+            return "ok";
+        }
+        if ("power-cts".equals(cmd)) {   // double power press set to Circle to Search: ripple from the button
+            new Thread(() -> {
+                CtsListener.Capture c = new CtsListener.Capture();
+                c.start();
+                float fx = PowerKey.fx, fy = PowerKey.fy;
+                CtsListener.fire(fx, fy, new float[]{fx, fy, fx, fy}, c);
+            }, "power-cts").start();
             return "ok";
         }
         return "";

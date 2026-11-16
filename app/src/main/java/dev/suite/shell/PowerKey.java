@@ -29,6 +29,7 @@ final class PowerKey {
     // where the ripple starts: power button on the right edge (natural portrait, 0..1)
     static float fx = 1.0f, fy = 0.37f;
     static volatile long holdMs = 350;   // set from Suite
+    static volatile boolean cts = true;  // hold = Circle to Search; false = the "Power button hold" card's action
     static volatile boolean started;
 
     static final Object lock = new Object();
@@ -180,7 +181,7 @@ final class PowerKey {
             synchronized (lock) {
                 if (down && !pass && !fired) {
                     long held = CtsListener.now() - downAt;
-                    if (cap == null && held >= CtsListener.captureAfter(holdMs)) {
+                    if (cts && cap == null && held >= CtsListener.captureAfter(holdMs)) {
                         cap = new CtsListener.Capture();
                         cap.start();
                     }
@@ -188,8 +189,14 @@ final class PowerKey {
                 }
             }
             if (fire) {
-                L.i("power hold");
-                CtsListener.fire(fx, fy, new float[]{fx, fy, fx, fy}, c);
+                L.i("power hold" + (cts ? "" : " → Suite action"));
+                if (cts) CtsListener.fire(fx, fy, new float[]{fx, fy, fx, fy}, c);
+                else {
+                    // the "Power button hold" card: Suite's invisible activity opens the app / switches the sound mode
+                    CtsListener.pop();
+                    SysSettings.exec("am", "start", "-n", "dev.suite/.DoublePressActivity", "--es", "slot", "hold",
+                            "-f", "0x10800000");   // NEW_TASK | NO_ANIMATION
+                }
             }
         }
     }

@@ -27,6 +27,9 @@ public class UtilUserService extends ISuiteService.Stub {
                 L.i("put " + p[1] + " " + p[2] + " = " + p[3]);
                 return "ok";
             }
+            if (cmd.equals("cts")) {   // Circle to Search straight away (no ripple: the listener isn't running)
+                return CtsTrigger.trigger(CtsTrigger.service(), 1) ? "ok" : "failed";
+            }
             if (cmd.startsWith("ringer ")) {   // ringer normal|vibrate|silent
                 String m = cmd.substring(7).trim().toUpperCase();
                 SysSettings.exec("cmd", "audio", "set-ringer-mode", m);

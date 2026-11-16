@@ -144,6 +144,8 @@ object Components {
     const val KEY_BUTTON_HOLD = "cts_button_hold"
     const val KEY_CTS_NAV = "cts_nav"
     const val KEY_NAV_HOLD = "cts_nav_hold"
+    /** "Power button hold" card: the hold opens an app / switches sound instead of Circle to Search. */
+    const val KEY_HOLD_ACT = "hold_action"
     const val HOLD_MIN = 200
     const val HOLD_MAX = 800
 
@@ -162,6 +164,7 @@ object Components {
     fun buttonHold(ctx: Context) = prefs(ctx).getInt(KEY_BUTTON_HOLD, 350)
     fun ctsNav(ctx: Context) = prefs(ctx).getBoolean(KEY_CTS_NAV, false)
     fun navHold(ctx: Context) = prefs(ctx).getInt(KEY_NAV_HOLD, 450)
+    fun holdAction(ctx: Context) = prefs(ctx).getBoolean(KEY_HOLD_ACT, false)
 
     const val KEY_FREEZE = "cts_freeze"
     // Tested 2026-11-15: with the ripple in the accessibility overlay, Circle to Search's screenshot
@@ -172,7 +175,9 @@ object Components {
 
     fun ctsConfig(ctx: Context): String = JSONObject()
         // two-finger holds happen all the time while playing on the phone-as-pad
-        .put("touch", ctsTouch(ctx) && !enabled(ctx, KEY_STREAM)).put("button", ctsButton(ctx))
+        .put("touch", ctsTouch(ctx) && !enabled(ctx, KEY_STREAM))
+        // one physical gesture: Circle to Search OR the hold card's action, never both
+        .put("button", ctsButton(ctx) || holdAction(ctx)).put("buttonCts", !holdAction(ctx))
         .put("nav", ctsNav(ctx) && !enabled(ctx, KEY_STREAM)).put("navHold", navHold(ctx))
         .put("touchHold", touchHold(ctx)).put("buttonHold", buttonHold(ctx))
         .put("freeze", freeze(ctx)).toString()
@@ -180,8 +185,12 @@ object Components {
     /** Turns one trigger on/off. The listener runs while either is on. Call off the main thread. */
     fun setCtsTrigger(ctx: Context, key: String, on: Boolean) {
         migrateCts(ctx)
-        prefs(ctx).edit().putBoolean(key, on).commit()
-        val any = ctsTouch(ctx) || ctsButton(ctx) || ctsNav(ctx)
+        prefs(ctx).edit().putBoolean(key, on).also { e ->
+            // the power-button hold does one thing: turning one on turns the other off
+            if (on && key == KEY_CTS_BUTTON) e.putBoolean(KEY_HOLD_ACT, false)
+            if (on && key == KEY_HOLD_ACT) e.putBoolean(KEY_CTS_BUTTON, false)
+        }.commit()
+        val any = ctsTouch(ctx) || ctsButton(ctx) || ctsNav(ctx) || holdAction(ctx)
         prefs(ctx).edit().putBoolean(KEY_CTS, any).commit()
         SuiteService.sync(ctx)                    // the ripple overlay lives in the app
         if (!any) { Shell.stop(ctx, Shell.Kind.CTS); return }

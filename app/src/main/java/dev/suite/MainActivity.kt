@@ -103,6 +103,7 @@ class MainActivity : Activity() {
         SuiteService.sync(this)   // e.g. overlay permission was just granted
         poll()
         checkUpdates()
+        renderDouble()   // vivo's switch / the handler may have changed in Settings
     }
 
     override fun onPause() {
@@ -156,10 +157,15 @@ class MainActivity : Activity() {
         }
         showSection(ctsTouch, running = s.cts?.optBoolean("touch") == true && ripple,
             detail = ctsDetail(ctsTouch, "Hold two fingers still on the screen"))
-        showSection(ctsButton, running = s.cts?.optBoolean("button") == true && ripple,
+        showSection(ctsButton, running = s.cts?.optBoolean("button") == true && enabled(ctsButton) && ripple,
             detail = ctsDetail(ctsButton, "Hold the power button (screen on)"))
         showSection(ctsNav, running = s.cts?.optBoolean("nav") == true && ripple,
             detail = ctsDetail(ctsNav, "Hold one finger still on the navigation bar at the bottom"))
+        showSection(holdSec, running = s.cts?.optBoolean("button") == true && enabled(holdSec),
+            detail = when {
+                !shellOk && enabled(holdSec) -> "Waiting for Shizuku"
+                else -> "Hold the power button (screen on) to " + actionText(PowerHold.action) + "."
+            })
         val anyCts = enabled(ctsTouch) || enabled(ctsButton) || enabled(ctsNav)
         ctsNote.text = when {
             !anyCts -> "Pick a trigger below"
@@ -270,7 +276,7 @@ class MainActivity : Activity() {
         render()
         io.execute {
             when (sec.key) {
-                Components.KEY_CTS_TOUCH, Components.KEY_CTS_BUTTON, Components.KEY_CTS_NAV -> Components.setCtsTrigger(this, sec.key, on)
+                Components.KEY_CTS_TOUCH, Components.KEY_CTS_BUTTON, Components.KEY_CTS_NAV, Components.KEY_HOLD_ACT -> Components.setCtsTrigger(this, sec.key, on)
                 Components.KEY_GAME -> Components.setGame(this, on)
                 Components.KEY_SR -> Components.setSr(this, on)
                 Components.KEY_MIX -> Components.setMix(this, on)
@@ -347,6 +353,7 @@ class MainActivity : Activity() {
         root.addView(ctsCard, cardParams())
 
         root.addView(buildDoubleCard(), cardParams())
+        root.addView(buildHoldCard(), cardParams())
 
         mixSec = section(Components.KEY_MIX, "Play together")
         root.addView(mixSec.card, cardParams())
@@ -776,7 +783,7 @@ class MainActivity : Activity() {
             }
         }
         card.addView(dpMake, LinearLayout.LayoutParams(MATCH_PARENT, 44.dp).apply { topMargin = 12.dp })
-        card.addView(label("Opens", 12.5f, p.sub).apply { setPadding(0, 14.dp, 0, 0) })
+        card.addView(label("Does", 12.5f, p.sub).apply { setPadding(0, 14.dp, 0, 0) })
         dpChoices = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         card.addView(dpChoices)
         card.addView(Switch(this).apply {
@@ -826,73 +833,113 @@ class MainActivity : Activity() {
     private fun renderDouble() {
         val h = DoublePress.handler(this)
         val mine = h == packageName
-        dpStatus.text = if (mine) "Suite handles it" else "Not handled by Suite"
-        dpStatus.setTextColor(if (mine) p.ok else p.sub)
-        (dpDot.background as GradientDrawable).setColor(if (mine) p.ok else alpha(p.sub, 0.5f))
-        val ring = DoublePress.ringChoice(this)
+        val wallet = DoublePress.walletSwitchOn(this)
+        val ready = mine && wallet
+        dpStatus.text = when {
+            ready -> "Suite handles it"
+            mine -> "vivo's double press is off"
+            else -> "Not handled by Suite"
+        }
+        dpStatus.setTextColor(if (ready) p.ok else p.sub)
+        (dpDot.background as GradientDrawable).setColor(if (ready) p.ok else alpha(p.sub, 0.5f))
         dpDetail.text = when {
-            mine && ring == DoublePress.RING_CYCLE -> "Double-press the power button to go Ring → Vibrate → Silent."
-            mine && ring == DoublePress.RING_SILENT -> "Double-press the power button to turn silent mode on or off."
-            mine && ring == DoublePress.RING_VIBRATE -> "Double-press the power button to turn vibrate mode on or off."
-            mine -> "Double-press the power button to open the app picked below."
+            ready -> "Double-press the power button to " + actionText(DoublePress.action) + "."
+            mine -> "Its switch in vivo Wallet (“Double press the Power button to quickly swipe cards”) is off. Set up turns it on."
             h == null -> "Android asks which app to use each time."
             else -> "Right now it goes to ${appName(h)}."
         }
-        dpMake.visibility = if (mine) View.GONE else View.VISIBLE
-        dpMake.text = if (dpBusy) "…" else "Make Suite the handler"
+        dpMake.visibility = if (ready) View.GONE else View.VISIBLE
+        dpMake.text = if (dpBusy) "…" else "Set up double press"
+        renderChoices(dpChoices, DoublePress.action, cts = true) { renderDouble() }
+    }
 
-        // the apps to pick from: tap one to use it, ✕ to remove it
-        dpChoices.removeAllViews()
-        val t = DoublePress.target(this)
-        val apps = DoublePress.apps(this)
-        dpChoices.addView(hScroll(*apps.map { pkg ->
-            chip(appName(pkg), pkg == t && ring == null) { DoublePress.setTarget(this, pkg); renderDouble() }.apply {
+    /** "open Mir Pay" / "turn silent mode on or off" … for the status line. */
+    private fun actionText(pa: PressAction): String = when (pa.action(this)) {
+        PressAction.CTS -> "open Circle to Search"
+        PressAction.RING_CYCLE -> "go Ring → Vibrate → Silent"
+        PressAction.RING_SILENT -> "turn silent mode on or off"
+        PressAction.RING_VIBRATE -> "turn vibrate mode on or off"
+        else -> pa.target(this).takeIf { it.isNotEmpty() }?.let { "open ${appName(it)}" } ?: "open the app picked below"
+    }
+
+    /** The choices of a power-button action: apps (tap to use, hold to remove), sound modes, [cts]. */
+    private fun renderChoices(box: LinearLayout, pa: PressAction, cts: Boolean, rerender: () -> Unit) {
+        box.removeAllViews()
+        val act = pa.action(this)
+        val t = pa.target(this)
+        val apps = pa.apps(this)
+        box.addView(hScroll(*apps.map { pkg ->
+            chip(appName(pkg), pkg == t && act == null) { pa.setTarget(this, pkg); rerender() }.apply {
                 setOnLongClickListener {
-                    if (apps.size > 1) {
-                        SuiteDialog.Builder(this@MainActivity).setMessage("Remove ${appName(pkg)} from the list?")
-                            .setPositiveButton("Remove") { _, _ ->
-                                val rest = apps - pkg
-                                DoublePress.saveApps(this@MainActivity, rest)
-                                if (pkg == t) DoublePress.setTarget(this@MainActivity, rest.first())
-                                renderDouble()
-                            }.setNegativeButton("Cancel", null).show()
-                    }
+                    SuiteDialog.Builder(this@MainActivity).setMessage("Remove ${appName(pkg)} from the list?")
+                        .setPositiveButton("Remove") { _, _ ->
+                            val rest = apps - pkg
+                            pa.saveApps(this@MainActivity, rest)
+                            if (pkg == t) {
+                                if (rest.isNotEmpty()) pa.setTarget(this@MainActivity, rest.first())
+                                else pa.setAction(this@MainActivity, PressAction.RING_SILENT)
+                            }
+                            rerender()
+                        }.setNegativeButton("Cancel", null).show()
                     true
                 }
             }
         }.toTypedArray()), LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 6.dp })
-        dpChoices.addView(textButton("Add app") { pickDoubleApp() },
+        box.addView(textButton("Add app") { pickActionApp(pa, rerender) },
             LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = 2.dp; leftMargin = (-12).dp })
-        if (apps.size > 1) dpChoices.addView(label("Tap an app to use it; hold it to remove it.", 12f, p.sub))
+        if (apps.isNotEmpty()) box.addView(label("Tap an app to use it; hold it to remove it.", 12f, p.sub))
 
-        // …or switch the sound mode instead of opening an app
-        dpChoices.addView(label("Or sound mode", 12.5f, p.sub).apply { setPadding(0, 12.dp, 0, 0) })
-        dpChoices.addView(hScroll(*listOf(
-            DoublePress.RING_CYCLE to "Ring › Vibrate › Silent",
-            DoublePress.RING_SILENT to "Silent on/off",
-            DoublePress.RING_VIBRATE to "Vibrate on/off",
-        ).map { (c, name) ->
-            chip(name, ring == c) {
-                DoublePress.setRingChoice(this, c)
-                renderDouble()
-                io.execute { Ringer.ensureAccess(this) }   // so changes are instant (silent needs DND access)
+        // …or something other than opening an app
+        box.addView(label("Or", 12.5f, p.sub).apply { setPadding(0, 12.dp, 0, 0) })
+        val others = mutableListOf<Pair<String, String>>()
+        if (cts) others += PressAction.CTS to "Circle to Search"
+        others += PressAction.RING_CYCLE to "Ring › Vibrate › Silent"
+        others += PressAction.RING_SILENT to "Silent on/off"
+        others += PressAction.RING_VIBRATE to "Vibrate on/off"
+        box.addView(hScroll(*others.map { (c, name) ->
+            chip(name, act == c) {
+                pa.setAction(this, c)
+                rerender()
+                if (c.startsWith("ring:")) io.execute { Ringer.ensureAccess(this) }   // instant changes (silent needs DND access)
             }
         }.toTypedArray()), LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 6.dp })
     }
 
-    private fun pickDoubleApp() {
-        val have = DoublePress.apps(this)
+    private fun pickActionApp(pa: PressAction, rerender: () -> Unit) {
+        val have = pa.apps(this)
         val launch = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
         val list = packageManager.queryIntentActivities(launch, 0).map { it.activityInfo.packageName }.distinct()
             .filter { it != packageName && it !in have }.map { it to appName(it) }.sortedBy { it.second.lowercase() }
         SuiteDialog.Builder(this).setTitle("Add an app")
             .setItems(list.map { it.second }.toTypedArray()) { _, w ->
                 val pkg = list[w].first
-                DoublePress.saveApps(this, have + pkg)
-                DoublePress.setTarget(this, pkg)
-                renderDouble()
+                pa.saveApps(this, have + pkg)
+                pa.setTarget(this, pkg)
+                rerender()
             }
             .show()
+    }
+
+    // ------------------------------------------------------------------ power-button hold (not CTS)
+
+    private lateinit var holdSec: Section
+    private lateinit var holdChoices: LinearLayout
+
+    private fun buildHoldCard(): LinearLayout {
+        holdSec = section(Components.KEY_HOLD_ACT, "Power button hold")
+        val card = holdSec.card
+        card.addView(label("Does", 12.5f, p.sub).apply { setPadding(0, 14.dp, 0, 0) })
+        holdChoices = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        card.addView(holdChoices)
+        addHoldStepper(card, Components.KEY_BUTTON_HOLD) { Components.buttonHold(this) }
+        card.addView(label("Same hold as Circle to Search's power-button hold: turning this on turns that off, and the other way round.", 12f, p.sub),
+            LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 8.dp })
+        renderHold()
+        return card
+    }
+
+    private fun renderHold() {
+        renderChoices(holdChoices, PowerHold.action, cts = false) { renderHold(); render() }
     }
 
     // ------------------------------------------------------------------ routines
@@ -993,15 +1040,9 @@ class MainActivity : Activity() {
         return s?.let { runCatching { it.command(cmd) }.getOrNull() }
     }
 
-    private fun hScroll(vararg views: View): View {
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        views.forEachIndexed { i, v ->
-            row.addView(v, LinearLayout.LayoutParams(WRAP_CONTENT, 34.dp).apply { if (i > 0) leftMargin = 6.dp })
-        }
-        return android.widget.HorizontalScrollView(this).apply {
-            isHorizontalScrollBarEnabled = false
-            addView(row)
-        }
+    /** A row of chips that wraps onto more lines (a scrolling row hid the chips past the edge). */
+    private fun hScroll(vararg views: View): View = FlowRow(this, 6.dp, 8.dp).apply {
+        views.forEach { addView(it, android.view.ViewGroup.LayoutParams(WRAP_CONTENT, 34.dp)) }
     }
 
     /** Multi-choice list of user-installed apps for the "Revive apps" action. */

@@ -14,61 +14,107 @@ import android.util.Log
 import org.json.JSONArray
 
 /**
- * Double power press (replaces the "Double Power Key" app). vivo fires
- * vivo.intent.action.NFC_BUS_SWINGSPLASH on a double press and opens the preferred handler;
- * Suite makes itself that handler (DoublePress.makeDefault). This invisible activity opens the
- * chosen app and finishes.
+ * Invisible activity that runs a power-button action and finishes:
+ *  - double press: vivo fires vivo.intent.action.NFC_BUS_SWINGSPLASH and opens the preferred
+ *    handler; Suite makes itself that handler (DoublePress.makeDefault).
+ *  - power-button hold, when it isn't Circle to Search: the shell listener starts it with
+ *    `--es slot hold`.
  */
 class DoublePressActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         overridePendingTransition(0, 0)
-        DoublePress.run(this)
+        if (intent?.getStringExtra("slot") == "hold") PowerHold.action.perform(this, vibrate = false, nfc = false)
+        else DoublePress.run(this)
         finish()
         overridePendingTransition(0, 0)
     }
 }
 
-object DoublePress {
-    const val ACTION = "vivo.intent.action.NFC_BUS_SWINGSPLASH"
-    private const val KEY_TARGET = "double_target"   // "app:<pkg>"
-    private const val KEY_APPS = "double_apps"       // the apps to choose from
-    private const val KEY_VIBRATE = "double_vibrate"
-    private const val KEY_NFC = "double_nfc"
-    private const val TAG = "Suite"
-    // what the Double Power Key app was set to when Suite took over
-    private const val MIRPAY = ""
+/**
+ * What a power-button gesture does: open an app (picked from a list), switch the sound mode, or
+ * Circle to Search. Stored as "<slot>_target" = "app:<pkg>" | "ring:…" | "cts", plus "<slot>_apps".
+ */
+class PressAction(slot: String, private val allowCts: Boolean) {
+    private val kTarget = "${slot}_target"
+    private val kApps = "${slot}_apps"
 
-    // Android's single-vs-double press window (secure multi_press_timeout, default 300 ms)
-    const val WINDOW_MIN = 250
-    const val WINDOW_MAX = 700
+    companion object {
+        const val RING_CYCLE = "ring:cycle"     // ring → vibrate → silent → ring
+        const val RING_SILENT = "ring:silent"   // silent on / off
+        const val RING_VIBRATE = "ring:vibrate" // vibrate on / off
+        const val CTS = "cts"
+        private const val TAG = "Suite"
+    }
 
-    fun target(ctx: Context): String =
-        Components.prefs(ctx).getString(KEY_TARGET, null)?.removePrefix("app:")?.takeIf { it.contains('.') } ?: MIRPAY
+    private fun raw(ctx: Context) = Components.prefs(ctx).getString(kTarget, null)
 
-    fun setTarget(ctx: Context, pkg: String) = Components.prefs(ctx).edit().putString(KEY_TARGET, "app:$pkg").apply()
+    /** The app to open ("" if none picked yet). */
+    fun target(ctx: Context): String = raw(ctx)?.removePrefix("app:")?.takeIf { it.contains('.') } ?: ""
 
-    // sound-mode actions instead of an app
-    const val RING_CYCLE = "ring:cycle"     // ring → vibrate → silent → ring
-    const val RING_SILENT = "ring:silent"   // silent on / off
-    const val RING_VIBRATE = "ring:vibrate" // vibrate on / off
+    fun setTarget(ctx: Context, pkg: String) = Components.prefs(ctx).edit().putString(kTarget, "app:$pkg").apply()
 
-    /** The ring action picked, or null when the double press opens an app. */
-    fun ringChoice(ctx: Context): String? =
-        Components.prefs(ctx).getString(KEY_TARGET, null)?.takeIf { it.startsWith("ring:") }
+    /** A non-app action (ring:… or cts), or null when it opens an app. */
+    fun action(ctx: Context): String? =
+        raw(ctx)?.takeIf { it.startsWith("ring:") || (allowCts && it == CTS) }
 
-    fun setRingChoice(ctx: Context, c: String) = Components.prefs(ctx).edit().putString(KEY_TARGET, c).apply()
+    fun setAction(ctx: Context, c: String) = Components.prefs(ctx).edit().putString(kTarget, c).apply()
 
     fun apps(ctx: Context): List<String> {
-        val raw = Components.prefs(ctx).getString(KEY_APPS, null)
-        val list = raw?.let { r -> runCatching { JSONArray(r).let { a -> (0 until a.length()).map { a.getString(it) } } }.getOrNull() }
+        val list = Components.prefs(ctx).getString(kApps, null)
+            ?.let { r -> runCatching { JSONArray(r).let { a -> (0 until a.length()).map { a.getString(it) } } }.getOrNull() }
             ?: emptyList()
         val t = target(ctx)
         return if (t.isEmpty() || t in list) list else list + t
     }
 
     fun saveApps(ctx: Context, list: List<String>) =
-        Components.prefs(ctx).edit().putString(KEY_APPS, JSONArray(list).toString()).apply()
+        Components.prefs(ctx).edit().putString(kApps, JSONArray(list).toString()).apply()
+
+    fun perform(act: Activity, vibrate: Boolean, nfc: Boolean) {
+        val app = act.applicationContext
+        val a = action(act)
+        Log.i(TAG, "power action → ${a ?: target(act)}")
+        if (vibrate && a != CTS) runCatching {
+            act.getSystemService(Vibrator::class.java).vibrate(VibrationEffect.createOneShot(60, 255))
+        }
+        when {
+            a == CTS -> Thread {
+                // ripple + Circle to Search from the power button when the listener runs, else straight to CTS
+                val r = if (Components.enabled(app, Components.KEY_CTS)) Shell.command(app, Shell.Kind.CTS, "power-cts") else null
+                if (r != "ok") Shell.oneShot(app, "cts")
+            }.start()
+            a != null -> Ringer.toggle(app, a)
+            else -> {
+                val pkg = target(act)
+                if (pkg.isEmpty()) return
+                // NFC first (it takes a moment to come up); the shell side turns it off again once the app is gone
+                if (nfc) Thread { Shell.command(app, Shell.Kind.NFC, "nfc-session $pkg") }.start()
+                act.packageManager.getLaunchIntentForPackage(pkg)?.let {
+                    act.startActivity(it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED))
+                } ?: Log.w(TAG, "power action: $pkg has no launcher activity")
+            }
+        }
+    }
+}
+
+/** Power-button hold doing something other than Circle to Search (its own card). */
+object PowerHold {
+    val action = PressAction("hold", allowCts = false)
+}
+
+object DoublePress {
+    const val ACTION = "vivo.intent.action.NFC_BUS_SWINGSPLASH"
+    private const val KEY_VIBRATE = "double_vibrate"
+    private const val KEY_NFC = "double_nfc"
+    /** vivo Wallet's "Double press the Power button to quickly swipe cards" (system table). */
+    const val WALLET_SWITCH = "com_vivo_wallet_nfc_support_double_click"
+
+    val action = PressAction("double", allowCts = true)
+
+    // Android's single-vs-double press window (secure multi_press_timeout, default 300 ms)
+    const val WINDOW_MIN = 250
+    const val WINDOW_MAX = 700
 
     fun vibrate(ctx: Context) = Components.prefs(ctx).getBoolean(KEY_VIBRATE, true)
     fun setVibrate(ctx: Context, on: Boolean) = Components.prefs(ctx).edit().putBoolean(KEY_VIBRATE, on).apply()
@@ -83,6 +129,11 @@ object DoublePress {
     fun setWindow(ctx: Context, ms: Int): Boolean =
         Shell.oneShot(ctx, "put secure multi_press_timeout ${ms.coerceIn(WINDOW_MIN, WINDOW_MAX)}") == "ok"
 
+    /** Is vivo's own double-press switch on? Without it vivo never sends the double press. */
+    fun walletSwitchOn(ctx: Context): Boolean = runCatching {
+        Settings.System.getInt(ctx.contentResolver, WALLET_SWITCH) == 1
+    }.getOrDefault(true)   // can't read it: don't nag
+
     private fun intent() = Intent(ACTION).addCategory(Intent.CATEGORY_DEFAULT)
 
     /** Package of the activity that currently gets the double press (null = Android asks). */
@@ -93,8 +144,15 @@ object DoublePress {
         return pkg?.takeIf { p -> pm.queryIntentActivities(intent(), 0).any { it.activityInfo.packageName == p } }
     }
 
-    /** Makes Suite the "always" handler, as the shell user (needs Shizuku). Off the main thread. */
+    /** Ready = vivo's switch on and Suite the handler. */
+    fun ready(ctx: Context) = handler(ctx) == ctx.packageName && walletSwitchOn(ctx)
+
+    /**
+     * Turns vivo's double-press switch on and makes Suite the "always" handler, as the shell user
+     * (needs Shizuku). Off the main thread.
+     */
     fun makeDefault(ctx: Context): Boolean {
+        if (!walletSwitchOn(ctx) && Shell.oneShot(ctx, "put system $WALLET_SWITCH 1") != "ok") return false
         val set = ctx.packageManager.queryIntentActivities(intent(), 0)
             .map { ComponentName(it.activityInfo.packageName, it.activityInfo.name) }.toMutableList()
         val me = ComponentName(ctx, DoublePressActivity::class.java)
@@ -103,30 +161,10 @@ object DoublePress {
         return Shell.oneShot(ctx, cmd) == "ok"
     }
 
-    fun run(act: Activity) {
-        ringChoice(act)?.let { c ->
-            Log.i(TAG, "double press → $c")
-            if (vibrate(act)) runCatching {
-                act.getSystemService(Vibrator::class.java).vibrate(VibrationEffect.createOneShot(60, 255))
-            }
-            Ringer.toggle(act.applicationContext, c)
-            return
-        }
-        val pkg = target(act)
-        Log.i(TAG, "double press → $pkg")
-        if (vibrate(act)) runCatching {
-            act.getSystemService(Vibrator::class.java).vibrate(VibrationEffect.createOneShot(60, 255))
-        }
-        val app = act.applicationContext
-        // NFC first (it takes a moment to come up); the shell side turns it off again once the app is gone
-        if (nfc(act)) Thread { Shell.command(app, Shell.Kind.NFC, "nfc-session $pkg") }.start()
-        act.packageManager.getLaunchIntentForPackage(pkg)?.let {
-            act.startActivity(it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED))
-        } ?: Log.w(TAG, "double press: $pkg has no launcher activity")
-    }
+    fun run(act: Activity) = action.perform(act, vibrate(act), nfc(act))
 }
 
-/** Ring / vibrate / silent for the double press. */
+/** Ring / vibrate / silent for the power-button actions. */
 object Ringer {
     private const val KEY_PREV = "ring_prev"   // the mode to go back to when silent is turned off
 
@@ -143,12 +181,12 @@ object Ringer {
         val cur = runCatching { Settings.Global.getInt(ctx.contentResolver, "mode_ringer") }.getOrElse { am.ringerMode }
         val prefs = Components.prefs(ctx)
         val next = when (choice) {
-            DoublePress.RING_CYCLE -> when (cur) {
+            PressAction.RING_CYCLE -> when (cur) {
                 AudioManager.RINGER_MODE_NORMAL -> AudioManager.RINGER_MODE_VIBRATE
                 AudioManager.RINGER_MODE_VIBRATE -> AudioManager.RINGER_MODE_SILENT
                 else -> AudioManager.RINGER_MODE_NORMAL
             }
-            DoublePress.RING_SILENT ->
+            PressAction.RING_SILENT ->
                 if (cur == AudioManager.RINGER_MODE_SILENT) prefs.getInt(KEY_PREV, AudioManager.RINGER_MODE_NORMAL)
                 else { prefs.edit().putInt(KEY_PREV, cur).apply(); AudioManager.RINGER_MODE_SILENT }
             else ->

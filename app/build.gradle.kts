@@ -11,8 +11,8 @@ android {
         applicationId = "dev.suite"
         minSdk = 33
         targetSdk = 34
-        versionCode = 26
-        versionName = "2.1.5"   // 2026-11-16: find input devices by name via getevent (power button on other phones)
+        versionCode = 28
+        versionName = "2.1.7"   // 2026-11-16: chip rows wrap instead of scrolling
     }
 
     compileOptions {
