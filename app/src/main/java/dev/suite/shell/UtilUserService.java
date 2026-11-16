@@ -27,6 +27,16 @@ public class UtilUserService extends ISuiteService.Stub {
                 L.i("put " + p[1] + " " + p[2] + " = " + p[3]);
                 return "ok";
             }
+            if (cmd.startsWith("ringer ")) {   // ringer normal|vibrate|silent
+                String m = cmd.substring(7).trim().toUpperCase();
+                SysSettings.exec("cmd", "audio", "set-ringer-mode", m);
+                L.i("ringer " + m);
+                return "ok";
+            }
+            if (cmd.startsWith("allow-dnd ")) {   // Do Not Disturb access for Suite (instant ring changes)
+                SysSettings.exec("cmd", "notification", "allow_dnd", cmd.substring(10).trim());
+                return "ok";
+            }
             if (cmd.startsWith("nfc-session ")) {
                 String pkg = cmd.substring(12).trim();
                 if (session != null && session.isAlive()) return "ok";   // already watching

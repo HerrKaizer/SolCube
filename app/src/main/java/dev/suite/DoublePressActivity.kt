@@ -4,6 +4,8 @@ import android.app.Activity
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.app.NotificationManager
+import android.media.AudioManager
 import android.os.Bundle
 import android.os.VibrationEffect
 import android.os.Vibrator
@@ -45,6 +47,17 @@ object DoublePress {
         Components.prefs(ctx).getString(KEY_TARGET, null)?.removePrefix("app:")?.takeIf { it.contains('.') } ?: MIRPAY
 
     fun setTarget(ctx: Context, pkg: String) = Components.prefs(ctx).edit().putString(KEY_TARGET, "app:$pkg").apply()
+
+    // sound-mode actions instead of an app
+    const val RING_CYCLE = "ring:cycle"     // ring → vibrate → silent → ring
+    const val RING_SILENT = "ring:silent"   // silent on / off
+    const val RING_VIBRATE = "ring:vibrate" // vibrate on / off
+
+    /** The ring action picked, or null when the double press opens an app. */
+    fun ringChoice(ctx: Context): String? =
+        Components.prefs(ctx).getString(KEY_TARGET, null)?.takeIf { it.startsWith("ring:") }
+
+    fun setRingChoice(ctx: Context, c: String) = Components.prefs(ctx).edit().putString(KEY_TARGET, c).apply()
 
     fun apps(ctx: Context): List<String> {
         val raw = Components.prefs(ctx).getString(KEY_APPS, null)
@@ -91,6 +104,14 @@ object DoublePress {
     }
 
     fun run(act: Activity) {
+        ringChoice(act)?.let { c ->
+            Log.i(TAG, "double press → $c")
+            if (vibrate(act)) runCatching {
+                act.getSystemService(Vibrator::class.java).vibrate(VibrationEffect.createOneShot(60, 255))
+            }
+            Ringer.toggle(act.applicationContext, c)
+            return
+        }
         val pkg = target(act)
         Log.i(TAG, "double press → $pkg")
         if (vibrate(act)) runCatching {
@@ -102,5 +123,52 @@ object DoublePress {
         act.packageManager.getLaunchIntentForPackage(pkg)?.let {
             act.startActivity(it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED))
         } ?: Log.w(TAG, "double press: $pkg has no launcher activity")
+    }
+}
+
+/** Ring / vibrate / silent for the double press. */
+object Ringer {
+    private const val KEY_PREV = "ring_prev"   // the mode to go back to when silent is turned off
+
+    private fun name(m: Int) = when (m) {
+        AudioManager.RINGER_MODE_SILENT -> "silent"
+        AudioManager.RINGER_MODE_VIBRATE -> "vibrate"
+        else -> "normal"
+    }
+
+    fun toggle(ctx: Context, choice: String) {
+        val am = ctx.getSystemService(AudioManager::class.java)
+        // the system's actual mode; am.ringerMode is the "external" one and can lag behind when
+        // something else (shell, vivo's own toggle) changed the internal mode
+        val cur = runCatching { Settings.Global.getInt(ctx.contentResolver, "mode_ringer") }.getOrElse { am.ringerMode }
+        val prefs = Components.prefs(ctx)
+        val next = when (choice) {
+            DoublePress.RING_CYCLE -> when (cur) {
+                AudioManager.RINGER_MODE_NORMAL -> AudioManager.RINGER_MODE_VIBRATE
+                AudioManager.RINGER_MODE_VIBRATE -> AudioManager.RINGER_MODE_SILENT
+                else -> AudioManager.RINGER_MODE_NORMAL
+            }
+            DoublePress.RING_SILENT ->
+                if (cur == AudioManager.RINGER_MODE_SILENT) prefs.getInt(KEY_PREV, AudioManager.RINGER_MODE_NORMAL)
+                else { prefs.edit().putInt(KEY_PREV, cur).apply(); AudioManager.RINGER_MODE_SILENT }
+            else ->
+                if (cur == AudioManager.RINGER_MODE_VIBRATE) AudioManager.RINGER_MODE_NORMAL
+                else AudioManager.RINGER_MODE_VIBRATE
+        }
+        Island.show(ctx, when (next) {
+            AudioManager.RINGER_MODE_SILENT -> "Silent"
+            AudioManager.RINGER_MODE_VIBRATE -> "Vibrate"
+            else -> "Ring"
+        })
+        // directly when Suite has Do Not Disturb access (silent needs it), otherwise as the shell user
+        val direct = ctx.getSystemService(NotificationManager::class.java).isNotificationPolicyAccessGranted &&
+            runCatching { am.ringerMode = next; true }.getOrDefault(false)
+        if (!direct) Thread { Shell.oneShot(ctx, "ringer ${name(next)}") }.start()
+    }
+
+    /** Gives Suite Do Not Disturb access through Shizuku so ring changes are instant. Off the main thread. */
+    fun ensureAccess(ctx: Context) {
+        if (ctx.getSystemService(NotificationManager::class.java).isNotificationPolicyAccessGranted) return
+        Shell.oneShot(ctx, "allow-dnd ${ctx.packageName}")
     }
 }

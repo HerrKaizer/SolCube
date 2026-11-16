@@ -93,7 +93,12 @@ object Island {
         val wm = vctx.getSystemService(WindowManager::class.java)
         val type = if (a11y != null) WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
             else WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-        val view = PillView(vctx, text, ok, still) { v ->
+        // Fallback (accessibility service dropped by vivo): Android 12+ draws a pass-through
+        // (NOT_TOUCHABLE) app overlay at most 80 % opaque, which made the pill see-through. So
+        // that window takes touches instead, and is only as wide as the pill's area.
+        val overlay = a11y == null
+        val offX = if (overlay) (geo.leftLimit - 80f).coerceAtLeast(0f) else 0f
+        val view = PillView(vctx, text, ok, still, offX) { v ->
             runCatching { wm.removeView(v) }
             if (current === v) current = null
             val p = pending; val pc = pendingCtx
@@ -101,14 +106,16 @@ object Island {
             if (p != null && pc != null) show(pc, p.first, p.second, p.third)
         }
         val lp = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.MATCH_PARENT, 260, type,
+            if (overlay) (geo.holeX + geo.holeR + 12f - offX).toInt() else WindowManager.LayoutParams.MATCH_PARENT, 260, type,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                (if (overlay) WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL else WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
         ).apply {
-            gravity = android.view.Gravity.TOP
+            gravity = android.view.Gravity.TOP or android.view.Gravity.START
+            x = offX.toInt()
+            alpha = 1f
             layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
             setFitInsetsTypes(0)
             title = "SuiteIsland"
@@ -120,6 +127,7 @@ object Island {
 
     private class PillView(
         ctx: Context, private var text: String, private var ok: Boolean, private var still: Boolean,
+        private val offX: Float,   // the window's left edge in screen pixels (geometry is in screen pixels)
         private val onGone: (View) -> Unit,
     ) : View(ctx) {
         private val dens = resources.displayMetrics.density
@@ -219,6 +227,7 @@ object Island {
 
         override fun onDraw(c: Canvas) {
             if (s <= 0.001f) return
+            c.translate(-offX, 0f)
             val p = s.coerceAtLeast(0f)
             // it is a pill from the first frame: it starts as the hole itself and, while its right
             // end travels out, gets taller and longer at the same time

@@ -2,7 +2,7 @@
 
 All-in-one Android app for vivo / OriginOS phones. Tested on a vivo X300 Ultra running OriginOS 7; other devices may not work.
 
-**Download:** [latest release](https://github.com/HerrKaizer/Suite/releases/tag/v2.0) (debug-signed APK)
+**Download:** [latest release](https://github.com/HerrKaizer/Suite/releases/latest) (debug-signed APK)
 
 ## Features
 
@@ -11,9 +11,9 @@ All-in-one Android app for vivo / OriginOS phones. Tested on a vivo X300 Ultra r
 - **Super resolution** toggle
 - **Temperature overlay** (CPU / GPU / battery)
 - **Play together**: audio mixing (several apps play at once)
-- **Routines**: Wi-Fi, DND, unlock and time triggers with actions like data, ringer, airplane mode, close apps
-- **Double power press**: open an app, optionally turn NFC on while it is open
-- **Stream to laptop** (scrcpy based)
+- **Routines** (beta): Wi-Fi, DND, unlock and time triggers with actions like data, ringer, airplane mode, close apps
+- **Double power press**: open an app (optionally turning NFC on while it is open), or switch sound mode: Ring › Vibrate › Silent, silent on/off, vibrate on/off
+- **Stream to laptop** (beta, scrcpy based)
 
 ## Requirements
 
@@ -29,7 +29,7 @@ All-in-one Android app for vivo / OriginOS phones. Tested on a vivo X300 Ultra r
 ## Setup guide
 
 ### 1. Install the APK
-Download `Suite.apk` from the [release page](https://github.com/HerrKaizer/Suite/releases/tag/v2.0), open it and allow installs from this source when asked. If vivo rejects the install ("User rejected permissions"), unlock the phone and try again with the screen on.
+Download `Suite.apk` from the [release page](https://github.com/HerrKaizer/Suite/releases/latest), open it and allow installs from this source when asked. If vivo rejects the install ("User rejected permissions"), unlock the phone and try again with the screen on.
 
 ### 2. Enable Developer options and Wireless debugging
 1. Settings → About phone → tap **Software version** (or Build number) 7 times.
@@ -61,3 +61,10 @@ vivo's background cleaner can stop apps. In Settings → Battery → Background 
 
 - Everything shell-level runs as Shizuku UserServices. Source is in `app/src/main/java/dev/suite/shell`.
 - Routines, double-press apps and the frame-interpolation game list start empty or generic. Set them up in the app.
+
+## Updates and your settings
+
+- Suite checks GitHub once a day and shows a pop-up with the release notes when a new version is out.
+- Install the new APK over the old one. **Don't uninstall first**: updating keeps all settings and routines.
+- Settings are also included in Android's Google backup, and Suite saves a copy to `Download/Suite/suite-backup.json`. After a reinstall or on a new phone, use **Your settings → Restore** if they didn't come back by themselves.
+- Missing something? Tap **Can't find a feature?** in the app, or DM [u/HerrKaizer__](https://www.reddit.com/user/HerrKaizer__/) on Reddit.

@@ -42,6 +42,14 @@ class SuiteService : Service() {
     private val watchdog = object : Runnable {
         override fun run() {
             Components.reconcile(this@SuiteService)
+            // daily GitHub release check (Updates.check returns at once until a day has passed);
+            // a new version opens its pop-up once (allowed from the background: Suite can draw over apps)
+            runCatching {
+                Updates.check(this@SuiteService)?.let { r ->
+                    if (Updates.firstShow(this@SuiteService, r))
+                        startActivity(Intent(this@SuiteService, UpdateActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                }
+            }
             bg.postDelayed(this, WATCHDOG_MS)
         }
     }

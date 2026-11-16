@@ -11,8 +11,8 @@ android {
         applicationId = "dev.suite"
         minSdk = 33
         targetSdk = 34
-        versionCode = 20
-        versionName = "2.0"   // 2026-11-16: Play together, Routines, Double power press since 1.0
+        versionCode = 23
+        versionName = "2.1.2"   // 2026-11-16: solid pill, styled pop-ups, auto backup, editor removed
     }
 
     compileOptions {

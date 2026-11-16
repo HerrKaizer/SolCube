@@ -8,6 +8,8 @@
     <!-- localhost socket between the shell-side listener and the ripple overlay -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- double press: silent mode needs Do Not Disturb access (granted through Shizuku) -->
+    <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
 
     <!-- to show game names (apps with a launcher icon), and who handles the double power press -->
     <queries>
@@ -25,7 +27,9 @@
         android:label="Suite"
         android:icon="@mipmap/ic_launcher"
         android:theme="@android:style/Theme.DeviceDefault.DayNight"
-        android:allowBackup="false">
+        android:allowBackup="true"
+        android:fullBackupContent="@xml/backup_rules"
+        android:dataExtractionRules="@xml/data_extraction_rules">
 
         <!-- vivo Wallet's "double press power" lists apps that declare these (copied from the
              Double Power Key app) -->
@@ -65,8 +69,15 @@
             </intent-filter>
         </activity>
 
-        <!-- TEMPORARY pill editor -->
-        <activity android:name=".PillEditorActivity" android:exported="false" />
+        <!-- update pop-up from the daily GitHub check -->
+        <activity
+            android:name=".UpdateActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:taskAffinity="dev.suite.update"
+            android:excludeFromRecents="true"
+            android:noHistory="true" />
+
 
         <!-- developer test hook; only shell/system hold this permission -->
         <receiver

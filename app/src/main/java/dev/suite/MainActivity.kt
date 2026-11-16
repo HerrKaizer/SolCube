@@ -32,14 +32,11 @@ import java.util.concurrent.Executors
 
 class MainActivity : Activity() {
 
-    // Palette and widgets borrowed from TapDrop (frosted glass over soft wallpaper glows).
-    private data class Palette(
-        val base: Int, val glows: List<Int>,
-        val glass: Int, val sheen: Int, val stroke: Int, val chip: Int,
-        val fg: Int, val sub: Int, val accent: Int, val accent2: Int, val onAccent: Int, val link: Int, val warn: Int, val ok: Int,
-    )
+    private companion object { const val REQ_RESTORE = 42 }
 
-    private lateinit var p: Palette
+    // Palette and widgets borrowed from TapDrop (frosted glass over soft wallpaper glows).
+
+    private lateinit var p: Look.Palette
     private val fontRegular: Typeface by lazy { googleSans(400) }
     private val fontMedium: Typeface by lazy { googleSans(560) }
     private val fontBold: Typeface by lazy { googleSans(680) }
@@ -106,10 +103,12 @@ class MainActivity : Activity() {
         resumed = true
         SuiteService.sync(this)   // e.g. overlay permission was just granted
         poll()
+        checkUpdates()
     }
 
     override fun onPause() {
         resumed = false
+        io.execute { Backup.autoSave(this) }
         main.removeCallbacksAndMessages(null)
         super.onPause()
     }
@@ -299,10 +298,11 @@ class MainActivity : Activity() {
             setPadding(6.dp, 0, 0, 22.dp)
         })
 
-        // TEMPORARY: pill position editor
-        root.addView(textButton("Pill position editor (temporary)") {
-            startActivity(Intent(this, PillEditorActivity::class.java))
-        }, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { bottomMargin = 8.dp })
+        updateLink = textButton("") { Updates.available(this)?.let { Updates.dialog(this, it) } }.apply { visibility = View.GONE }
+        root.addView(updateLink, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { bottomMargin = 8.dp; leftMargin = (-6).dp })
+
+        root.addView(textButton("Can't find a feature?") { featureRequest() },
+            LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { bottomMargin = 8.dp })
 
         // Shizuku notice
         shizukuCard = card()
@@ -374,6 +374,11 @@ class MainActivity : Activity() {
         root.addView(label("Allow Suite to use power in the background, or vivo freezes it.", 12.5f, p.sub).apply {
             gravity = Gravity.CENTER
         })
+
+        root.addView(buildBackupCard(), LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 20.dp; bottomMargin = 12.dp })
+
+        root.addView(label("Suite ${Updates.current(this)}", 12f, p.sub).apply { gravity = Gravity.CENTER },
+            LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 4.dp })
 
         val scroll = ScrollView(this).apply {
             isVerticalScrollBarEnabled = false
@@ -597,7 +602,7 @@ class MainActivity : Activity() {
 
     private fun buildStreamCard(): LinearLayout {
         val card = card()
-        card.addView(label("Stream to laptop", 18f, p.fg, bold = true))
+        card.addView(betaTitle("Stream to laptop"))
         val statusRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         streamDot = View(this).apply { background = GradientDrawable().apply { shape = GradientDrawable.OVAL } }
         statusRow.addView(streamDot, LinearLayout.LayoutParams(8.dp, 8.dp).apply { rightMargin = 8.dp })
@@ -822,7 +827,11 @@ class MainActivity : Activity() {
         dpStatus.text = if (mine) "Suite handles it" else "Not handled by Suite"
         dpStatus.setTextColor(if (mine) p.ok else p.sub)
         (dpDot.background as GradientDrawable).setColor(if (mine) p.ok else alpha(p.sub, 0.5f))
+        val ring = DoublePress.ringChoice(this)
         dpDetail.text = when {
+            mine && ring == DoublePress.RING_CYCLE -> "Double-press the power button to go Ring → Vibrate → Silent."
+            mine && ring == DoublePress.RING_SILENT -> "Double-press the power button to turn silent mode on or off."
+            mine && ring == DoublePress.RING_VIBRATE -> "Double-press the power button to turn vibrate mode on or off."
             mine -> "Double-press the power button to open the app picked below."
             h == null -> "Android asks which app to use each time."
             else -> "Right now it goes to ${appName(h)}."
@@ -835,10 +844,10 @@ class MainActivity : Activity() {
         val t = DoublePress.target(this)
         val apps = DoublePress.apps(this)
         dpChoices.addView(hScroll(*apps.map { pkg ->
-            chip(appName(pkg), pkg == t) { DoublePress.setTarget(this, pkg); renderDouble() }.apply {
+            chip(appName(pkg), pkg == t && ring == null) { DoublePress.setTarget(this, pkg); renderDouble() }.apply {
                 setOnLongClickListener {
                     if (apps.size > 1) {
-                        android.app.AlertDialog.Builder(this@MainActivity).setMessage("Remove ${appName(pkg)} from the list?")
+                        SuiteDialog.Builder(this@MainActivity).setMessage("Remove ${appName(pkg)} from the list?")
                             .setPositiveButton("Remove") { _, _ ->
                                 val rest = apps - pkg
                                 DoublePress.saveApps(this@MainActivity, rest)
@@ -853,6 +862,20 @@ class MainActivity : Activity() {
         dpChoices.addView(textButton("Add app") { pickDoubleApp() },
             LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = 2.dp; leftMargin = (-12).dp })
         if (apps.size > 1) dpChoices.addView(label("Tap an app to use it; hold it to remove it.", 12f, p.sub))
+
+        // …or switch the sound mode instead of opening an app
+        dpChoices.addView(label("Or sound mode", 12.5f, p.sub).apply { setPadding(0, 12.dp, 0, 0) })
+        dpChoices.addView(hScroll(*listOf(
+            DoublePress.RING_CYCLE to "Ring › Vibrate › Silent",
+            DoublePress.RING_SILENT to "Silent on/off",
+            DoublePress.RING_VIBRATE to "Vibrate on/off",
+        ).map { (c, name) ->
+            chip(name, ring == c) {
+                DoublePress.setRingChoice(this, c)
+                renderDouble()
+                io.execute { Ringer.ensureAccess(this) }   // so changes are instant (silent needs DND access)
+            }
+        }.toTypedArray()), LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 6.dp })
     }
 
     private fun pickDoubleApp() {
@@ -860,7 +883,7 @@ class MainActivity : Activity() {
         val launch = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
         val list = packageManager.queryIntentActivities(launch, 0).map { it.activityInfo.packageName }.distinct()
             .filter { it != packageName && it !in have }.map { it to appName(it) }.sortedBy { it.second.lowercase() }
-        android.app.AlertDialog.Builder(this).setTitle("Add an app")
+        SuiteDialog.Builder(this).setTitle("Add an app")
             .setItems(list.map { it.second }.toTypedArray()) { _, w ->
                 val pkg = list[w].first
                 DoublePress.saveApps(this, have + pkg)
@@ -880,7 +903,7 @@ class MainActivity : Activity() {
 
     private fun buildRoutinesCard(): LinearLayout {
         val card = card()
-        card.addView(label("Routines", 18f, p.fg, bold = true))
+        card.addView(betaTitle("Routines"))
         val statusRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         rtDot = View(this).apply { background = GradientDrawable().apply { shape = GradientDrawable.OVAL } }
         statusRow.addView(rtDot, LinearLayout.LayoutParams(8.dp, 8.dp).apply { rightMargin = 8.dp })
@@ -992,7 +1015,7 @@ class MainActivity : Activity() {
         pkgs += chosen   // keep picks that have no launcher icon
         val list = pkgs.map { it to appName(it) }.sortedWith(compareBy({ it.first !in chosen }, { it.second.lowercase() }))
         val checked = BooleanArray(list.size) { list[it].first in chosen }
-        android.app.AlertDialog.Builder(this).setTitle("Revive these apps")
+        SuiteDialog.Builder(this).setTitle("Revive these apps")
             .setMultiChoiceItems(list.map { it.second }.toTypedArray(), checked) { _, i, c -> checked[i] = c }
             .setPositiveButton("Done") { _, _ ->
                 while (apps.length() > 0) apps.remove(0)
@@ -1077,7 +1100,7 @@ class MainActivity : Activity() {
                             .getOrDefault(emptyList()).sortedBy { it.lowercase() }
                         main.post {
                             if (nets.isEmpty()) { toast("Couldn't read saved networks (is Shizuku running?)"); return@post }
-                            android.app.AlertDialog.Builder(this).setTitle("Saved networks")
+                            SuiteDialog.Builder(this).setTitle("Saved networks")
                                 .setItems(nets.toTypedArray()) { _, w -> ssids.put(nets[w]); rebuild() }.show()
                         }
                     }
@@ -1176,7 +1199,7 @@ class MainActivity : Activity() {
             ifCard.addView(label("Only after another routine ran (within 24 h)", 12.5f, p.sub).apply { setPadding(0, 12.dp, 0, 0) })
             ifCard.addView(hScroll(chip(afterName ?: "No", afterName != null) {
                 val names = listOf("No") + others.map { it.optString("name") }
-                android.app.AlertDialog.Builder(this).setTitle("Only after")
+                SuiteDialog.Builder(this).setTitle("Only after")
                     .setItems(names.toTypedArray()) { _, w ->
                         if (w == 0) r.remove("after") else r.put("after", others[w - 1].optString("id"))
                         rebuild()
@@ -1187,7 +1210,7 @@ class MainActivity : Activity() {
             ifCard.addView(label("Stop for the day once this routine ran today", 12.5f, p.sub).apply { setPadding(0, 12.dp, 0, 0) })
             ifCard.addView(hScroll(chip(unlessName ?: "No", unlessName != null) {
                 val names = listOf("No") + others.map { it.optString("name") }
-                android.app.AlertDialog.Builder(this).setTitle("Stop once this ran")
+                SuiteDialog.Builder(this).setTitle("Stop once this ran")
                     .setItems(names.toTypedArray()) { _, w ->
                         if (w == 0) r.remove("unless") else r.put("unless", others[w - 1].optString("id"))
                         rebuild()
@@ -1244,7 +1267,7 @@ class MainActivity : Activity() {
             if (acts.length() == 0) doCard.addView(label("No actions yet", 13f, p.sub).apply { setPadding(0, 8.dp, 0, 0) })
             doCard.addView(textButton("Add action") {
                 val keys = Routines.ACTIONS.keys.toList()
-                android.app.AlertDialog.Builder(this).setTitle("Add action")
+                SuiteDialog.Builder(this).setTitle("Add action")
                     .setItems(Routines.ACTIONS.values.toTypedArray()) { _, w ->
                         val k = keys[w]
                         acts.put(org.json.JSONObject().put("type", k).apply {
@@ -1284,7 +1307,7 @@ class MainActivity : Activity() {
         }, LinearLayout.LayoutParams(0, 46.dp, 1f).apply { leftMargin = 8.dp })
         body.addView(buttons, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 4.dp })
         if (orig != null) body.addView(textButton("Delete routine") {
-            android.app.AlertDialog.Builder(this).setMessage("Delete “${r.optString("name")}”?")
+            SuiteDialog.Builder(this).setMessage("Delete “${r.optString("name")}”?")
                 .setPositiveButton("Delete") { _, _ ->
                     val list = all.filter { it.optString("id") != id }.onEach {
                         if (it.optString("after") == id) it.remove("after")
@@ -1308,6 +1331,74 @@ class MainActivity : Activity() {
             setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
         }
         dlg.show()
+    }
+
+    // ------------------------------------------------------------------ backup, updates, feedback
+
+    private lateinit var updateLink: TextView
+
+    private fun checkUpdates() {
+        io.execute {
+            val r = Updates.check(this)
+            main.post {
+                if (isFinishing) return@post
+                updateLink.visibility = if (r != null) View.VISIBLE else View.GONE
+                if (r != null) {
+                    updateLink.text = "Update available: ${r.version}"
+                    if (Updates.firstShow(this, r)) Updates.dialog(this, r)
+                }
+            }
+        }
+    }
+
+    private fun buildBackupCard(): LinearLayout {
+        val card = card()
+        card.addView(label("Your settings", 18f, p.fg, bold = true))
+        card.addView(label("Installing a new version over this one keeps everything. Suite also saves a copy to " +
+            "Download/Suite/${Backup.NAME} whenever you leave the app — after uninstalling or on a new phone, " +
+            "tap Restore and pick it.", 12.5f, p.sub),
+            LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 6.dp })
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        row.addView(pillButton("Save now", filled = false) {
+            io.execute { val ok = Backup.autoSave(this); main.post { toast(if (ok) "Saved to Download/Suite" else "Couldn't save the backup") } }
+        }, LinearLayout.LayoutParams(0, 44.dp, 1f))
+        row.addView(pillButton("Restore", filled = false) {
+            runCatching {
+                startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*"), REQ_RESTORE)
+            }.onFailure { toast("No file picker found") }
+        }, LinearLayout.LayoutParams(0, 44.dp, 1f).apply { leftMargin = 8.dp })
+        card.addView(row, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 14.dp })
+        return card
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != REQ_RESTORE || resultCode != RESULT_OK) return
+        val uri = data?.data ?: return
+        SuiteDialog.Builder(this).setMessage("Replace all current Suite settings with this backup?")
+            .setPositiveButton("Restore") { _, _ ->
+                io.execute {
+                    val text = runCatching { contentResolver.openInputStream(uri)?.use { it.bufferedReader().readText() } }.getOrNull()
+                    val ok = text != null && Backup.import(this, text)
+                    if (ok) Components.reconcile(this)
+                    main.post {
+                        if (ok) { SuiteService.sync(this); toast("Settings restored"); recreate() }
+                        else toast("That isn't a Suite backup file")
+                    }
+                }
+            }.setNegativeButton("Cancel", null).show()
+    }
+
+    private fun featureRequest() {
+        SuiteDialog.Builder(this)
+            .setTitle("Can't find something?")
+            .setMessage("Missing a feature, or something doesn't work on your phone? Send the creator a DM on Reddit with your idea.")
+            .setPositiveButton("Message on Reddit") { _, _ ->
+                runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.reddit.com/user/HerrKaizer__/"))) }
+            }
+            .setNegativeButton("Close", null)
+            .show()
     }
 
     private fun openOverlaySettings() {
@@ -1349,6 +1440,22 @@ class MainActivity : Activity() {
         typeface = if (bold) fontMedium else fontRegular
     }
 
+    /** Card title with a small "BETA" tag after it. */
+    private fun betaTitle(t: String) = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        addView(label(t, 18f, p.fg, bold = true))
+        addView(label("BETA", 10.5f, p.accent, bold = true).apply {
+            letterSpacing = 0.08f
+            setPadding(8.dp, 2.dp, 8.dp, 2.dp)
+            background = GradientDrawable().apply {
+                cornerRadius = 10.dp.toFloat()
+                setColor(alpha(p.accent, 0.14f))
+                setStroke(1.dp, alpha(p.accent, 0.45f))
+            }
+        }, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { leftMargin = 10.dp })
+    }
+
     private fun textButton(t: String, onClick: () -> Unit) = label(t, 14.5f, p.link, bold = true).apply {
         setPadding(12.dp, 10.dp, 12.dp, 10.dp)
         background = ripple(null, 18.dp)
@@ -1385,26 +1492,7 @@ class MainActivity : Activity() {
 
     private fun white(a: Float) = Color.argb((a * 255).toInt(), 255, 255, 255)
 
-    // "Champagne & ink": near-black with muted plum / deep teal / bronze glows and champagne-gold
-    // buttons at night; warm porcelain with sand / sage / blush glows and ink buttons by day.
-    private fun palette() = if (isDark()) Palette(
-        // almost pitch black; the glows are barely-there tints
-        base = Color.rgb(0x03, 0x03, 0x04),
-        glows = listOf(Color.rgb(0x17, 0x0E, 0x1A), Color.rgb(0x08, 0x15, 0x18), Color.rgb(0x1B, 0x12, 0x0A), Color.rgb(0x0A, 0x0D, 0x1A)),
-        glass = white(0.045f), sheen = white(0.035f), stroke = white(0.09f), chip = white(0.045f),
-        fg = Color.rgb(0xF3, 0xEE, 0xE6), sub = Color.rgb(0x9A, 0x94, 0x8C),
-        accent = Color.rgb(0xEC, 0xD3, 0xA6), accent2 = Color.rgb(0xBF, 0x93, 0x63),
-        onAccent = Color.rgb(0x1C, 0x16, 0x10), link = Color.rgb(0xE2, 0xC2, 0x8E),
-        warn = Color.rgb(0xF0, 0xB0, 0x5A), ok = Color.rgb(0x9C, 0xD4, 0xAE),
-    ) else Palette(
-        base = Color.rgb(0xF6, 0xF2, 0xEC),
-        glows = listOf(Color.rgb(0xE8, 0xD4, 0xB8), Color.rgb(0xCF, 0xDC, 0xD4), Color.rgb(0xEC, 0xD2, 0xCB), Color.rgb(0xD4, 0xD7, 0xE6)),
-        glass = white(0.58f), sheen = white(0.5f), stroke = white(0.9f), chip = white(0.45f),
-        fg = Color.rgb(0x18, 0x17, 0x1C), sub = Color.rgb(0x6E, 0x69, 0x64),
-        accent = Color.rgb(0x2B, 0x29, 0x33), accent2 = Color.rgb(0x15, 0x14, 0x19),
-        onAccent = Color.rgb(0xF6, 0xEF, 0xE2), link = Color.rgb(0x8A, 0x63, 0x3C),
-        warn = Color.rgb(0xB0, 0x62, 0x10), ok = Color.rgb(0x2F, 0x7D, 0x50),
-    )
+    private fun palette() = Look.palette(this)
 
     @Suppress("DEPRECATION")
     private fun styleSystemBars() {
