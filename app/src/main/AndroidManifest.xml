@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- localhost socket between the shell-side listener and the ripple overlay -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+
+    <!-- to show game names (apps with a launcher icon), and who handles the double power press -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+        <intent>
+            <action android:name="vivo.intent.action.NFC_BUS_SWINGSPLASH" />
+        </intent>
+        <package android:name="com.vivo.wallet" />
+    </queries>
+
+    <application
+        android:label="Suite"
+        android:icon="@mipmap/ic_launcher"
+        android:theme="@android:style/Theme.DeviceDefault.DayNight"
+        android:allowBackup="false">
+
+        <!-- vivo Wallet's "double press power" lists apps that declare these (copied from the
+             Double Power Key app) -->
+        <meta-data android:name="com.vivo.wallet.support.typeswing" android:value="true" />
+        <meta-data android:name="com.vivo.wallet.nfc.SupportDoubleClick" android:value="true" />
+        <meta-data android:name="com.vivo.wallet.nfc.CommonSupportDoubleClick" android:value="true" />
+        <meta-data android:name="com.vivo.wallet.nfc.supportVersion" android:value="2" />
+        <meta-data android:name="com.vivo.pay.nfc.supportVersion" android:value="1" />
+
+        <!-- Double power press: vivo fires NFC_BUS_SWINGSPLASH; invisible, finishes at once -->
+        <activity
+            android:name=".DoublePressActivity"
+            android:exported="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:taskAffinity="dev.suite.doublepress"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTask"
+            android:noHistory="true">
+            <intent-filter>
+                <action android:name="vivo.intent.action.NFC_BUS_SWINGSPLASH" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <meta-data android:name="com.vivo.wallet.support.typeswing" android:value="true" />
+            <meta-data android:name="com.vivo.wallet.nfc.SupportDoubleClick" android:value="true" />
+            <meta-data android:name="com.vivo.wallet.nfc.CommonSupportDoubleClick" android:value="true" />
+            <meta-data android:name="com.vivo.wallet.nfc.supportVersion" android:value="2" />
+            <meta-data android:name="com.vivo.pay.nfc.supportVersion" android:value="1" />
+        </activity>
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- TEMPORARY pill editor -->
+        <activity android:name=".PillEditorActivity" android:exported="false" />
+
+        <!-- developer test hook; only shell/system hold this permission -->
+        <receiver
+            android:name=".TestReceiver"
+            android:exported="true"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+
+        <receiver
+            android:name=".IslandReceiver"
+            android:exported="true"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+
+        <receiver
+            android:name=".BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Exported only so the shell-side listener can restart it after vivo's cleaner
+             force-stops Suite; the permission limits callers to shell/system. -->
+        <service
+            android:name=".SuiteService"
+            android:exported="true"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Temperature overlay and the Circle to Search ripple overlay" />
+        </service>
+
+        <service
+            android:name=".SuiteA11y"
+            android:label="@string/a11y_label"
+            android:exported="true"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/a11y" />
+        </service>
+
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:enabled="true"
+            android:exported="true"
+            android:multiprocess="false"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+    </application>
+</manifest>
