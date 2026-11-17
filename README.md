@@ -18,7 +18,7 @@ All-in-one Android app for vivo / OriginOS phones. Tested on a vivo X300 Ultra r
 
 ## Requirements
 
-- A vivo / iQOO phone on OriginOS (tested on OriginOS 7, Android 16)
+- A vivo / iQOO phone on OriginOS (tested on OriginOS 7, Android 17)
 - **[Shizuku](https://shizuku.rikka.app/)** installed and running (no root needed)
 - **Developer options → Wireless debugging** (to start Shizuku; needs Wi-Fi once per boot)
 - **Circle to Search triggers only:** the **Google app** set as your default digital assistant. Suite makes the same call as MiCTS, so MiCTS itself is not needed.
