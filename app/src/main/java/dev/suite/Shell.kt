@@ -76,6 +76,7 @@ object Shell {
                 if (k == Kind.FI) Thread { runCatching { s.configure(Components.gameConfig(app)) } }.start()
                 if (k == Kind.CTS) Thread { runCatching { s.configure(Components.ctsConfig(app)) } }.start()
                 if (k == Kind.ROUTINES) Thread { runCatching { s.configure(Routines.config(app)) } }.start()
+                if (k == Kind.STREAM) Thread { runCatching { s.configure(Components.streamConfig(app)) } }.start()
             }
 
             override fun onServiceDisconnected(name: ComponentName?) {

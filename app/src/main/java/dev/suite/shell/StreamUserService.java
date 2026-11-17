@@ -27,6 +27,7 @@ import java.util.regex.Pattern;
  */
 public class StreamUserService extends ISuiteService.Stub {
     static final int PORT = 47420;
+    static volatile String token = "";   // from the laptop helper via Suite (see dev.suite.Ipc)
     static final long CHECK = 3000, LOST = 15000;
     private volatile int longSide = 1920;   // from the helper's Resolution menu
     private volatile int appliedLong;
@@ -52,7 +53,8 @@ public class StreamUserService extends ISuiteService.Stub {
             s.connect(new InetSocketAddress("127.0.0.1", PORT), 600);
             s.setSoTimeout(4000);
             OutputStream out = s.getOutputStream();
-            out.write((cmd + "\n").getBytes(StandardCharsets.UTF_8));
+            // the helper only obeys requests carrying its token (other phone apps can reach this port too)
+            out.write((token + " " + cmd + "\n").getBytes(StandardCharsets.UTF_8));
             out.flush();
             String line = new BufferedReader(new InputStreamReader(s.getInputStream(), StandardCharsets.UTF_8)).readLine();
             return line == null ? null : line.trim();
@@ -199,5 +201,8 @@ public class StreamUserService extends ISuiteService.Stub {
         }
     }
 
-    @Override public void configure(String json) {}
+    /** {"token": …}: the laptop helper's token (it turns away requests without it). */
+    @Override public void configure(String json) {
+        try { token = new JSONObject(json).optString("token", ""); } catch (Exception e) { L.e("bad config", e); }
+    }
 }

@@ -27,6 +27,19 @@ public class UtilUserService extends ISuiteService.Stub {
                 L.i("put " + p[1] + " " + p[2] + " = " + p[3]);
                 return "ok";
             }
+            if (cmd.equals("cleanup-old-backup")) {
+                // 2.1.1–2.1.2 saved all settings (routines, Wi-Fi names, apps) to public Downloads
+                java.io.File f = new java.io.File("/sdcard/Download/Suite/suite-backup.json");
+                if (f.exists() && !f.delete()) return "failed";
+                java.io.File dir = f.getParentFile();
+                String[] left = dir == null ? null : dir.list();
+                if (left != null && left.length == 0) dir.delete();
+                // drop the media index entry too, so it doesn't linger in file pickers
+                SysSettings.exec("content", "delete", "--uri", "content://media/external/file",
+                        "--where", "_display_name='suite-backup.json'");
+                L.i("old public backup removed");
+                return "ok";
+            }
             if (cmd.equals("cts")) {   // Circle to Search straight away (no ripple: the listener isn't running)
                 return CtsTrigger.trigger(CtsTrigger.service(), 1) ? "ok" : "failed";
             }

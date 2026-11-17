@@ -94,6 +94,9 @@ object Components {
     }
 
     /** Sends a command to the stream service, starting it first if needed. Off the main thread. */
+    /** For the stream service: the laptop helper's token (sent with every request). */
+    fun streamConfig(ctx: Context): String = JSONObject().put("token", Ipc.helperToken(ctx)).toString()
+
     fun streamCmd(ctx: Context, cmd: String): String {
         var s = Shell.service(Shell.Kind.STREAM)
         if (s == null) {
@@ -180,7 +183,8 @@ object Components {
         .put("button", ctsButton(ctx) || holdAction(ctx)).put("buttonCts", !holdAction(ctx))
         .put("nav", ctsNav(ctx) && !enabled(ctx, KEY_STREAM)).put("navHold", navHold(ctx))
         .put("touchHold", touchHold(ctx)).put("buttonHold", buttonHold(ctx))
-        .put("freeze", freeze(ctx)).toString()
+        .put("freeze", freeze(ctx))
+        .put("secret", Ipc.secret(ctx)).toString()   // ripple-port handshake (see Ipc)
 
     /** Turns one trigger on/off. The listener runs while either is on. Call off the main thread. */
     fun setCtsTrigger(ctx: Context, key: String, on: Boolean) {

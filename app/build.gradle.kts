@@ -11,8 +11,15 @@ android {
         applicationId = "dev.suite"
         minSdk = 33
         targetSdk = 34
-        versionCode = 29
-        versionName = "2.1.8"   // 2026-11-17: Check for updates button, 12 h checks, pop-up on every open
+        versionCode = 31
+        versionName = "2.1.10"   // 2026-11-17: security fixes (ripple-port handshake, guarded hold entry, helper token, old backup removed, not debuggable)
+    }
+
+    buildTypes {
+        // The published APK is this build, signed with the same (debug) key as every release so
+        // updates install over older versions. Not debuggable: no `run-as` or debugger access to
+        // Suite's settings / Shizuku binder for anyone with adb.
+        getByName("debug") { isDebuggable = false }
     }
 
     compileOptions {

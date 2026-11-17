@@ -194,7 +194,7 @@ final class PowerKey {
                 else {
                     // the "Power button hold" card: Suite's invisible activity opens the app / switches the sound mode
                     CtsListener.pop();
-                    SysSettings.exec("am", "start", "-n", "dev.suite/.DoublePressActivity", "--es", "slot", "hold",
+                    SysSettings.exec("am", "start", "-n", "dev.suite/.HoldActivity",
                             "-f", "0x10800000");   // NEW_TASK | NO_ANIMATION
                 }
             }

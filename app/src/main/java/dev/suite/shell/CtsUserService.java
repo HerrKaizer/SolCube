@@ -47,6 +47,8 @@ public class CtsUserService extends ISuiteService.Stub {
         try {
             JSONObject o = new JSONObject(json);
             CtsListener.freezeMs = Math.max(0, Math.min(600, o.optLong("freeze", 0)));
+            String sec = o.optString("secret", "");
+            if (!sec.isEmpty()) CtsListener.secret = sec;
             CtsListener.navHoldMs = clamp(o.optLong("navHold", 450));
             CtsListener.navEnabled = o.optBoolean("nav", false);
             PowerKey.cts = o.optBoolean("buttonCts", true);

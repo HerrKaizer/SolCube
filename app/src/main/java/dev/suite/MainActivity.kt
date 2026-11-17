@@ -103,6 +103,7 @@ class MainActivity : Activity() {
         SuiteService.sync(this)   // e.g. overlay permission was just granted
         poll()
         checkUpdates()
+        cleanupOldBackup()
         renderDouble()   // vivo's switch / the handler may have changed in Settings
     }
 
@@ -1392,7 +1393,6 @@ class MainActivity : Activity() {
 
     /** [manual] = the "Check for updates" button: always asks GitHub and says when there's nothing new. */
     private fun checkUpdates(manual: Boolean = false) {
-        if (manual) toast("Checking for updates…")
         io.execute {
             val r = Updates.check(this, force = manual)
             main.post {
@@ -1414,6 +1414,13 @@ class MainActivity : Activity() {
                 openedNow = false
             }
         }
+    }
+
+    /** Once: delete the settings file 2.1.1–2.1.2 left in public Downloads (needs Shizuku; retried on each open). */
+    private fun cleanupOldBackup() {
+        val p = Components.prefs(this)
+        if (p.getBoolean("old_backup_gone", false) || Shell.state() != Shell.State.READY) return
+        io.execute { if (Shell.oneShot(this, "cleanup-old-backup") == "ok") p.edit().putBoolean("old_backup_gone", true).apply() }
     }
 
     private fun featureRequest() {

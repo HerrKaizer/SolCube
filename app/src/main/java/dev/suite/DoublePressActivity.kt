@@ -17,15 +17,24 @@ import org.json.JSONArray
  * Invisible activity that runs a power-button action and finishes:
  *  - double press: vivo fires vivo.intent.action.NFC_BUS_SWINGSPLASH and opens the preferred
  *    handler; Suite makes itself that handler (DoublePress.makeDefault).
- *  - power-button hold, when it isn't Circle to Search: the shell listener starts it with
- *    `--es slot hold`.
+ *  - (the power-button hold has its own HoldActivity below, which only shell/system may start)
  */
 class DoublePressActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         overridePendingTransition(0, 0)
-        if (intent?.getStringExtra("slot") == "hold") PowerHold.action.perform(this, vibrate = false, nfc = false)
-        else DoublePress.run(this)
+        DoublePress.run(this)
+        finish()
+        overridePendingTransition(0, 0)
+    }
+}
+
+/** Power-button hold action. Only shell/system may start it (manifest permission). */
+class HoldActivity : Activity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        overridePendingTransition(0, 0)
+        PowerHold.action.perform(this, vibrate = false, nfc = false)
         finish()
         overridePendingTransition(0, 0)
     }

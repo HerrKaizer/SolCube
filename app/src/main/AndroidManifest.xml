@@ -59,6 +59,17 @@
             <meta-data android:name="com.vivo.pay.nfc.supportVersion" android:value="1" />
         </activity>
 
+        <!-- Power-button hold action: started by the shell listener only (only shell/system hold
+             this permission). The double press above has to stay open: vivo's system sends it. -->
+        <activity
+            android:name=".HoldActivity"
+            android:exported="true"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:taskAffinity="dev.suite.hold"
+            android:excludeFromRecents="true"
+            android:noHistory="true" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"

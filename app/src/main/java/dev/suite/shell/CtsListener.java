@@ -30,6 +30,7 @@ public class CtsListener {
     static final long maxGapMs = 300;
     static volatile boolean touchEnabled = true;  // two-finger trigger on/off (set from Suite)
     static volatile long freezeMs = 0;            // overlay freeze after the CTS call (set from Suite)
+    static volatile String secret;                // shared with Suite for the ripple-port handshake (set from Suite)
     // Navigation-bar hold: one finger that lands on the gesture bar (bottom strip, middle of the
     // width) and stays still. Moving it (swipe up = home/recents, sideways = switch apps) cancels.
     static volatile boolean navEnabled = false;
@@ -310,9 +311,25 @@ public class CtsListener {
         try (java.net.Socket s = new java.net.Socket()) {
             s.setTcpNoDelay(true);
             s.setSendBufferSize(1 << 22);
+            String key = secret;
+            if (key == null || key.isEmpty()) { L.i("ripple skipped: no secret from Suite yet"); return false; }
             s.connect(new java.net.InetSocketAddress("127.0.0.1", 47321), 80);
             s.setSoTimeout(150);
             OutputStream out = s.getOutputStream();
+            InputStream in0 = s.getInputStream();
+            // Make sure the other end is Suite before the screenshot leaves this process: another app
+            // could be holding the port while vivo has Suite stopped (see RippleHost / dev.suite.Ipc).
+            String hello = readLine(in0);
+            if (hello == null || !hello.startsWith("hello ")) return false;
+            String ns = hello.substring(6).trim(), nc = IpcAuth.nonce();
+            out.write(("auth " + nc + " " + IpcAuth.mac(key, "client|" + ns + "|" + nc) + "\n").getBytes());
+            out.flush();
+            String resp = readLine(in0);
+            if (resp == null || !resp.startsWith("auth ")
+                    || !IpcAuth.same(resp.substring(5).trim(), IpcAuth.mac(key, "server|" + nc + "|" + ns))) {
+                L.i("ripple port is held by something that isn't Suite: no screenshot sent");
+                return false;
+            }
             // 9th field: how long the overlay stays frozen after Circle to Search is called,
             // so CTS's own screenshot doesn't catch the moving ripple
             out.write(String.format(java.util.Locale.US, "ripple %.4f %.4f %d %.4f %.4f %.4f %.4f %d\n",
@@ -334,7 +351,7 @@ public class CtsListener {
                 }
             }
             L.i("ripple " + (System.nanoTime() - t0) / 1000000 + "ms frame=" + len);
-        } catch (IOException e) {
+        } catch (Exception e) {
             L.i("ripple skipped: " + e);
         }
         return launched;

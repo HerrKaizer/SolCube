@@ -78,7 +78,7 @@ class RippleHost(private val ctx: Context) {
                 Log.i(TAG, "listening on $PORT")
                 while (!ss.isClosed) {
                     val s = ss.accept()
-                    Thread { handle(s) }.start()
+                    Thread { runCatching { handle(s) } }.start()   // a client that hangs up mustn't crash the app
                 }
             } catch (e: Exception) {
                 // e.g. port still held by something else: try again shortly
@@ -92,6 +92,20 @@ class RippleHost(private val ctx: Context) {
             it.tcpNoDelay = true
             it.receiveBufferSize = 1 shl 22
             val input = java.io.DataInputStream(java.io.BufferedInputStream(it.getInputStream(), 1 shl 20))
+            val out0 = it.getOutputStream()
+            // Mutual HMAC handshake with the shell listener (secret shared over the Shizuku binder):
+            // any app can connect to a localhost port, so prove both ends before drawing anything
+            // or accepting a screenshot.
+            it.soTimeout = 3000
+            val secret = Ipc.secret(ctx)
+            val ns = Ipc.nonce()
+            out0.write("hello $ns\n".toByteArray()); out0.flush()
+            val auth = readLine(input)?.trim()?.split(" ") ?: return
+            if (auth.size != 3 || auth[0] != "auth" || !Ipc.same(auth[2], Ipc.mac(secret, "client|$ns|${auth[1]}"))) {
+                Log.w(TAG, "ripple port: rejected a connection that isn't Suite's listener")
+                return
+            }
+            out0.write("auth ${Ipc.mac(secret, "server|${auth[1]}|$ns")}\n".toByteArray()); out0.flush()
             val line = readLine(input) ?: return
             val p = line.trim().split(" ")
             if (p.size < 3 || p[0] != "ripple") return
