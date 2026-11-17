@@ -11,8 +11,8 @@ android {
         applicationId = "dev.suite"
         minSdk = 33
         targetSdk = 34
-        versionCode = 28
-        versionName = "2.1.7"   // 2026-11-16: chip rows wrap instead of scrolling
+        versionCode = 29
+        versionName = "2.1.8"   // 2026-11-17: Check for updates button, 12 h checks, pop-up on every open
     }
 
     compileOptions {

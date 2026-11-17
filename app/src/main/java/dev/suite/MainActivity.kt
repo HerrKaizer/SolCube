@@ -386,8 +386,10 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER
         })
 
+        root.addView(textButton("Check for updates") { checkUpdates(manual = true) }.apply { gravity = Gravity.CENTER },
+            LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 16.dp })
         root.addView(label("Suite ${Updates.current(this)}", 12f, p.sub).apply { gravity = Gravity.CENTER },
-            LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 20.dp })
+            LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 2.dp })
 
         val scroll = ScrollView(this).apply {
             isVerticalScrollBarEnabled = false
@@ -1380,16 +1382,36 @@ class MainActivity : Activity() {
 
     private lateinit var updateLink: TextView
 
-    private fun checkUpdates() {
+    private var openedNow = false        // set in onStart: the app was just opened / brought back
+    private var updateDialogUp = false
+
+    override fun onStart() {
+        super.onStart()
+        openedNow = true
+    }
+
+    /** [manual] = the "Check for updates" button: always asks GitHub and says when there's nothing new. */
+    private fun checkUpdates(manual: Boolean = false) {
+        if (manual) toast("Checking for updates…")
         io.execute {
-            val r = Updates.check(this)
+            val r = Updates.check(this, force = manual)
             main.post {
                 if (isFinishing) return@post
                 updateLink.visibility = if (r != null) View.VISIBLE else View.GONE
                 if (r != null) {
                     updateLink.text = "Update available: ${r.version}"
-                    if (Updates.firstShow(this, r)) Updates.dialog(this, r)
+                    Updates.firstShow(this, r)   // the background check won't pop it up again
+                    // every time the app is opened while it's out of date (and from the button)
+                    if ((openedNow || manual) && !updateDialogUp) {
+                        updateDialogUp = true
+                        Updates.dialog(this, r) { updateDialogUp = false }
+                    }
+                } else if (manual) {
+                    SuiteDialog.Builder(this).setTitle("You're up to date")
+                        .setMessage("Suite ${Updates.current(this)} is the latest version.")
+                        .setPositiveButton("OK", null).show()
                 }
+                openedNow = false
             }
         }
     }

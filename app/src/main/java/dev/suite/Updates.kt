@@ -12,14 +12,14 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 /**
- * Once a day asks GitHub for the latest Suite release. When it's newer than this build, a
+ * Twice a day asks GitHub for the latest Suite release. When it's newer than this build, a
  * pop-up shows its notes and a link to the releases page (once per version; MainActivity
  * also shows an "Update available" link until it's installed).
  */
 object Updates {
     const val RELEASES = "https://github.com/HerrKaizer/Suite/releases"
     private const val API = "https://api.github.com/repos/HerrKaizer/Suite/releases/latest"
-    private const val DAY = 24 * 60 * 60 * 1000L
+    private const val EVERY = 12 * 60 * 60 * 1000L   // twice a day
     private const val P = "updates"
 
     data class Release(val version: String, val title: String, val notes: String, val url: String)
@@ -52,7 +52,7 @@ object Updates {
     fun check(ctx: Context, force: Boolean = false): Release? {
         val p = prefs(ctx)
         val now = System.currentTimeMillis()
-        if (!force && now - p.getLong("checked", 0) < DAY) return available(ctx)
+        if (!force && now - p.getLong("checked", 0) < EVERY) return available(ctx)
         try {
             val c = URL(API).openConnection() as HttpURLConnection
             c.connectTimeout = 10_000
