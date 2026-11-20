@@ -56,6 +56,9 @@ class LiquidGlass(
     private val loc = IntArray(2)
     private val cloc = IntArray(2)
     private val tintColor = tint ?: clearTint(level, dark)
+    private val fallbackPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(255, Color.red(tintColor), Color.green(tintColor), Color.blue(tintColor))
+    }
     private val shadowOn = shadow && level > 0
     private val shadowDy = if (level == 1) 2f * density else 1.5f * density
     private val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -111,8 +114,18 @@ class LiquidGlass(
         val b = bounds
         canvas.save()
         canvas.translate(b.left.toFloat(), b.top.toFloat())
+        // (test switch RenderTest.flatGlass: panes at this level and deeper drawn as plain tinted shapes)
+        if (!canvas.isHardwareAccelerated || level >= RenderTest.flatGlassFrom) {
+            canvas.drawPath(path, fallbackPaint)
+            canvas.restore()
+            return
+        }
 
-        if (shadowOn) {
+        // The shadow lies outside the outline. If the parent clips its children, all that's left of
+        // it is the bit inside the view's rectangle around the rounded corners, cut off square:
+        // faint dark corners on every chip. Only draw it where it can show whole.
+        val parentClips = (host()?.parent as? android.view.ViewGroup)?.clipChildren != false
+        if (shadowOn && !parentClips) {
             canvas.save()
             canvas.clipOutPath(path)
             shadowRect.set(rect); shadowRect.offset(0f, shadowDy)
@@ -222,6 +235,24 @@ half4 main(float2 fc) {
     float d = sdRR(p, b, r);
     float cov = clamp(0.5 - d, 0.0, 1.0);
     if (cov <= 0.0) return half4(0.0);
+
+    // Interior fast path: deeper than the bevel and the rim/band glow, those add nothing (bevel
+    // ends at depth == bevel; the band is < 0.1 % beyond 7 bandW, the rim far sooner), so skip the
+    // edge normal, the refraction and the glow. Most of every pane is interior.
+    float depth0 = -d;
+    if (depth0 > max(bevel, 7.0 * bandW) + 1.0) {
+        float4 Q = float4(0.0);
+        if (hasBd > 0.5) {
+            float3 base = wall(origin + fc, blurDp);
+            float l = dot(base, float3(0.2126, 0.7152, 0.0722));
+            base = clamp(mix(float3(l), base, sat), 0.0, 1.0);
+            base *= 1.0 - tame * l;
+            base = mix(base, underC, underA);
+            Q = float4(base, 1.0);
+        }
+        Q = Q * (1.0 - tint.a) + float4(tint.rgb * tint.a, tint.a);
+        return half4(Q * cov);
+    }
 
     float2 g = float2(sdRR(p + float2(1.0, 0.0), b, r) - sdRR(p - float2(1.0, 0.0), b, r),
                       sdRR(p + float2(0.0, 1.0), b, r) - sdRR(p - float2(0.0, 1.0), b, r));

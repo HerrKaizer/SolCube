@@ -148,11 +148,12 @@ public class FiUserService extends ISuiteService.Stub {
                     pid = pidof(pkg); n = 0;
                     if (pid == 0 || !alive(pid)) { pid = 0; Thread.sleep(IDLE); continue; }
                     L.i("now: " + pkg + " pid " + pid + "  " + src + "->" + dst);
+                    SysSettings.notice("FI " + src + "→" + dst, true);
                 }
 
                 if (paused) {
                     temp = readTemp();
-                    if (temp <= cool) { paused = false; n = 0; L.i("battery " + temp + " cooled, resuming"); }
+                    if (temp <= cool) { paused = false; n = 0; L.i("battery " + temp + " cooled, resuming"); SysSettings.notice("FI resumed", true); }
                     else { Thread.sleep(IDLE); continue; }
                 }
 
@@ -161,6 +162,7 @@ public class FiUserService extends ISuiteService.Stub {
                     temp = readTemp();
                     if (temp >= hot) {
                         paused = true; fiOff(); L.i("battery " + temp + " hot, FI paused");
+                        SysSettings.notice("FI paused, hot", false);
                         Thread.sleep(IDLE); continue;
                     }
                     if (pidof(pkg) != pid) { pid = 0; continue; }

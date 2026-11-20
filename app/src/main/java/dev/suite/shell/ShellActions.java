@@ -284,7 +284,7 @@ public final class ShellActions {
         boolean on = "on".equals(v);
         switch (type) {
             case "nfc":
-                SysSettings.exec("svc", "nfc", on ? "enable" : "disable");
+                setNfc(on);
                 break;
             case "bluetooth": {
                 String out = SysSettings.exec("cmd", "bluetooth_manager", on ? "enable" : "disable");
@@ -510,6 +510,28 @@ public final class ShellActions {
     private static void setBoost(boolean on) {
         if (setBatteryMode(on ? "6" : "1")) return;
         SysSettings.put("system", "power_save_type", on ? "6" : "1");
+    }
+
+    /**
+     * Toggles NFC via Settings' AppFunction ("vivo_nfc_settings_screen/nfc_toggle") so OriginOS
+     * sees com.android.settings as the caller (clearing its is_recovery_nfc_state flag instead of
+     * auto-reenabling NFC during the 2 AM vddpa_start job). Falls back to `svc nfc`.
+     */
+    public static void setNfc(boolean on) {
+        if (setVivoNfc(on)) return;
+        SysSettings.exec("svc", "nfc", on ? "enable" : "disable");
+    }
+
+    private static boolean setVivoNfc(boolean on) {
+        String out = SysSettings.exec("cmd", "app_function", "execute-app-function",
+                "--package", "com.android.settings",
+                "--function", "setDeviceStateItem",
+                "--parameters", "{\"setDeviceStateItemParams\":{\"key\":\"vivo_nfc_settings_screen/nfc_toggle\",\"value\":\""
+                        + on + "\",\"requestInitiatedWhileUnlocked\":true}}");
+        if (out != null && out.replaceAll("\\s+", "").contains("\"isSuccessful\":[true]")) return true;
+        L.i("nfc " + on + ": settings app_function unavailable ("
+                + (out == null ? "" : out.trim().replaceAll("\\s+", " ")) + ")");
+        return false;
     }
 
     private static int lastInt(String s) {

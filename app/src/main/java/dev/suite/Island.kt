@@ -40,7 +40,7 @@ object Island {
     private const val TAG = "Suite"
     private val main = Handler(Looper.getMainLooper())
     private var current: PillView? = null
-    private var pending: Triple<String, Boolean, Boolean>? = null   // waits for the current pill to go back in
+    private val pending = ArrayList<Triple<String, Boolean, Boolean>>()   // wait for the current pill to go back in
     private var pendingCtx: Context? = null
 
     /** Geometry in screen pixels (set once with the temporary editor). */
@@ -76,18 +76,25 @@ object Island {
     }
 
     /** [still] keeps it out until hide() (for the editor). */
-    fun show(ctx: Context, text: String, ok: Boolean = true, still: Boolean = false) {
-        if (Looper.myLooper() != Looper.getMainLooper()) { main.post { show(ctx, text, ok, still) }; return }
+    fun show(ctx: Context, text: String, ok: Boolean = true, still: Boolean = false, waited: Int = 0) {
+        if (Looper.myLooper() != Looper.getMainLooper()) { main.post { show(ctx, text, ok, still, waited) }; return }
         load(ctx)
         current?.let {
             if (it.isAttachedToWindow) {
                 // going back in: let it finish, then come out fresh (starting mid-way looked broken)
-                if (it.closing) { pending = Triple(text, ok, still); pendingCtx = ctx.applicationContext; return }
+                if (it.closing) { pending += Triple(text, ok, still); pendingCtx = ctx.applicationContext; return }
                 it.replace(text, ok, still); return
             }
         }
         val a11y = SuiteA11y.instance
         val app = ctx.applicationContext
+        // A notice usually wakes Suite from vivo's freezer, and the accessibility service connects a
+        // moment after the app starts. Showing right away fell back to the app overlay, which sits
+        // UNDER the status bar (the notification icons drew over the pill): wait for it, up to 2 s.
+        if (a11y == null && waited < 20 && a11yEnabled(app)) {
+            main.postDelayed({ show(app, text, ok, still, waited + 1) }, 100)
+            return
+        }
         if (a11y == null && !Settings.canDrawOverlays(app)) return
         val vctx: Context = a11y ?: app
         val wm = vctx.getSystemService(WindowManager::class.java)
@@ -101,9 +108,10 @@ object Island {
         val view = PillView(vctx, text, ok, still, offX) { v ->
             runCatching { wm.removeView(v) }
             if (current === v) current = null
-            val p = pending; val pc = pendingCtx
-            pending = null; pendingCtx = null
-            if (p != null && pc != null) show(pc, p.first, p.second, p.third)
+            val ps = pending.toList(); val pc = pendingCtx
+            pending.clear(); pendingCtx = null
+            // the first comes out, the rest queue up on it
+            if (pc != null) ps.forEach { p -> show(pc, p.first, p.second, p.third) }
         }
         val lp = WindowManager.LayoutParams(
             if (overlay) (geo.holeX + geo.holeR + 12f - offX).toInt() else WindowManager.LayoutParams.MATCH_PARENT, 260, type,
@@ -122,6 +130,11 @@ object Island {
         }
         try { wm.addView(view, lp); current = view } catch (e: Exception) { Log.w(TAG, "island", e) }
     }
+
+    private fun a11yEnabled(ctx: Context): Boolean = runCatching {
+        Settings.Secure.getString(ctx.contentResolver, "enabled_accessibility_services").orEmpty()
+            .split(':').any { it.equals("${ctx.packageName}/${SuiteA11y::class.java.name}", true) || it.equals("${ctx.packageName}/.SuiteA11y", true) }
+    }.getOrDefault(false)
 
     fun hide() = main.post { current?.close() }
 
@@ -144,6 +157,12 @@ object Island {
             strokeCap = Paint.Cap.ROUND
             strokeJoin = Paint.Join.ROUND
         }
+        // a faint hairline so the black pill still reads on a black status bar
+        private val rim = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = 0.8f * dens
+        }
+        private val rimRect = RectF()
         private val rect = RectF()
         private val path = Path()
         private var s = 0f          // 0 = inside the hole, 1 = in place (the spring goes past 1 and back)
@@ -152,6 +171,17 @@ object Island {
         private var anim: ValueAnimator? = null
         private val hold = Runnable { close() }
 
+        // notices that arrive while this one is out: each is shown for at least minShow, the text
+        // cross-fades and the pill eases to the new width
+        private val queue = ArrayDeque<Pair<String, Boolean>>()
+        private var prevText = ""
+        private var prevOk = true
+        private var swap = 1f            // 0 → 1 while the text changes
+        private var swapAnim: ValueAnimator? = null
+        private var readableAt = 0L      // when the current text could first be read
+        private val minShow get() = 1600L
+        private val next = Runnable { swapNext() }
+
         init { open() }
 
         private val g get() = Island.geo
@@ -159,15 +189,22 @@ object Island {
         private val icon get() = g.pillH * 0.46f
         private val right get() = g.holeX - g.holeR - g.gap
 
-        private fun shown(): String {
+        private fun shown(t: String = text): String {
             txt.textSize = g.textSp * dens
             val room = right - g.leftLimit - pad * 2 - icon - 6 * dens
-            return android.text.TextUtils.ellipsize(text, android.text.TextPaint(txt), maxOf(0f, room), android.text.TextUtils.TruncateAt.END).toString()
+            return android.text.TextUtils.ellipsize(t, android.text.TextPaint(txt), maxOf(0f, room), android.text.TextUtils.TruncateAt.END).toString()
         }
 
-        private fun fullWidth(): Float {
+        private fun fullWidth(t: String = text): Float {
             txt.textSize = g.textSp * dens
-            return min(right - g.leftLimit, maxOf(g.pillH, pad + icon + 6 * dens + txt.measureText(shown()) + pad))
+            return min(right - g.leftLimit, maxOf(g.pillH, pad + icon + 6 * dens + txt.measureText(shown(t)) + pad))
+        }
+
+        /** Width now: between the old and the new text's while they swap. */
+        private fun targetWidth(): Float {
+            if (swap >= 1f) return fullWidth()
+            val from = fullWidth(prevText)
+            return from + (fullWidth() - from) * ease(swap)
         }
 
         /** Runs [frame] with 0..1 over [ms] (linear; the curves are in the frames). */
@@ -201,26 +238,63 @@ object Island {
         private fun open() {
             opening = true; snapped = false
             val from = s
+            readableAt = System.currentTimeMillis() + 300
             run((springSec * 1000).toLong(), { f -> s = from + (1 - from) * spring(f * springSec) }) {
-                s = 1f; snapped = true; invalidate(); if (!still) postDelayed(hold, 3500)
+                s = 1f; snapped = true; invalidate(); afterText()
             }
         }
 
         val closing get() = !opening
 
         fun close() {
-            removeCallbacks(hold); opening = false
+            removeCallbacks(hold); removeCallbacks(next); opening = false
             val from = s
             // no bounce on the way back: a smooth glide into the hole
             run(550, { f -> s = from * (1 - ease(f)) }) { onGone(this) }
         }
 
-        /** A new notice while this one is out (or coming out): swap the text, restart the hold. */
+        /** A new notice while this one is out (or coming out): queued, shown after the current one. */
         fun replace(newText: String, o: Boolean, st: Boolean) {
-            removeCallbacks(hold)
-            text = newText; ok = o; still = st
-            invalidate()
-            if (anim?.isRunning != true && !still) postDelayed(hold, 3500)
+            if (st) still = true
+            val last = queue.lastOrNull() ?: (text to ok)
+            if (last.first == newText && last.second == o) {   // the same again: just keep it out longer
+                if (queue.isEmpty() && anim?.isRunning != true && swapAnim?.isRunning != true) afterText()
+                return
+            }
+            queue.addLast(newText to o)
+            if (anim?.isRunning != true && swapAnim?.isRunning != true) afterText()
+        }
+
+        /** The current text is out: wait, then the next queued one, or go back in. */
+        private fun afterText() {
+            removeCallbacks(hold); removeCallbacks(next)
+            if (queue.isNotEmpty()) postDelayed(next, maxOf(0L, minShow - (System.currentTimeMillis() - readableAt)))
+            else if (!still) postDelayed(hold, 3500)
+        }
+
+        private fun swapNext() {
+            val n = queue.removeFirstOrNull() ?: return
+            prevText = text; prevOk = ok
+            text = n.first; ok = n.second
+            swap = 0f
+            readableAt = System.currentTimeMillis() + 200
+            swapAnim?.cancel()
+            swapAnim = ValueAnimator.ofFloat(0f, 1f).apply {
+                duration = 420
+                interpolator = android.view.animation.LinearInterpolator()
+                addUpdateListener { swap = it.animatedValue as Float; invalidate() }
+                addListener(object : android.animation.AnimatorListenerAdapter() {
+                    override fun onAnimationEnd(a: android.animation.Animator) {
+                        if (swapAnim === a) { swap = 1f; invalidate(); if (!closing) afterText() }
+                    }
+                })
+                start()
+            }
+        }
+
+        override fun onDetachedFromWindow() {
+            super.onDetachedFromWindow()
+            removeCallbacks(hold); removeCallbacks(next); swapAnim?.cancel()
         }
 
         private fun ease(x: Float) = x * x * (3 - 2 * x)
@@ -236,7 +310,7 @@ object Island {
             val travel = 2 * g.holeR + g.gap
             val rightNow = g.holeX + g.holeR - p * travel        // p = 1 → its place, > 1 further out
             val by = g.holeY + (g.pillY - g.holeY) * p.coerceIn(0f, 1f)
-            val w = 2 * r + (fullWidth() - 2 * r) * ((p - 0.08f) / 0.72f).coerceIn(0f, 1f)
+            val w = 2 * r + (targetWidth() - 2 * r) * ((p - 0.08f) / 0.72f).coerceIn(0f, 1f)
             rect.set(rightNow - w, by - r, rightNow, by + r)
 
             c.drawCircle(g.holeX, g.holeY, g.holeR, bg)
@@ -257,17 +331,38 @@ object Island {
             if (joined && gapNow < limit)
                 neck(c, g.holeX, g.holeY, g.holeR, rightNow - r, by, r, gapNow, limit)
             c.drawRoundRect(rect, r, r, bg)
+            // outline only once the pill has left the hole (an outline round the camera, or across the
+            // neck, would show the seam), fading in with the text
+            val neckShown = joined && gapNow < limit
+            val ra = ((p - 0.62f) / 0.3f).coerceIn(0f, 1f)
+            if (!neckShown && ra > 0f) {
+                rim.color = Color.argb((0x33 * ra).toInt(), 255, 255, 255)
+                val hw = rim.strokeWidth / 2
+                rimRect.set(rect.left + hw, rect.top + hw, rect.right - hw, rect.bottom - hw)
+                c.drawRoundRect(rimRect, r - hw, r - hw, rim)
+            }
 
             val ta = ((p - 0.62f) / 0.3f).coerceIn(0f, 1f)
             if (ta <= 0f) return
-            val a = (ta * 255).toInt()
             c.save()
             c.clipRect(rect)
+            when {
+                // old text fades out over the first half of a swap, the new one in over the second
+                swap >= 1f -> content(c, text, ok, ta, by)
+                swap < 0.5f -> content(c, prevText, prevOk, ta * (1 - swap * 2), by)
+                else -> content(c, text, ok, ta * (swap * 2 - 1), by)
+            }
+            c.restore()
+        }
+
+        private fun content(c: Canvas, t: String, good: Boolean, alpha: Float, by: Float) {
+            if (alpha <= 0f) return
+            val a = (alpha * 255).toInt()
             val left = rect.left + pad
-            mark.color = if (ok) Color.argb(a, 0x7E, 0xE0, 0x9A) else Color.argb(a, 0xF0, 0xB0, 0x5A)
+            mark.color = if (good) Color.argb(a, 0x7E, 0xE0, 0x9A) else Color.argb(a, 0xF0, 0xB0, 0x5A)
             val ic = icon
             val m = Path()
-            if (ok) {
+            if (good) {
                 m.moveTo(left, by); m.lineTo(left + ic * 0.38f, by + ic * 0.34f); m.lineTo(left + ic, by - ic * 0.36f)
             } else {
                 m.moveTo(left + ic * 0.15f, by - ic * 0.35f); m.lineTo(left + ic * 0.85f, by + ic * 0.35f)
@@ -277,8 +372,7 @@ object Island {
             txt.textSize = g.textSp * dens
             txt.alpha = a
             val fm = txt.fontMetrics
-            c.drawText(shown(), left + ic + 6 * dens, by - (fm.ascent + fm.descent) / 2, txt)
-            c.restore()
+            c.drawText(shown(t), left + ic + 6 * dens, by - (fm.ascent + fm.descent) / 2, txt)
         }
 
         /**

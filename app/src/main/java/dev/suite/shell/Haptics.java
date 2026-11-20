@@ -113,6 +113,12 @@ final class Haptics {
         return true;
     }
 
+    /** Just the short pop (a gesture was recognised). Falls back to cmd vibrator when the effect isn't available. */
+    static void pop() {
+        if (init() && play(popCombined, attrs)) return;
+        SysSettings.exec("cmd", "vibrator_manager", "synced", "-f", "oneshot", "30");
+    }
+
     /**
      * "Done" signal for routines: two full-strength buzzes (250 ms, gap 150 ms), long enough that
      * vivo plays them as a real buzz rather than a click, so it's heard on a table. Uses

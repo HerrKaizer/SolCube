@@ -33,6 +33,7 @@ class GlassBackdrop(context: Context, @Suppress("UNUSED_PARAMETER") base: Int = 
     private val shader = RuntimeShader(SRC)
     private val paint = Paint()
     private val glass = Collections.newSetFromMap(WeakHashMap<View, Boolean>())
+    private val visRect = android.graphics.Rect()
     private var set: Wall? = null
 
     /** Seconds; continues across launches so the light isn't always in the same place. */
@@ -42,14 +43,33 @@ class GlassBackdrop(context: Context, @Suppress("UNUSED_PARAMETER") base: Int = 
 
     private var running = false
     private var lastFrame = 0L
+    // "On open": the sway plays for SWAY_NS after the screen opens or comes back, slows down and
+    // stops. A still screen draws nothing, so the GPU can rest (it ran ~45 % busy at idle before).
+    private var swayStart = 0L
+    private val motion get() = motion(context)
+    // sway strength: eases in from the neutral pose, out to it as the sway stops. At 0 the shaders
+    // (this one and every glass pane's) skip the warp math entirely.
+    private var amp = 0f
+
+    /** The setting changed: apply it now. */
+    fun motionChanged() { running = false; amp = 0f; Choreographer.getInstance().removeFrameCallback(frame); updateRunning() }
     private val frame = object : Choreographer.FrameCallback {
         override fun doFrame(now: Long) {
             if (!running) return
             if (lastFrame == 0L) lastFrame = now
+            if (swayStart == 0L) swayStart = now
             val dt = now - lastFrame
-            if (dt >= 50_000_000L) {          // 20 fps: the light moves a couple of dp per frame
+            if (dt >= 15_000_000L) {          // 60 fps: silky-smooth slow sway
                 lastFrame = now
-                time += (dt / 1e9f).coerceAtMost(0.1f)
+                var speed = 1f
+                if (motion == MOTION_ON_OPEN) {
+                    val left = (SWAY_NS - (now - swayStart)) / SLOW_NS.toFloat()   // 1 → 0 over the last SLOW_NS
+                    if (left <= 0f) { running = false; amp = 0f; refresh(); return }
+                    speed = left.coerceAtMost(1f).let { it * it * (3 - 2 * it) }
+                }
+                val rampIn = ((now - swayStart) / 1e9f).coerceIn(0f, 1f).let { it * it * (3 - 2 * it) }
+                amp = minOf(speed, rampIn)
+                time += (dt / 1e9f).coerceAtMost(0.1f) * speed
                 refresh()
             }
             Choreographer.getInstance().postFrameCallback(this)
@@ -64,13 +84,18 @@ class GlassBackdrop(context: Context, @Suppress("UNUSED_PARAMETER") base: Int = 
     /** Glass panes that show this wallpaper re-draw with it. */
     fun register(v: View) { glass.add(v) }
 
-    /** Called with the screen's scroll position. The wallpaper stops when its bottom is reached. */
-    fun setScroll(y: Int) {
+    private var range = 0
+
+    /** Called with the screen's scroll position. On long pages the wallpaper moves slower, so it
+     *  keeps moving all the way down and reaches its bottom exactly at the end of the page. */
+    fun setScroll(y: Int, sv: android.view.ViewGroup? = null) {
         lastScroll = y
+        if (sv != null && sv.childCount > 0) range = (sv.getChildAt(0).height - sv.height).coerceAtLeast(0)
         val w = set
         val max = if (w != null && width > 0)
             (width.toFloat() * w.full.height / w.full.width - OFF_DP * density - height).coerceAtLeast(0f) else 0f
-        val p = (y * PARALLAX).coerceAtMost(max)
+        val k = if (range > 0) minOf(PARALLAX, max / range) else PARALLAX
+        val p = (y * k).coerceAtMost(max)
         if (p != parallax) { parallax = p; refresh() }
     }
 
@@ -78,7 +103,9 @@ class GlassBackdrop(context: Context, @Suppress("UNUSED_PARAMETER") base: Int = 
 
     private fun refresh() {
         invalidate()
-        for (v in glass.toList()) if (v.isShown) v.invalidate()
+        // only panes that are on screen: isShown is also true for ones scrolled out of view, and
+        // re-drawing every pane on the page each frame cost most of the frame budget
+        for (v in glass.toList()) if (v.isShown && v.getGlobalVisibleRect(visRect)) v.invalidate()
     }
 
     /** Sets the wallpaper uniforms on [s] (backdrop or glass shader). */
@@ -95,23 +122,48 @@ class GlassBackdrop(context: Context, @Suppress("UNUSED_PARAMETER") base: Int = 
         s.setFloatUniform("wOff", OFF_DP * density)
         s.setFloatUniform("wDens", density)
         s.setFloatUniform("wT", time)
+        s.setFloatUniform("wAmp", amp)
         s.setFloatUniform("wDark", if (dark) 1f else 0f)
         val b = if (dark) DARK_BASE else LIGHT_BASE
         s.setFloatUniform("wBase", Color.red(b) / 255f, Color.green(b) / 255f, Color.blue(b) / 255f)
     }
 
+    private var halfNode: android.graphics.RenderNode? = null
+
     override fun onDraw(canvas: Canvas) {
         if (set == null) set = cache[dark]
         applyWall(shader)
         paint.shader = shader
+        if (halfRes(context) && canvas.isHardwareAccelerated && width > 1 && height > 1) {
+            // (test switch) render into an offscreen layer at half width and height - a quarter of the
+            // pixels - and scale it up. The shader still sees full-size coordinates, so nothing moves.
+            val hw = width / 2; val hh = height / 2
+            val n = halfNode ?: android.graphics.RenderNode("wallHalf").also { halfNode = it }
+            n.setPosition(0, 0, hw, hh)
+            n.setUseCompositingLayer(true, null)
+            val rc = n.beginRecording(hw, hh)
+            rc.scale(hw / width.toFloat(), hh / height.toFloat())
+            rc.drawRect(0f, 0f, width.toFloat(), height.toFloat(), paint)
+            n.endRecording()
+            canvas.save()
+            canvas.scale(width / hw.toFloat(), height / hh.toFloat())
+            canvas.drawRenderNode(n)
+            canvas.restore()
+            return
+        }
         canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), paint)
     }
 
     private fun updateRunning() {
-        val want = isAttachedToWindow && windowVisibility == VISIBLE && ValueAnimator.areAnimatorsEnabled()
+        // paused while a pop-up (or anything else) has focus: the window behind it would otherwise be
+        // re-drawn and re-blurred under the pop-up every frame, which made pop-ups stutter
+        val want = isAttachedToWindow && windowVisibility == VISIBLE && hasWindowFocus() && ValueAnimator.areAnimatorsEnabled()
+            && motion != MOTION_OFF
         if (want == running) return
         running = want
+        if (!want && amp > 0f) { amp = 0f; refresh() }   // settle to the neutral pose (behind the pop-up)
         lastFrame = 0L
+        swayStart = 0L   // each time the screen comes back, the sway plays again
         if (want) Choreographer.getInstance().postFrameCallback(frame)
         else Choreographer.getInstance().removeFrameCallback(frame)
     }
@@ -127,21 +179,38 @@ class GlassBackdrop(context: Context, @Suppress("UNUSED_PARAMETER") base: Int = 
         super.onDetachedFromWindow()
     }
     override fun onWindowVisibilityChanged(visibility: Int) { super.onWindowVisibilityChanged(visibility); updateRunning() }
+    override fun onWindowFocusChanged(hasFocus: Boolean) { super.onWindowFocusChanged(hasFocus); updateRunning() }
 
     /** The photo plus copies blurred for glass levels 0/1/2, as shaders in bitmap-pixel space. */
     private class Wall(val full: Bitmap, val small: List<Bitmap>) {
-        val s0 = BitmapShader(full, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
-        val s1 = BitmapShader(small[0], Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
-        val s2 = BitmapShader(small[1], Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
-        val s3 = BitmapShader(small[2], Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
+        val s0 = smooth(full)
+        val s1 = smooth(small[0])
+        val s2 = smooth(small[1])
+        val s3 = smooth(small[2])
+        /** Bilinear: without it the shader samples the nearest pixel and the photo looks blocky. */
+        private fun smooth(b: Bitmap) = BitmapShader(b, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
+            .apply { filterMode = BitmapShader.FILTER_MODE_LINEAR }
     }
 
     companion object {
         const val PARALLAX = 0.3f
         /** The photo's empty top is taller than the title area: start this far down it. */
-        private const val OFF_DP = 210f
+        private const val OFF_DP = 185f
         /** Blur (dp) seen through glass at nesting level 0, 1, 2. */
         val LEVEL_BLUR = floatArrayOf(10f, 17f, 24f)
+
+        // Settings → Moving wallpaper
+        const val MOTION_OFF = 0
+        const val MOTION_ON_OPEN = 1   // default
+        const val MOTION_ALWAYS = 2
+        const val KEY_MOTION = "wall_motion"
+        const val SWAY_NS = 6_000_000_000L    // how long the sway plays after opening
+        const val SLOW_NS = 1_500_000_000L    // the last part of that, slowing to a stop
+
+        fun motion(ctx: Context) = Components.prefs(ctx).getInt(KEY_MOTION, MOTION_ON_OPEN)
+        // temporary: draw the wallpaper at half resolution (to compare)
+        const val KEY_HALF = "wall_half"
+        fun halfRes(ctx: Context) = Components.prefs(ctx).getBoolean(KEY_HALF, false)
         private const val SMALL = 4                       // blurred copies are 1/4 size
         private val DARK_BASE = Color.rgb(0x12, 0x0D, 0x07)
         private val LIGHT_BASE = Color.rgb(0xEE, 0xE6, 0xDA)
@@ -234,12 +303,32 @@ uniform float wScroll;
 uniform float wOff;
 uniform float wDens;
 uniform float wT;
+uniform float wAmp;   // sway strength 0..1 (0 = still: the warp is skipped)
 uniform float wDark;
 uniform float3 wBase;
 
 float3 wall(float2 cp, float blur) {
     // position on the photo, in units of its width (it spans the screen width)
     float2 u = float2(cp.x, cp.y + wScroll + wOff) / wWidth;
+    float t = wT;
+    // a breeze in the feather: the stem at the bottom of the photo stays put, the body sways ~10 dp
+    // (from just above the stem to the tips; a little more for the tips beside the title), as a
+    // slow wave that travels up the plume so it bends rather than slides; filaments away from the
+    // stem flutter; the satin form (right half, below the feather tips) stays still
+    if (wAmp > 0.0) {
+    float m = max(smoothstep(1.5, 1.3, u.y), smoothstep(0.62, 0.45, u.x));
+    float gust = 0.75 + 0.25 * sin(t * 0.14) * sin(t * 0.09 + 1.0);
+    float A = 0.042 * smoothstep(3.15, 2.5, u.y) + 0.011 * smoothstep(1.35, 0.95, u.y);   // photo widths
+    float ph = t * 0.34 - (3.2 - u.y) * 0.85;
+    float sx = 0.80 * sin(ph) + 0.20 * sin(1.5 * ph + 0.6);
+    float2 bend = float2(sx, -0.3 * sx) * A * gust;
+    float2 flutter = float2(sin(u.y * 20.0 + u.x * 10.0 - t * 0.90), cos(u.x * 16.0 - u.y * 8.0 - t * 0.70))
+                     * 0.0075 * gust * smoothstep(3.0, 2.3, u.y);
+    u -= (bend + flutter) * m * wAmp;
+    }
+    // the whole picture breathes and drifts very slowly (cropped ~13.5 % so the edges never show, even at peak sway)
+    float s = 0.865 - 0.008 * (0.5 + 0.5 * sin(t * 0.07));
+    u = (u - float2(0.5, 1.8)) * s + float2(0.5 + 0.004 * sin(t * 0.05), 1.8 + 0.01 * sin(t * 0.04));
     float3 c = wBase;
     if (wReady > 0.5) {
         if (blur < 5.0) c = w0.eval(u * wFullW).rgb;
@@ -249,11 +338,11 @@ float3 wall(float2 cp, float blur) {
     }
     // a broad, slow band of light drifting diagonally across every 45 s; it brightens the
     // feather and the satin more than the background
-    float s = fract(wT / 45.0) * 3.2 - 1.1;
-    float v = u.x * 0.55 + (u.y - wOff / wWidth) * 0.3 - s;
+    float sw = fract(t / 30.0) * 3.2 - 1.1;
+    float v = u.x * 0.55 + (u.y - wOff / wWidth) * 0.3 - sw;
     float l = dot(c, float3(0.2126, 0.7152, 0.0722));
     float3 lc = wDark > 0.5 ? float3(1.0, 0.906, 0.76) : float3(1.0);
-    c += lc * exp(-v * v / 0.03) * (0.25 + 0.75 * l) * (wDark > 0.5 ? 0.07 : 0.05);
+    c += lc * exp(-v * v / 0.04) * l * l * (wDark > 0.5 ? 0.16 : 0.10);   // catches the lit feather and satin
     // soft fade behind the title (screen space)
     float k = smoothstep(230.0, 60.0, cp.y / wDens);
     c = wDark > 0.5 ? c * (1.0 - 0.45 * k) : mix(c, float3(0.957, 0.933, 0.902), 0.30 * k);

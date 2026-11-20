@@ -11,8 +11,8 @@ android {
         applicationId = "dev.suite"
         minSdk = 33
         targetSdk = 34
-        versionCode = 50
-        versionName = "3.0.0"   // 2026-11-20: photo wallpaper (feather + satin) with light sweep, layered liquid glass
+        versionCode = 91
+        versionName = "3.5.4"  // 2026-11-20: temp pill hold 1 s; pill rim a bit stronger; notices for every action, temp pill hold-to-off + edge fix, rubber-band overscroll
     }
 
     buildTypes {

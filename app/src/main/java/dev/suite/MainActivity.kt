@@ -4,7 +4,11 @@ import android.app.Activity
 import android.content.Intent
 import android.content.res.ColorStateList
 import android.content.res.Configuration
+import android.graphics.BlendMode
 import android.graphics.Color
+import android.graphics.RenderEffect
+import android.graphics.RuntimeShader
+import android.graphics.Shader
 import android.graphics.Typeface
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
@@ -16,6 +20,7 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
@@ -25,6 +30,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.Switch
+import dev.suite.shell.Gestures
 import android.widget.TextView
 import android.widget.Toast
 import rikka.shizuku.Shizuku
@@ -86,7 +92,16 @@ class MainActivity : Activity() {
     private lateinit var game: Section
     private lateinit var srSec: Section
     private lateinit var mixSec: Section
+    private lateinit var gestSec: Section
     private lateinit var temp: Section
+    private lateinit var diagDot: View
+    private lateinit var diagSummary: TextView
+    private lateinit var diagBody: LinearLayout
+    private lateinit var diagAppText: TextView
+    private lateinit var diagSvcText: TextView
+    private lateinit var diagLogText: TextView
+    private var lastDiagReport: String = ""
+    private var mainScroll: ScrollView? = null
 
     private val permListener = Shizuku.OnRequestPermissionResultListener { _, _ ->
         io.execute { Components.reconcile(this) }
@@ -94,13 +109,27 @@ class MainActivity : Activity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        setTheme(if (Look.isDark(this)) android.R.style.Theme_DeviceDefault_NoActionBar else android.R.style.Theme_DeviceDefault_Light_NoActionBar)
         super.onCreate(savedInstanceState)
+        RenderTest.rebuild = { runOnUiThread { recreate() } }
+        // 3.4.2: the temporary rendering switches are gone from Settings; drop what they (or the
+        // test hook) saved, so it's the defaults: sway on open, full-res wallpaper, three-step blur
+        Components.prefs(this).let { pr ->
+            if (!pr.getBoolean("render_defaults_v1", false)) pr.edit()
+                .remove(GlassBackdrop.KEY_MOTION).remove(GlassBackdrop.KEY_HALF).remove(KEY_HEADER_PASSES)
+                .putBoolean("render_defaults_v1", true).apply()
+        }
         p = palette()
         Components.ctsTouch(this)   // one-time split of the old single Circle to Search switch
         actionBar?.hide()
         styleSystemBars()
-        setContentView(build())
+        setContentView(build(savedInstanceState?.getInt("scroll_y", 0) ?: 0))
         Shizuku.addRequestPermissionResultListener(permListener)
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        mainScroll?.let { outState.putInt("scroll_y", it.scrollY) }
     }
 
     override fun onDestroy() {
@@ -117,6 +146,7 @@ class MainActivity : Activity() {
         poll()
         checkUpdates()
         cleanupOldBackup()
+        keepAlive()
         renderDouble()   // vivo's switch / the handler may have changed in Settings
     }
 
@@ -186,21 +216,21 @@ class MainActivity : Activity() {
             enabled(ctsButton) && s.cts?.optBoolean("button") == true,
             enabled(ctsNav) && s.cts?.optBoolean("nav") == true,
         ).any { it } && ripple
-        ctsStatus.text = when {
+        ctsStatus.put(when {
             count == 0 -> "Not running"
             ctsActive -> "$count active"
             else -> "$count enabled"
-        }
+        })
         ctsStatus.setTextColor(if (ctsActive) p.ok else p.sub)
         (ctsDot.background as GradientDrawable).setColor(if (ctsActive) p.ok else alpha(p.sub, 0.5f))
 
         val anyCts = count > 0
-        ctsNote.text = when {
+        ctsNote.put(when {
             !anyCts -> "Pick a trigger below"
             listener && !ripple -> "Listener running, ripple overlay starting…"
             !listener && ripple && shellOk -> "Starting the listener…"
             else -> "Ripple, then Google's Circle to Search"
-        }
+        })
 
         // Frame interpolation
         val fi = s.fi
@@ -258,18 +288,19 @@ class MainActivity : Activity() {
 
         renderStream(s.stream, shellOk)
         renderRoutines(s.routines, shellOk)
+        renderGestures(s.routines, shellOk)
         renderProfiles(s.profiles, shellOk)
         renderDouble()
 
         showSection(
             temp, running = TempOverlay.running,
             detail = if (enabled(temp) && !canDraw) "Needs “Display over other apps”"
-            else if (Style.showLoad(this)) "CPU · GPU · Battery °C + CPU · GPU load — drag to move"
-            else "CPU · GPU · Battery °C — drag the pill to move it",
+            else if (Style.showLoad(this)) "CPU · GPU · Battery °C + CPU · GPU load — drag to move, hold 1 s to turn off"
+            else "CPU · GPU · Battery °C — drag to move, hold 1 s to turn off",
         )
 
         fun setGroup(g: GroupCard, active: Boolean, text: String) {
-            g.summary.text = text
+            g.summary.put(text)
             (g.dot.background as GradientDrawable).setColor(if (active) p.ok else alpha(p.sub, 0.5f))
         }
 
@@ -300,6 +331,92 @@ class MainActivity : Activity() {
         setGroup(gamingGroup,
             TempOverlay.running || fiRunning || sr?.optBoolean("running") == true || s.stream?.optBoolean("streaming") == true || Components.enabled(this, Components.KEY_STREAM),
             if (gameParts.isEmpty()) "All off" else gameParts.joinToString(" · "))
+
+        renderDiagnostics(s, canDraw)
+    }
+
+    private fun renderDiagnostics(s: Components.Status, canDraw: Boolean) {
+        val shState = when (s.shell) {
+            Shell.State.READY -> "Ready"
+            Shell.State.NO_PERMISSION -> "No permission"
+            Shell.State.NOT_RUNNING -> "Not running"
+        }
+        val daemons = listOf(
+            "cts" to s.cts,
+            "routines" to s.routines,
+            "profiles" to s.profiles,
+            "fi" to s.fi,
+            "sr" to s.sr,
+            "mix" to s.mix,
+            "stream" to s.stream,
+        )
+        val runningCount = daemons.count { (_, o) -> o?.optBoolean("running") == true || o?.optBoolean("streaming") == true }
+        val dotColor = when (s.shell) {
+            Shell.State.READY -> p.ok
+            Shell.State.NO_PERMISSION -> p.warn
+            Shell.State.NOT_RUNNING -> alpha(p.sub, 0.5f)
+        }
+        (diagDot.background as GradientDrawable).setColor(dotColor)
+        val sum = "Shizuku: $shState · $runningCount shell active"
+        if (diagSummary.text != sum) diagSummary.text = sum
+
+        val nm = getSystemService(android.app.NotificationManager::class.java)
+        val pm = getSystemService(android.os.PowerManager::class.java)
+        val dndGranted = nm?.isNotificationPolicyAccessGranted == true
+        val dozeIgnored = pm?.isIgnoringBatteryOptimizations(packageName) == true
+        val a11yRunning = SuiteA11y.instance != null
+        val doubleReady = DoublePress.ready(this)
+        val themeName = arrayOf("Light", "System", "Dark")[Look.themeMode(this)]
+        val verName = Updates.current(this)
+        val verCode = runCatching { packageManager.getPackageInfo(packageName, 0).longVersionCode }.getOrDefault(0L)
+
+        val appInfo = buildString {
+            appendLine("Version: $verName ($verCode)")
+            appendLine("Device: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL} · Android ${android.os.Build.VERSION.RELEASE} (SDK ${android.os.Build.VERSION.SDK_INT})")
+            appendLine("Theme: $themeName (${if (isDark()) "dark" else "light"}) · Keep-alive: ${if (SuiteService.anyEnabled(this@MainActivity)) "active" else "idle"}")
+            appendLine("Shizuku: $shState · Overlay: ${if (canDraw) "ok" else "missing"} · A11y: ${if (a11yRunning) "on" else "off"}")
+            append("DND: ${if (dndGranted) "ok" else "no"} · Battery whitelist: ${if (dozeIgnored) "ok" else "no"} · Double-press: ${if (doubleReady) "suite" else "other"}")
+        }
+        val svcInfo = daemons.joinToString("\n") { (name, o) ->
+            val st = when {
+                o == null -> "stopped"
+                o.optBoolean("streaming") -> "streaming"
+                o.optBoolean("running") -> "running"
+                else -> "idle"
+            }
+            val extra = when (name) {
+                "fi" -> o?.optString("game")?.takeIf { it.isNotEmpty() }?.let { " (${appName(it)})" } ?: ""
+                "profiles" -> o?.optString("activeName")?.takeIf { it.isNotEmpty() }?.let { " ($it)" } ?: ""
+                "mix" -> o?.optString("error")?.takeIf { it.isNotEmpty() }?.let { " (err: $it)" } ?: ""
+                else -> ""
+            }
+            val req = when (name) {
+                "cts" -> Components.ctsTouch(this) || Components.ctsButton(this) || Components.ctsNav(this)
+                "routines" -> Routines.load(this).any { it.optBoolean("on", true) }
+                "profiles" -> Profiles.load(this).any { it.optBoolean("on", true) && Profiles.apps(it).isNotEmpty() }
+                "fi" -> Components.enabled(this, Components.KEY_GAME)
+                "sr" -> Components.enabled(this, Components.KEY_SR)
+                "mix" -> Components.enabled(this, Components.KEY_MIX)
+                "stream" -> Components.enabled(this, Components.KEY_STREAM)
+                else -> false
+            }
+            "• $name: $st${if (req) " (enabled)" else ""}$extra"
+        }
+        val eventLines = mutableListOf<String>()
+        for ((name, o) in daemons) {
+            val arr = o?.optJSONArray("log") ?: continue
+            val start = maxOf(0, arr.length() - 3)
+            for (i in start until arr.length()) {
+                val msg = arr.optString(i).trim()
+                if (msg.isNotEmpty()) eventLines += "[$name] $msg"
+            }
+        }
+        val recentLogs = if (eventLines.isEmpty()) "(no shell events recorded)" else eventLines.takeLast(12).joinToString("\n")
+
+        if (diagAppText.text != appInfo) diagAppText.text = appInfo
+        if (diagSvcText.text != svcInfo) diagSvcText.text = svcInfo
+        if (diagLogText.text != recentLogs) diagLogText.text = recentLogs
+        lastDiagReport = "$appInfo\n\nServices:\n$svcInfo\n\nRecent events:\n$recentLogs"
     }
 
     private fun enabled(sec: Section) = Components.enabled(this, sec.key)
@@ -313,17 +430,22 @@ class MainActivity : Activity() {
     private fun showSection(sec: Section, running: Boolean, detail: String) {
         val on = enabled(sec)
         val working = sec.key in busy
-        sec.toggle.text = when {
+        sec.toggle.put(when {
             working -> "…"
             on -> "Disable"
             else -> "Enable"
+        })
+        // only rebuild the button when its look changes: a new glass pane compiles its shader, and
+        // doing that for every section on every 2 s refresh made the whole page hitch
+        if (sec.toggle.tag != on) {
+            sec.toggle.tag = on
+            sec.toggle.setTextColor(if (on) p.fg else p.onAccent)
+            sec.toggle.background = ripple(if (on) glass(20.dp) else accentGradient(20.dp), 20.dp)
         }
-        sec.toggle.setTextColor(if (on) p.fg else p.onAccent)
-        sec.toggle.background = ripple(if (on) glass(20.dp) else accentGradient(20.dp), 20.dp)
-        sec.status.text = if (running) "Running" else "Not running"
+        sec.status.put(if (running) "Running" else "Not running")
         sec.status.setTextColor(if (running) p.ok else p.sub)
         (sec.dot.background as GradientDrawable).setColor(if (running) p.ok else alpha(p.sub, 0.5f))
-        sec.detail.text = detail
+        sec.detail.put(detail)
     }
 
     private fun toggle(sec: Section) {
@@ -342,16 +464,32 @@ class MainActivity : Activity() {
                 Components.KEY_SR -> Components.setSr(this, on)
                 Components.KEY_MIX -> Components.setMix(this, on)
                 Components.KEY_TEMP -> Components.setTemp(this, on)
+                GestureStore.KEY -> GestureStore.setOn(this, on)
             }
+            noticeName(sec.key)?.let { Island.show(this, "$it ${if (on) "on" else "off"}") }
             Thread.sleep(400)   // let the service / programs come up before re-checking
             val s = Components.status()
             main.post { busy -= sec.key; last = s; render() }
         }
     }
 
+    /** Short names for the status pill (it fits ~12 characters). */
+    private fun noticeName(key: String): String? = when (key) {
+        Components.KEY_CTS_TOUCH -> "Touch CTS"
+        Components.KEY_CTS_BUTTON -> "Power CTS"
+        Components.KEY_CTS_NAV -> "Nav bar CTS"
+        Components.KEY_HOLD_ACT -> "Power hold"
+        Components.KEY_GAME -> "FI"
+        Components.KEY_SR -> "SR"
+        Components.KEY_MIX -> "Mixing"
+        Components.KEY_TEMP -> "Temp pill"
+        GestureStore.KEY -> "Gestures"
+        else -> null
+    }
+
     // ================================================================== layout
 
-    private fun build(): View {
+    private fun build(initialScrollY: Int = 0): View {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             clipChildren = false
@@ -361,17 +499,22 @@ class MainActivity : Activity() {
             isFocusableInTouchMode = true
             descendantFocusability = android.view.ViewGroup.FOCUS_BEFORE_DESCENDANTS
         }
-        root.addView(label("Suite", 32f, p.fg).apply {
+        val suiteTitle = label("Suite", 42f, p.fg).apply {
             typeface = fontBold
-            letterSpacing = -0.01f
-            setPadding(6.dp, 0, 0, 22.dp)
-        })
+            letterSpacing = -0.02f
+        }
 
         updateLink = textButton("") { Updates.available(this)?.let { Updates.dialog(this, it) } }.apply { visibility = View.GONE }
         root.addView(updateLink, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { bottomMargin = 8.dp; leftMargin = (-6).dp })
 
-        root.addView(textButton("Can't find a feature?") { featureRequest() },
-            LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { bottomMargin = 8.dp })
+        // small glass pill, lined up with the title and set a little apart from it
+        root.addView(label("Can't find a feature?", 13f, p.link, bold = true).apply {
+            gravity = Gravity.CENTER
+            maxLines = 1
+            setPadding(14.dp, 0, 14.dp, 0)
+            background = ripple(glass(15.dp, level = 0), 15.dp)
+            setOnClickListener { featureRequest() }
+        }, LinearLayout.LayoutParams(WRAP_CONTENT, 30.dp).apply { topMargin = 52.dp; leftMargin = 4.dp; bottomMargin = 18.dp })
 
         // Shizuku notice
         shizukuCard = card()
@@ -446,7 +589,12 @@ class MainActivity : Activity() {
         automationGroup.body.addView(buildProfilesCard(inner = true))
         root.addView(automationGroup.card, cardParams())
 
-        // 3. Gaming big card (collapsed by default)
+        // 3. Gestures (standalone card): two-finger drawings that trigger routines
+        gestSec = section(GestureStore.KEY, "Gestures")
+        addGestureSettings(gestSec.body)
+        root.addView(gestSec.card, cardParams())
+
+        // 4. Gaming big card (collapsed by default)
         gamingGroup = groupCard("gaming", "Gaming", defaultOpen = false)
         temp = section(Components.KEY_TEMP, "Temperature overlay", inner = true)
         addTempSettings(temp.body)
@@ -462,50 +610,163 @@ class MainActivity : Activity() {
         gamingGroup.body.addView(buildStreamCard(inner = true))
         root.addView(gamingGroup.card, cardParams())
 
-        // 4. Play together (standalone card)
+        // 5. Play together (standalone card)
         mixSec = section(Components.KEY_MIX, "Play together", collapsible = false)
         root.addView(mixSec.card, cardParams())
 
-        root.addView(textButton("vivo background power settings") {
-            try {
-                startActivity(Intent().setClassName("com.iqoo.powersaving", "com.iqoo.powersaving.BackgroundHighUsageActivity"))
-            } catch (_: Exception) {
-                startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
-            }
-        }.apply { gravity = Gravity.CENTER }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
-        root.addView(label("Allow Suite to use power in the background, or vivo freezes it.", 12.5f, p.sub).apply {
-            gravity = Gravity.CENTER
+        // 5. Settings big card, separated below with open space
+        val settingsCard = card().apply {
+            setPadding(16.dp, 18.dp, 16.dp, 18.dp)
+        }
+        settingsCard.addView(label("Settings", 20f, p.fg, bold = true))
+
+        val settingsHost = FloatingCardHost().apply {
+            orientation = LinearLayout.VERTICAL
+            clipChildren = false
+            clipToPadding = false
+            setPadding(16.dp, 12.dp, 16.dp, 4.dp)
+        }
+        settingsCard.addView(settingsHost, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply {
+            leftMargin = (-16).dp
+            rightMargin = (-16).dp
         })
 
+        val themeCard = innerCard()
+        val themeHeader = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        themeHeader.addView(label("Theme", 15.5f, p.fg, bold = true), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        val modeNames = arrayOf("Light", "System", "Dark")
+        val themeVal = label(modeNames[Look.themeMode(this)], 13f, p.sub)
+        themeHeader.addView(themeVal)
+        themeCard.addView(themeHeader)
+        themeCard.addView(ThemeSliderView(Look.themeMode(this)) { newMode ->
+            themeVal.text = modeNames[newMode]
+            val wasDark = isDark()
+            Look.setThemeMode(this, newMode)
+            if (wasDark != isDark()) {
+                recreate()
+                @Suppress("DEPRECATION")
+                overridePendingTransition(android.R.anim.fade_in, android.R.anim.fade_out)
+            }
+        }, LinearLayout.LayoutParams(MATCH_PARENT, 44.dp).apply { topMargin = 12.dp })
+        settingsHost.addView(themeCard, innerCardParams())
+
+        val powerCard = innerCard().apply {
+            val baseBg = background
+            background = ripple(baseBg, 18.dp)
+            isClickable = true
+            isFocusable = true
+            setOnClickListener {
+                try {
+                    startActivity(Intent().setClassName("com.iqoo.powersaving", "com.iqoo.powersaving.BackgroundHighUsageActivity"))
+                } catch (_: Exception) {
+                    startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+                }
+            }
+        }
+        val powerRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        powerRow.addView(label("vivo background power settings", 15f, p.link, bold = true), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        powerRow.addView(label("›", 18f, p.sub))
+        powerCard.addView(powerRow)
+        powerCard.addView(label("Allow Suite to use power in the background, or vivo freezes it.", 12.5f, p.sub).apply {
+            setPadding(0, 4.dp, 0, 0)
+        })
+        settingsHost.addView(powerCard, innerCardParams())
+
+        val diagCard = innerCard()
+        val diagHeader = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            clipChildren = false
+            clipToPadding = false
+        }
+        diagHeader.addView(label("Diagnostics", 15.5f, p.fg, bold = true), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        val diagChevron = chevronBadge(false)
+        diagHeader.addView(diagChevron, LinearLayout.LayoutParams(30.dp, 30.dp).apply { leftMargin = 8.dp })
+        diagCard.addView(diagHeader)
+
+        val diagStatusRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        diagDot = View(this).apply { background = GradientDrawable().apply { shape = GradientDrawable.OVAL } }
+        diagStatusRow.addView(diagDot, LinearLayout.LayoutParams(8.dp, 8.dp).apply { rightMargin = 8.dp })
+        diagSummary = label("", 13f, p.sub)
+        diagStatusRow.addView(diagSummary, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        diagCard.addView(diagStatusRow, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 6.dp })
+
+        diagBody = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        diagBody.addView(View(this).apply { setBackgroundColor(p.stroke) },
+            LinearLayout.LayoutParams(MATCH_PARENT, 1.dp).apply { topMargin = 12.dp; bottomMargin = 10.dp })
+        diagBody.addView(label("App & permissions", 13f, p.fg, bold = true))
+        diagAppText = mono(11.5f).apply { setLineSpacing(2.dp.toFloat(), 1f) }
+        diagBody.addView(diagAppText, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 4.dp })
+        diagBody.addView(label("Shell services", 13f, p.fg, bold = true),
+            LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 12.dp })
+        diagSvcText = mono(11.5f).apply { setLineSpacing(2.dp.toFloat(), 1f) }
+        diagBody.addView(diagSvcText, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 4.dp })
+        diagBody.addView(label("Recent events", 13f, p.fg, bold = true),
+            LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 12.dp })
+        diagLogText = mono(11f).apply { setLineSpacing(2.dp.toFloat(), 1f) }
+        diagBody.addView(diagLogText, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 4.dp })
+        diagBody.addView(pillButton("Copy report", filled = false) {
+            val report = lastDiagReport
+            if (report.isNotEmpty()) {
+                val cm = getSystemService(android.content.ClipboardManager::class.java)
+                cm?.setPrimaryClip(android.content.ClipData.newPlainText("Suite diagnostics", report))
+                toast("Diagnostics copied")
+            }
+        }.apply {
+            textSize = 13.5f
+            setPadding(12.dp, 0, 12.dp, 0)
+        }, LinearLayout.LayoutParams(MATCH_PARENT, 38.dp).apply { topMargin = 12.dp })
+        diagCard.addView(diagBody)
+        makeCollapsible("settings_diag", diagCard, listOf(diagHeader, diagStatusRow), diagChevron, diagBody, defaultOpen = false)
+        settingsHost.addView(diagCard, innerCardParams())
+
+        val settingsActions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val updateBtn = pillButton("Check for updates", filled = false) { checkUpdates(manual = true) }.apply {
+            textSize = 13.5f
+            setPadding(8.dp, 0, 8.dp, 0)
+        }
         lateinit var restartBtn: TextView
         restartBtn = pillButton("Restart Suite", filled = false) { restartSuite(restartBtn) }.apply {
             textSize = 13.5f
-            setPadding(20.dp, 0, 20.dp, 0)
+            setPadding(8.dp, 0, 8.dp, 0)
         }
-        root.addView(restartBtn, LinearLayout.LayoutParams(WRAP_CONTENT, 36.dp).apply {
-            gravity = Gravity.CENTER_HORIZONTAL
-            topMargin = 16.dp
+        settingsActions.addView(updateBtn, LinearLayout.LayoutParams(0, 42.dp, 1f))
+        settingsActions.addView(restartBtn, LinearLayout.LayoutParams(0, 42.dp, 1f).apply { leftMargin = 10.dp })
+        settingsCard.addView(settingsActions, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 4.dp })
+
+        root.addView(settingsCard, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply {
+            topMargin = 56.dp
+            bottomMargin = 12.dp
         })
-
-        root.addView(textButton("Check for updates") { checkUpdates(manual = true) }.apply { gravity = Gravity.CENTER },
-            LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 16.dp })
         root.addView(label("Suite ${Updates.current(this)}", 12f, p.sub).apply { gravity = Gravity.CENTER },
-            LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 2.dp })
+            LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 8.dp })
 
-        val scroll = ScrollView(this).apply {
-            isVerticalScrollBarEnabled = false
-            clipToPadding = false
-            addView(root)
-            @Suppress("DEPRECATION")
-            setOnApplyWindowInsetsListener { v, insets ->
-                v.setPadding(0, insets.systemWindowInsetTop, 0, insets.systemWindowInsetBottom)
-                insets
-            }
-        }
-        return FrameLayout(this).apply {
-            addView(GlassBackdrop(this@MainActivity).also { bd -> scroll.setOnScrollChangeListener { _, _, y, _, _ -> bd.setScroll(y) } }, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
-            addView(scroll, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
-        }
+        return pinnedBackdropLayout(
+            titleView = suiteTitle,
+            body = root,
+            titleLeftPx = 22.dp,
+            titleTopPx = 28.dp,
+            titleBottomGapPx = 22.dp,
+            bodySidePadPx = 16.dp,
+            bodyBottomPadPx = 24.dp,
+            blurBelowTitlePx = 12.dp,
+            fadeBelowTitlePx = 0,
+            edgeToEdge = true,
+            liftPx = 18.dp,
+            liftStartPx = 44.dp,
+            liftSpanPx = 110.dp,
+            initialScrollY = initialScrollY,
+            onScrollReady = { mainScroll = it },
+        )
     }
 
     /** "Hold  350 ms   −  +" row for a trigger's hold time (50 ms steps). */
@@ -741,20 +1002,20 @@ class MainActivity : Activity() {
         private val d = resources.displayMetrics.density
         private val cardRadius = 18f * d
         private val dy1 = 3f * d
-        private val dy2 = 1f * d
+        private val dy2 = 1.5f * d
         private val cardRect = android.graphics.RectF()
         private val shadowRect = android.graphics.RectF()
         private val cardPath = android.graphics.Path()
         private val dark = isDark()
         private val ambientPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
             style = android.graphics.Paint.Style.FILL
-            color = if (dark) Color.argb(140, 0, 0, 0) else Color.argb(38, 28, 22, 16)
-            maskFilter = android.graphics.BlurMaskFilter(7f * d, android.graphics.BlurMaskFilter.Blur.NORMAL)
+            color = if (dark) Color.argb(68, 0, 0, 0) else Color.argb(20, 28, 22, 16)
+            maskFilter = android.graphics.BlurMaskFilter(18f * d, android.graphics.BlurMaskFilter.Blur.NORMAL)
         }
         private val spotPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
             style = android.graphics.Paint.Style.FILL
-            color = if (dark) Color.argb(110, 0, 0, 0) else Color.argb(26, 28, 22, 16)
-            maskFilter = android.graphics.BlurMaskFilter(2.5f * d, android.graphics.BlurMaskFilter.Blur.NORMAL)
+            color = if (dark) Color.argb(24, 0, 0, 0) else Color.argb(7, 28, 22, 16)
+            maskFilter = android.graphics.BlurMaskFilter(9f * d, android.graphics.BlurMaskFilter.Blur.NORMAL)
         }
 
         override fun dispatchDraw(canvas: android.graphics.Canvas) {
@@ -808,13 +1069,13 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             clipChildren = false
             clipToPadding = false
-            setPadding(14.dp, 8.dp, 14.dp, 14.dp)
+            setPadding(16.dp, 10.dp, 16.dp, 16.dp)
         }
         card.addView(body, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply {
-            leftMargin = (-14).dp
-            rightMargin = (-14).dp
-            topMargin = 4.dp
-            bottomMargin = (-12).dp
+            leftMargin = (-16).dp
+            rightMargin = (-16).dp
+            topMargin = 2.dp
+            bottomMargin = (-14).dp
         })
         makeCollapsible("group_$key", card, listOf(header), chevron, body, defaultOpen = defaultOpen)
         return GroupCard(card, dot, summary, body)
@@ -1011,8 +1272,7 @@ class MainActivity : Activity() {
             textSize = 13.5f
             setTextColor(p.fg)
             typeface = fontRegular
-            thumbTintList = ColorStateList(arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()), intArrayOf(p.accent, p.sub))
-            trackTintList = ColorStateList(arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()), intArrayOf(alpha(p.accent, 0.5f), alpha(p.sub, 0.4f)))
+            styleSwitch(this)
             isChecked = prefs.getBoolean(Style.KEY_GRAY, false)
             setOnCheckedChangeListener { _, on -> prefs.edit().putBoolean(Style.KEY_GRAY, on).apply() }
         }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 10.dp })
@@ -1021,8 +1281,7 @@ class MainActivity : Activity() {
             textSize = 13.5f
             setTextColor(p.fg)
             typeface = fontRegular
-            thumbTintList = ColorStateList(arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()), intArrayOf(p.accent, p.sub))
-            trackTintList = ColorStateList(arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()), intArrayOf(alpha(p.accent, 0.5f), alpha(p.sub, 0.4f)))
+            styleSwitch(this)
             isChecked = Style.showLoad(this@MainActivity)
             setOnCheckedChangeListener { _, on ->
                 prefs.edit().putBoolean(Style.KEY_SHOW_LOAD, on).apply()
@@ -1033,12 +1292,11 @@ class MainActivity : Activity() {
             }
         }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 10.dp })
         card.addView(Switch(this).apply {
-            text = "Load as horizontal bars"
+            text = "Load as bars (upright in portrait)"
             textSize = 13.5f
             setTextColor(p.fg)
             typeface = fontRegular
-            thumbTintList = ColorStateList(arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()), intArrayOf(p.accent, p.sub))
-            trackTintList = ColorStateList(arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()), intArrayOf(alpha(p.accent, 0.5f), alpha(p.sub, 0.4f)))
+            styleSwitch(this)
             isChecked = Style.loadBars(this@MainActivity)
             setOnCheckedChangeListener { _, on -> prefs.edit().putBoolean(Style.KEY_LOAD_BARS, on).apply() }
         }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 10.dp })
@@ -1047,8 +1305,7 @@ class MainActivity : Activity() {
             textSize = 13.5f
             setTextColor(p.fg)
             typeface = fontRegular
-            thumbTintList = ColorStateList(arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()), intArrayOf(p.accent, p.sub))
-            trackTintList = ColorStateList(arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()), intArrayOf(alpha(p.accent, 0.5f), alpha(p.sub, 0.4f)))
+            styleSwitch(this)
             isChecked = Style.blur(this@MainActivity)
             setOnCheckedChangeListener { _, on -> prefs.edit().putBoolean(Style.KEY_BLUR, on).apply() }
         }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 10.dp })
@@ -1156,23 +1413,25 @@ class MainActivity : Activity() {
         val mode = Components.enabled(this, Components.KEY_STREAM)
         val streaming = st?.optBoolean("streaming") == true
         val helper = st?.optBoolean("helper") == true
-        streamStatus.text = when {
+        streamStatus.put(when {
             streaming -> "Streaming"
             mode -> "Laptop shape on"
             else -> "Off"
-        }
+        })
         val live = mode || streaming
         streamStatus.setTextColor(if (live) p.ok else p.sub)
         (streamDot.background as GradientDrawable).setColor(if (live) p.ok else alpha(p.sub, 0.5f))
-        streamDetail.text = when {
+        streamDetail.put(when {
             !shellOk -> "Needs Shizuku"
             mode && !helper -> "Laptop not reachable — screen resets in 15 s"
             mode -> "Phone screen matches the laptop. Start the stream when the game is open."
             else -> "Plug in the cable; the laptop helper must be running."
-        }
-        wideBtn.text = if (streamBusy) "…" else if (mode) "Normal screen" else "16:10 screen"
-        streamBtn.text = if (streaming) "Stop stream" else "Start stream"
+        })
+        wideBtn.put(if (streamBusy) "…" else if (mode) "Normal screen" else "16:10 screen")
+        streamBtn.put(if (streaming) "Stop stream" else "Start stream")
         listOf(wideBtn to !mode, streamBtn to !streaming).forEach { (b, filled) ->
+            if (b.tag == filled) return@forEach
+            b.tag = filled
             b.setTextColor(if (filled) p.onAccent else p.fg)
             b.background = ripple(if (filled) accentGradient(24.dp) else glass(24.dp), 24.dp)
         }
@@ -1196,6 +1455,11 @@ class MainActivity : Activity() {
                 }
             }
             val s = Components.status()
+            if (r == "ok") Island.show(this, when {
+                wide -> if (!mode) "Laptop shape on" else "Laptop shape off"
+                streaming -> "Stream off"
+                else -> "Stream on"
+            })
             main.post {
                 streamBusy = false; last = s; render()
                 when (r) {
@@ -1288,8 +1552,7 @@ class MainActivity : Activity() {
             textSize = 13.5f
             setTextColor(p.fg)
             typeface = fontRegular
-            thumbTintList = ColorStateList(arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()), intArrayOf(p.accent, p.sub))
-            trackTintList = ColorStateList(arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()), intArrayOf(alpha(p.accent, 0.5f), alpha(p.sub, 0.4f)))
+            styleSwitch(this)
             isChecked = DoublePress.vibrate(this@MainActivity)
             setOnCheckedChangeListener { _, c -> DoublePress.setVibrate(this@MainActivity, c) }
         }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 12.dp })
@@ -1304,19 +1567,19 @@ class MainActivity : Activity() {
         val mine = h == packageName
         val wallet = DoublePress.walletSwitchOn(this)
         val ready = mine && wallet
-        dpStatus.text = when {
+        dpStatus.put(when {
             ready -> "Suite handles it"
             mine -> "vivo's double press is off"
             else -> "Not handled by Suite"
-        }
+        })
         dpStatus.setTextColor(if (ready) p.ok else p.sub)
         (dpDot.background as GradientDrawable).setColor(if (ready) p.ok else alpha(p.sub, 0.5f))
-        dpDetail.text = when {
+        dpDetail.put(when {
             ready -> "Double-press the power button to " + actionText(DoublePress.action) + "."
             mine -> "Its switch in vivo Wallet (“Double press the Power button to quickly swipe cards”) is off. Set up turns it on."
             h == null -> "Android asks which app to use each time."
             else -> "Right now it goes to ${appName(h)}."
-        }
+        })
         dpMake.visibility = if (ready) View.GONE else View.VISIBLE
         dpMake.text = if (dpBusy) "…" else "Set up double press"
         renderChoices(dpChoices, DoublePress.action, cts = true) { renderDouble() }
@@ -1333,10 +1596,14 @@ class MainActivity : Activity() {
 
     /** The choices of a power-button action: apps (tap to use, hold to remove), sound modes, [cts]. */
     private fun renderChoices(box: LinearLayout, pa: PressAction, cts: Boolean, rerender: () -> Unit) {
-        box.removeAllViews()
         val act = pa.action(this)
         val t = pa.target(this)
         val apps = pa.apps(this)
+        // called on every 2 s refresh: rebuilding the chips (new glass shaders) each time made the page hitch
+        val key = "$act|$t|${apps.joinToString(",")}|$cts|${isDark()}"
+        if (box.tag == key) return
+        box.tag = key
+        box.removeAllViews()
         box.addView(hScroll(*apps.map { pkg ->
             chip(appName(pkg), pkg == t && act == null) { pa.setTarget(this, pkg); rerender() }.apply {
                 setOnLongClickListener {
@@ -1498,8 +1765,8 @@ class MainActivity : Activity() {
     private fun renderRoutineList() {
         rtList.removeAllViews()
         val all = Routines.load(this)
-        all.forEach { r ->
-            rtList.addView(View(this).apply { setBackgroundColor(p.stroke) },
+        fun addRow(r: org.json.JSONObject, into: LinearLayout) {
+            into.addView(View(this).apply { setBackgroundColor(p.stroke) },
                 LinearLayout.LayoutParams(MATCH_PARENT, 1.dp).apply { topMargin = 6.dp })
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
@@ -1523,7 +1790,7 @@ class MainActivity : Activity() {
             }
             val rtName: (String) -> String = { id -> all.firstOrNull { it.optString("id") == id }?.optString("name") ?: "?" }
             col.addView(top)
-            col.addView(label("${Routines.summary(r, all, ::appName)}  →  ${Routines.actionsText(r, ::appName, rtName)}", 12f, p.sub).apply {
+            col.addView(label("${Routines.summary(r, all, ::appName) { GestureStore.name(this, it) }}  →  ${Routines.actionsText(r, ::appName, rtName)}", 12f, p.sub).apply {
                 maxLines = 1
                 ellipsize = android.text.TextUtils.TruncateAt.END
                 setPadding(0, 2.dp, 0, 0)
@@ -1537,6 +1804,7 @@ class MainActivity : Activity() {
             }, LinearLayout.LayoutParams(34.dp, 32.dp).apply { leftMargin = 8.dp })
             row.addView(chip(if (on) "On" else "Off", on) {
                 r.put("on", !on)
+                Island.show(this, "${r.optString("name")} ${if (!on) "on" else "off"}")
                 io.execute {
                     Routines.save(this, all)
                     main.post {
@@ -1546,8 +1814,28 @@ class MainActivity : Activity() {
                     }
                 }
             }, LinearLayout.LayoutParams(WRAP_CONTENT, 32.dp).apply { leftMargin = 6.dp })
-            rtList.addView(row)
+            into.addView(row)
         }
+        val isGesture = { r: org.json.JSONObject -> r.optJSONObject("trigger")?.optString("type") == "gesture" }
+        all.filterNot(isGesture).forEach { addRow(it, rtList) }
+        val gr = all.filter(isGesture)
+        if (gr.isEmpty()) return
+        // gesture routines in their own box (collapsed by default) so the list stays short
+        rtList.addView(View(this).apply { setBackgroundColor(p.stroke) },
+            LinearLayout.LayoutParams(MATCH_PARENT, 1.dp).apply { topMargin = 6.dp })
+        val box = innerCard()
+        val header = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        val onN = gr.count { it.optBoolean("on", true) }
+        header.addView(label("Gesture routines", 15f, p.fg, bold = true), LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
+        header.addView(label("$onN/${gr.size} on", 12.5f, p.sub).apply { setPadding(10.dp, 0, 0, 0) }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        val chevron = chevronBadge(false)
+        header.addView(chevron, LinearLayout.LayoutParams(30.dp, 30.dp))
+        box.addView(header)
+        val inner = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        gr.forEach { addRow(it, inner) }
+        box.addView(inner)
+        makeCollapsible("routines_gestures", box, listOf(header), chevron, inner, defaultOpen = false)
+        rtList.addView(box, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 10.dp })
     }
 
     private fun renderRoutines(st: org.json.JSONObject?, shellOk: Boolean) {
@@ -1557,20 +1845,20 @@ class MainActivity : Activity() {
         val any = onCount > 0
         val running = st?.optBoolean("running") == true
         val active = running && any
-        rtStatus.text = when {
+        rtStatus.put(when {
             !active -> "Not running"
             onCount == total -> "All running"
             else -> "$onCount/$total running"
-        }
+        })
         rtStatus.setTextColor(if (active) p.ok else p.sub)
         (rtDot.background as GradientDrawable).setColor(if (active) p.ok else alpha(p.sub, 0.5f))
-        rtDetail.text = when {
+        rtDetail.put(when {
             !any -> "All routines are off"
             !shellOk -> "Waiting for Shizuku"
             st == null -> "Starting…"
             st.optString("error").isNotEmpty() -> "Can't listen for events, checking every 30 s instead"
             else -> "Tap a routine to edit it"
-        }
+        })
         val lr = st?.optJSONObject("lastRun")
         if (lr != null && lr.toString() != rtLastRun?.toString()) { rtLastRun = lr; renderRoutineList() }
     }
@@ -1622,6 +1910,354 @@ class MainActivity : Activity() {
     private fun pickReviveApps(apps: org.json.JSONArray, done: () -> Unit) =
         pickMultiApps("Revive these apps", apps, userOnly = true, done = done)
 
+    // ------------------------------------------------------------------ gestures (two-finger drawing)
+
+    private lateinit var gestList: LinearLayout
+    private lateinit var gestIgnoreText: TextView
+    private lateinit var gestSensRow: LinearLayout
+    private var gestUsedKey = ""
+
+    private fun addGestureSettings(body: LinearLayout) {
+        body.addView(label("Draw a big shape anywhere on the screen, with one or two fingers.",
+            12.5f, p.sub).apply { setPadding(0, 12.dp, 0, 0); setLineSpacing(2.dp.toFloat(), 1f) })
+        body.addView(label("Tap a gesture below to assign action(s).", 13.5f, p.fg, bold = true)
+            .apply { setPadding(0, 8.dp, 0, 0) })
+        body.addView(label("The app under your finger(s) still feels the touch, so a gesture can also scroll or move what's on screen a little.",
+            12f, p.sub).apply { setPadding(0, 6.dp, 0, 0) })
+        body.addView(pillButton("Try a gesture", filled = false) { tryGestures() },
+            LinearLayout.LayoutParams(MATCH_PARENT, 44.dp).apply { topMargin = 12.dp })
+
+        gestList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        body.addView(gestList)
+
+        body.addView(View(this).apply { setBackgroundColor(p.stroke) },
+            LinearLayout.LayoutParams(MATCH_PARENT, 1.dp).apply { topMargin = 14.dp })
+        body.addView(label("Sensitivity", 13f, p.fg, bold = true).apply { setPadding(0, 12.dp, 0, 0) })
+        gestSensRow = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        body.addView(gestSensRow)
+        renderGestureSens()
+
+        body.addView(Switch(this).apply {
+            text = "Short vibration when a gesture is recognised"
+            textSize = 13.5f
+            setTextColor(p.fg)
+            typeface = fontRegular
+            styleSwitch(this)
+            isChecked = GestureStore.vibrate(this@MainActivity)
+            setOnCheckedChangeListener { _, c -> io.execute { GestureStore.setVibrate(this@MainActivity, c) } }
+        }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 12.dp })
+
+        body.addView(label("Off in these apps", 13f, p.fg, bold = true).apply { setPadding(0, 12.dp, 0, 0) })
+        gestIgnoreText = label("", 12.5f, p.sub)
+        body.addView(gestIgnoreText)
+        body.addView(textButton("Pick apps") {
+            val a = GestureStore.ignore(this)
+            pickMultiApps("Gestures off in", a, userOnly = false) {
+                io.execute { GestureStore.setIgnore(this, a); main.post { renderGestureIgnore() } }
+            }
+        }, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { leftMargin = (-12).dp })
+        renderGestureIgnore()
+        renderGestureList()
+    }
+
+    private fun renderGestureIgnore() {
+        val a = GestureStore.ignore(this)
+        gestIgnoreText.text = if (a.length() == 0) "None — gestures work everywhere (not on the lock screen)"
+        else (0 until a.length()).joinToString(", ") { appName(a.getString(it)) }
+    }
+
+    private fun renderGestureSens() {
+        gestSensRow.removeAllViews()
+        val s = GestureStore.sens(this)
+        gestSensRow.addView(hScroll(*listOf("Strict", "Normal", "Loose").mapIndexed { i, t ->
+            chip(t, s == i) { io.execute { GestureStore.setSens(this, i); main.post { renderGestureSens() } } }
+        }.toTypedArray()), LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 6.dp })
+        gestSensRow.addView(label(when (s) {
+            0 -> "Only clear, careful drawings count. Fewest mistakes."
+            2 -> "Sloppier drawings count too, but more chance of a wrong or accidental match."
+            else -> "A balance of both."
+        }, 12f, p.sub).apply { setPadding(0, 4.dp, 0, 0) })
+    }
+
+    /** "1:circle", "2:x" … for gestures with a routine that's on. */
+    private fun usedGestures(): Set<String> = Routines.load(this).filter { it.optBoolean("on", true) }
+        .mapNotNull { r -> r.optJSONObject("trigger")?.takeIf { t -> t.optString("type") == "gesture" && t.optString("gesture").isNotEmpty() }
+            ?.let { t -> "${t.optInt("fingers", 2)}:${t.optString("gesture")}" } }
+        .toSet()
+
+    /** Routines (any, on or off) that use this gesture with the other number of fingers, except [selfId]. */
+    private fun takenElsewhere(id: String, fingers: Int, selfId: String? = null): List<org.json.JSONObject> =
+        GestureStore.routinesFor(this, id, 3 - fingers).filter { it.optString("id") != selfId }
+
+    /** Why (id, fingers) can't be picked now, or null. */
+    private fun gestureBlock(id: String, fingers: Int, selfId: String? = null): String? {
+        if (fingers == 1) GestureStore.oneFingerWhy(this, id)?.let { return it }
+        val other = takenElsewhere(id, fingers, selfId)
+        if (other.isNotEmpty()) return "${GestureStore.name(this, id)} is already used with ${GestureStore.fingersText(3 - fingers)} " +
+            "(${other.joinToString(", ") { "“${it.optString("name")}”" }}). A gesture belongs to one card at a time, so it can't be drawn both ways."
+        return null
+    }
+
+    private fun renderGestureList() {
+        gestList.removeAllViews()
+        val used = usedGestures()
+        gestUsedKey = used.sorted().joinToString(",") + "|" + Routines.load(this).joinToString(",") {
+            it.optJSONObject("trigger")?.let { t -> t.optString("gesture") + t.optInt("fingers", 2) } ?: ""
+        }
+        for (fingers in listOf(1, 2)) {
+            val box = innerCard()
+            box.addView(label(if (fingers == 1) "One finger" else "Two fingers", 16f, p.fg, bold = true))
+            box.addView(label(if (fingers == 1)
+                "Draw anywhere with one finger. Only closed shapes, which ordinary scrolling can't draw. The rest are grayed out: tap one to see why."
+            else "Two fingers down at once, a little apart. Swipes, shapes and digits.",
+                12f, p.sub).apply { setPadding(0, 4.dp, 0, 0) })
+            for ((hdr, items) in GestureStore.groups(this, fingers)) {
+                box.addView(label(hdr, 13f, p.fg, bold = true).apply { setPadding(0, 12.dp, 0, 0) })
+                box.addView(hScroll(*items.map { (id, name) ->
+                    val block = gestureBlock(id, fingers)
+                    val mine = GestureStore.sampleCount(this, id)
+                    val text = if (mine > 0 && Gestures.builtinName(id) != null) "$name  ·  yours" else name
+                    chip(text, block == null && "$fingers:$id" in used) {
+                        if (block != null) gestureBlocked(id, fingers, block) else gestureOptions(id, fingers)
+                    }.apply { if (block != null) alpha = 0.35f }
+                }.toTypedArray()), LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 6.dp })
+            }
+            gestList.addView(box, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 14.dp })
+        }
+        gestList.addView(label("Highlighted = has action(s). Tap a gesture to change them or teach Suite your way of drawing it.",
+            12f, p.sub).apply { setPadding(0, 8.dp, 0, 0) })
+        gestList.addView(textButton("Record a custom gesture") { recordGesture(null) { renderGestureList() } },
+            LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = 4.dp; leftMargin = (-12).dp })
+    }
+
+    /** A grayed-out gesture was tapped: say why (and offer the routine that holds it). */
+    private fun gestureBlocked(id: String, fingers: Int, why: String) {
+        val other = if (fingers == 1 && GestureStore.oneFingerWhy(this, id) != null) emptyList() else takenElsewhere(id, fingers)
+        val b = SuiteDialog.Builder(this)
+            .setTitle("${GestureStore.name(this, id)} · ${GestureStore.fingersText(fingers)}")
+            .setMessage(why)
+        if (other.isNotEmpty()) b.setItems(other.map { "Edit “${it.optString("name")}”" }.toTypedArray()) { _, i -> editRoutine(other[i]) }
+        b.setNegativeButton("OK", null).show()
+    }
+
+    private fun renderGestures(st: org.json.JSONObject?, shellOk: Boolean) {
+        val used = usedGestures()
+        val key = used.sorted().joinToString(",") + "|" + Routines.load(this).joinToString(",") {
+            it.optJSONObject("trigger")?.let { t -> t.optString("gesture") + t.optInt("fingers", 2) } ?: ""
+        }
+        if (key != gestUsedKey) renderGestureList()
+        val on = enabled(gestSec)
+        val running = on && st?.optBoolean("gestures") == true
+        val lastG = st?.optString("lastGesture").orEmpty()
+        showSection(gestSec, running = running, detail = when {
+            !on -> "Draw shapes with one or two fingers to run actions"
+            !shellOk -> "Waiting for Shizuku"
+            used.isEmpty() -> "No gesture has an action yet. Tap one below to assign."
+            st == null -> "Starting…"
+            !running -> "Starting the listener…"
+            else -> "Listening for ${used.size} gesture${if (used.size == 1) "" else "s"}" + when {
+                lastG.isEmpty() || lastG == "—" -> ""
+                lastG.startsWith("! ") -> "\nLast drawing ignored: " + lastG.removePrefix("! ")
+                lastG.startsWith("? ") -> lastG.removePrefix("? ").split(" ").let { pt ->
+                    "\nLast drawing not recognised (closest ${GestureStore.name(this, pt[0])} ${pt.getOrElse(1) { "" }}) at ${pt.lastOrNull() ?: ""}"
+                }
+                else -> lastG.split(" ").let { pt -> "\nLast: ${GestureStore.name(this, pt[0])} ${pt.getOrElse(1) { "" }} at ${pt.lastOrNull() ?: ""}" }
+            }
+        })
+    }
+
+    private fun gesturePad(hint: String): GesturePad = GesturePad(this, p.accent, alpha(p.fg, 0.22f), p.sub).apply {
+        this.hint = hint
+    }
+
+    /** Draw on a pad and see what Suite makes of it, with one or two fingers. */
+    private fun tryGestures() {
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        box.addView(label("Draw like you would on the screen, with one or two fingers.", 12.5f, p.sub))
+        val pad = gesturePad("Draw a gesture")
+        box.addView(pad, LinearLayout.LayoutParams(MATCH_PARENT, 300.dp).apply { topMargin = 10.dp })
+        val result = label(" ", 15f, p.fg, bold = true).apply { gravity = Gravity.CENTER }
+        box.addView(result, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 10.dp })
+        val sub = label(" ", 12.5f, p.sub).apply { gravity = Gravity.CENTER }
+        box.addView(sub, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        val used = usedGestures()
+        pad.onDrawing = { d, f ->
+            val fingers = if (f >= 2) 2 else 1
+            val how = GestureStore.fingersText(fingers)
+            val r = GestureStore.recognize(this, d, 0.35f * pad.width, fingers)
+            val id = r.id
+            if (id != null) {
+                result.text = "${GestureStore.name(this, id)}  ·  $how  ·  ${Math.round(r.score * 100)}%"
+                val block = gestureBlock(id, fingers)
+                result.setTextColor(if (block == null) p.ok else p.sub)
+                val by = GestureStore.routinesFor(this, id, fingers).map { it.optString("name") }
+                sub.text = when {
+                    block != null -> "Not available with $how"
+                    by.isNotEmpty() -> "Runs: " + by.joinToString(", ") + (if ("$fingers:$id" !in used) " (turned off)" else "")
+                    else -> "Nothing assigned to it with $how yet"
+                }
+            } else {
+                result.setTextColor(p.sub)
+                when {
+                    fingers == 1 && !Gestures.closed(d) -> {
+                        result.text = "Not a closed shape"
+                        sub.text = "With one finger only closed shapes count (circle, square, triangle, 8), so scrolling never sets one off"
+                    }
+                    Gestures.straight(d) -> {
+                        result.text = "A straight line"
+                        sub.text = "Only up / down / left / right swipes count (two fingers); other lines are taken as scrolling"
+                    }
+                    else -> {
+                        result.text = "Not recognised  ·  $how"
+                        sub.text = r.closest?.let { c -> "Closest: ${GestureStore.name(this, c)} (${Math.round(r.score * 100)}%)" +
+                            (r.runnerUp?.let { " · then ${GestureStore.name(this, it)} (${Math.round(r.runnerScore * 100)}%)" } ?: "") } ?: " "
+                    }
+                }
+            }
+        }
+        SuiteDialog.Builder(this).setTitle("Try a gesture").setView(box).setNegativeButton("Close", null).show()
+    }
+
+    private fun gestureOptions(id: String, fingers: Int) {
+        val name = GestureStore.name(this, id)
+        val mine = GestureStore.routinesFor(this, id, fingers)
+        val by = GestureStore.usedBy(this, id)
+        val custom = Gestures.builtinName(id) == null
+        val samples = GestureStore.sampleCount(this, id)
+        val opts = mutableListOf<Pair<String, () -> Unit>>()
+        opts += (if (mine.isEmpty()) "Assign action(s)" else "Assign more action(s) (new routine)") to {
+            editRoutine(org.json.JSONObject()
+                .put("id", Routines.newId()).put("name", name).put("on", true)
+                .put("trigger", org.json.JSONObject().put("type", "gesture").put("gesture", id).put("fingers", fingers))
+                .put("actions", org.json.JSONArray()), isNew = true)
+        }
+        mine.forEach { r -> opts += "Edit “${r.optString("name")}”" to { editRoutine(r) } }
+        if (!Gestures.isSwipe(id)) {
+            opts += (if (custom) "Add more drawings of it" else "Teach my way of drawing it") to { recordGesture(id) { renderGestureList() } }
+            if (!custom && samples > 0) opts += "Forget my drawings ($samples)" to {
+                io.execute { GestureStore.clearSamples(this, id); main.post { renderGestureList() } }
+            }
+        }
+        if (custom) opts += "Delete" to {
+            SuiteDialog.Builder(this).setTitle("Delete “$name”?")
+                .setMessage(if (by.isEmpty()) "It isn't used by any routine." else "Used by: ${by.joinToString(", ")}. Those routines won't run until you pick another gesture.")
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Delete") { _, _ -> io.execute { GestureStore.deleteCustom(this, id); main.post { renderGestureList() } } }
+                .show()
+        }
+        SuiteDialog.Builder(this).setTitle("$name · ${GestureStore.fingersText(fingers)}")
+            .setMessage(if (mine.isEmpty()) "Nothing assigned yet." else "Runs: " + mine.joinToString(", ") { it.optString("name") })
+            .setItems(opts.map { it.first }.toTypedArray()) { _, i -> opts[i].second() }
+            .setNegativeButton("Close", null).show()
+    }
+
+    /**
+     * Record a new custom gesture (forId = null) or add the user's own drawings of an existing one.
+     * Asks for SAMPLES_PER_CUSTOM drawings. done gets the gesture id.
+     */
+    private fun recordGesture(forId: String?, done: (String) -> Unit) {
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val need = GestureStore.SAMPLES_PER_CUSTOM
+        var nameField: android.widget.EditText? = null
+        if (forId == null) {
+            box.addView(label("Experimental: custom gestures haven't been tested much. They may not be recognised reliably, and some two-finger actions in apps (scrolling, moving a map) may set one off by mistake. Shapes with a few clear turns work best.",
+                12.5f, p.sub).apply { setLineSpacing(2.dp.toFloat(), 1f) })
+            nameField = android.widget.EditText(this).apply {
+                hint = "Name, e.g. Heart"
+                setSingleLine()
+                textSize = 15f
+                setTextColor(p.fg)
+                setHintTextColor(p.sub)
+                typeface = fontRegular
+                background = glass(14.dp)
+                setPadding(14.dp, 0, 14.dp, 0)
+            }
+            box.addView(nameField, LinearLayout.LayoutParams(MATCH_PARENT, 46.dp).apply { topMargin = 12.dp })
+        } else {
+            box.addView(label("Draw ${GestureStore.name(this, forId)} your way, $need times. Suite keeps these next to its own version.",
+                12.5f, p.sub))
+        }
+        val progress = label("", 13.5f, p.fg, bold = true)
+        box.addView(progress, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 12.dp })
+        val pad = gesturePad("Draw it here")
+        box.addView(pad, LinearLayout.LayoutParams(MATCH_PARENT, 280.dp).apply { topMargin = 8.dp })
+        val note = label(" ", 12.5f, p.sub)
+        box.addView(note, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 8.dp })
+        val drawings = mutableListOf<List<FloatArray>>()
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        lateinit var dlg: android.app.Dialog
+        val save = pillButton("Save", filled = true) {
+            if (drawings.size < need) return@pillButton
+            val name = nameField?.text?.toString()?.trim().orEmpty()
+            if (forId == null && name.isEmpty()) { toast("Give it a name"); return@pillButton }
+            if (forId == null && GestureStore.groups(this).flatMap { it.second }.any { it.second.equals(name, ignoreCase = true) }) {
+                toast("There's already a gesture called $name"); return@pillButton
+            }
+            val list = drawings.toList()
+            dlg.dismiss()
+            io.execute {
+                val id = if (forId == null) GestureStore.addCustom(this, name, list) else { GestureStore.addSamples(this, forId, list); forId }
+                main.post { toast("Saved"); done(id) }
+            }
+        }
+        fun refresh() {
+            progress.text = if (drawings.size < need) "Drawing ${drawings.size + 1} of $need" else "Done — $need drawings"
+            save.alpha = if (drawings.size >= need) 1f else 0.4f
+        }
+        row.addView(textButton("Start over") { drawings.clear(); pad.clear(); note.text = " "; refresh() },
+            LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { leftMargin = (-12).dp })
+        row.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
+        row.addView(save, LinearLayout.LayoutParams(120.dp, 44.dp))
+        box.addView(row, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 8.dp })
+        refresh()
+
+        pad.onDrawing = drawing@{ d, _ ->
+            if (drawings.size >= need) return@drawing
+            if (Gestures.extent(d) < 0.25f * pad.width) { note.text = "A bit bigger, please — draw that one again."; pad.clear(); return@drawing }
+            if (Gestures.straight(d)) { note.text = "Straight lines are taken as scrolling. Draw a shape with a turn in it."; pad.clear(); return@drawing }
+            drawings += d
+            refresh()
+            if (drawings.size < need) {
+                note.text = "Got it. Again."
+                pad.postDelayed({ pad.clear() }, 350)
+                return@drawing
+            }
+            val (other, score) = GestureStore.closestOther(this, drawings) ?: (null to 0f)
+            note.text = when {
+                forId != null && other != null && other != forId && score >= 0.5f ->
+                    "Note: these look more like ${GestureStore.name(this, other)} (${Math.round(score * 100)}%). They might get mixed up."
+                forId == null && other != null && score >= 0.55f ->
+                    "Heads-up: this is a lot like ${GestureStore.name(this, other)} (${Math.round(score * 100)}% alike), so the two may get mixed up. Start over to draw something more different, or save anyway."
+                else -> "Looks distinct from the other gestures. Save it."
+            }
+        }
+        dlg = SuiteDialog.Builder(this).setTitle(if (forId == null) "Custom gesture" else "Teach ${GestureStore.name(this, forId)}")
+            .setView(box).setNegativeButton("Cancel", null).show()
+    }
+
+    /** Gesture picker for a routine's trigger: one or two fingers, only what's available (plus recording a new one). */
+    private fun pickGesture(selfId: String?, fingers: Int, done: (String) -> Unit) {
+        val picks = mutableListOf<String>()
+        val shown = mutableListOf<Pair<String, List<String>>>()
+        for ((hdr, items) in GestureStore.groups(this, fingers)) {
+            val ok = items.filter { gestureBlock(it.first, fingers, selfId) == null }
+            if (ok.isEmpty()) continue
+            shown += hdr to ok.map { it.second }
+            ok.forEach { picks += it.first }
+        }
+        shown += "New" to listOf("Record a custom gesture…")
+        SuiteDialog.Builder(this).setTitle(if (fingers == 1) "One-finger gesture" else "Two-finger gesture")
+            .setGroupedItems(shown) { _, w ->
+                if (w < picks.size) done(picks[w])
+                else recordGesture(null) { id ->
+                    renderGestureList()
+                    if (gestureBlock(id, fingers, selfId) == null) done(id)
+                    else toast("Saved, but it can't be used with one finger: it isn't a closed shape")
+                }
+            }
+            .show()
+    }
+
     // ------------------------------------------------------------------ profiles (per-app rules)
 
     private lateinit var profDot: View
@@ -1663,11 +2299,15 @@ class MainActivity : Activity() {
     }
 
     private fun renderProfileList() {
-        profList.removeAllViews()
         val all = Profiles.load(this)
         val allRoutines = Routines.load(this)
         val rtName: (String) -> String = { id -> allRoutines.firstOrNull { it.optString("id") == id }?.optString("name") ?: "?" }
         val activeId = last?.profiles?.optString("activeId") ?: ""
+        // runs on every 2 s refresh: only rebuild (new glass chips) when something shown changed
+        val key = all.joinToString("|") + "#" + activeId + "#" + allRoutines.joinToString("|") { it.optString("id") + it.optString("name") }
+        if (profList.tag == key) return
+        profList.tag = key
+        profList.removeAllViews()
         all.forEach { pr ->
             profList.addView(View(this).apply { setBackgroundColor(p.stroke) },
                 LinearLayout.LayoutParams(MATCH_PARENT, 1.dp).apply { topMargin = 6.dp })
@@ -1703,6 +2343,7 @@ class MainActivity : Activity() {
             row.addView(col, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
             row.addView(chip(if (on) "On" else "Off", on) {
                 pr.put("on", !on)
+                Island.show(this, "$name ${if (!on) "on" else "off"}")
                 io.execute {
                     Profiles.save(this, all)
                     main.post {
@@ -1724,21 +2365,21 @@ class MainActivity : Activity() {
         val running = st?.optBoolean("running") == true
         val active = running && any
         val activeName = st?.optString("activeName")?.takeIf { it.isNotEmpty() }
-        profStatus.text = when {
+        profStatus.put(when {
             !active -> "Not running"
             onCount == total -> "All running"
             else -> "$onCount/$total running"
-        }
+        })
         profStatus.setTextColor(if (active) p.ok else p.sub)
         (profDot.background as GradientDrawable).setColor(if (active) p.ok else alpha(p.sub, 0.5f))
-        profDetail.text = when {
+        profDetail.put(when {
             total == 0 -> "Change settings or launch an app while another is open"
             !any -> "All profiles are off"
             !shellOk -> "Waiting for Shizuku"
             st == null -> "Starting…"
             activeName != null -> "Active: $activeName"
             else -> "Tap a profile to edit it"
-        }
+        })
         renderProfileList()
     }
 
@@ -1939,10 +2580,8 @@ class MainActivity : Activity() {
         val dlg = android.app.Dialog(this,
             if (isDark()) android.R.style.Theme_DeviceDefault_NoActionBar else android.R.style.Theme_DeviceDefault_Light_NoActionBar)
 
-        val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(16.dp, 20.dp, 16.dp, 28.dp) }
-        body.addView(label(if (orig == null) "New profile" else "Edit profile", 26f, p.fg, bold = true).apply {
-            setPadding(6.dp, 0, 0, 16.dp)
-        })
+        val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val titleView = label(if (orig == null) "New profile" else "Edit profile", 26f, p.fg, bold = true)
         val nameCard = card()
         nameCard.addView(label("Name", 14.5f, p.fg, bold = true))
         val nameField = android.widget.EditText(this).apply {
@@ -2010,8 +2649,7 @@ class MainActivity : Activity() {
                 textSize = 13.5f
                 setTextColor(p.fg)
                 typeface = fontRegular
-                thumbTintList = ColorStateList(arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()), intArrayOf(p.accent, p.sub))
-                trackTintList = ColorStateList(arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()), intArrayOf(alpha(p.accent, 0.5f), alpha(p.sub, 0.4f)))
+                styleSwitch(this)
                 isChecked = pr.optBoolean("restoreOnExit", true)
                 setOnCheckedChangeListener { _, c -> pr.put("restoreOnExit", c) }
             }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 8.dp })
@@ -2045,27 +2683,61 @@ class MainActivity : Activity() {
         body.addView(textButton("Cancel") { dlg.dismiss() }.apply { gravity = Gravity.CENTER },
             LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
 
-        val scroll = ScrollView(this).apply { isVerticalScrollBarEnabled = false; addView(body) }
-        dlg.setContentView(FrameLayout(this).apply {
-            addView(GlassBackdrop(this@MainActivity).also { bd -> scroll.setOnScrollChangeListener { _, _, y, _, _ -> bd.setScroll(y) } }, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
-            addView(scroll, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
-        })
-        dlg.window?.apply {
-            @Suppress("DEPRECATION") statusBarColor = p.base
-            @Suppress("DEPRECATION") navigationBarColor = p.base
-            setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
-        }
+        dlg.setContentView(pinnedBackdropLayout(
+            titleView = titleView,
+            body = body,
+            titleLeftPx = 22.dp,
+            titleTopPx = 20.dp,
+            titleBottomGapPx = 16.dp,
+            bodySidePadPx = 16.dp,
+            bodyBottomPadPx = 28.dp,
+            blurBelowTitlePx = 12.dp,
+            fadeBelowTitlePx = 4.dp,
+            edgeToEdge = true,
+        ))
+        styleDialogWindow(dlg.window)
         dlg.show()
     }
 
     private fun pickTime(current: String, set: (String) -> Unit) {
         val parts = current.split(":")
-        val h = parts.getOrNull(0)?.toIntOrNull() ?: 8
-        val m = parts.getOrNull(1)?.toIntOrNull() ?: 0
-        android.app.TimePickerDialog(this, { _, hh, mm -> set(String.format(java.util.Locale.US, "%02d:%02d", hh, mm)) }, h, m, true).show()
+        val h = (parts.getOrNull(0)?.toIntOrNull() ?: 8).coerceIn(0, 23)
+        val m = (parts.getOrNull(1)?.toIntOrNull() ?: 0).coerceIn(0, 59)
+        val fmt = android.widget.NumberPicker.Formatter { String.format(java.util.Locale.US, "%02d", it) }
+        val textPx = 24f * resources.displayMetrics.density
+        fun wheel(max: Int, value: Int) = android.widget.NumberPicker(this).apply {
+            minValue = 0
+            maxValue = max
+            this.value = value
+            wrapSelectorWheel = true
+            setFormatter(fmt)
+            textColor = p.fg
+            textSize = textPx
+            selectionDividerHeight = 0
+            descendantFocusability = android.view.ViewGroup.FOCUS_BLOCK_DESCENDANTS
+        }
+        val hp = wheel(23, h)
+        val mp = wheel(59, m)
+        val wrap = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            setPadding(16.dp, 8.dp, 16.dp, 8.dp)
+            background = glass(20.dp, level = 1)
+            addView(hp, LinearLayout.LayoutParams(92.dp, WRAP_CONTENT))
+            addView(label(":", 26f, p.fg, bold = true).apply { setPadding(12.dp, 0, 12.dp, 0) })
+            addView(mp, LinearLayout.LayoutParams(92.dp, WRAP_CONTENT))
+        }
+        SuiteDialog.Builder(this)
+            .setTitle("Pick time")
+            .setView(wrap)
+            .setPositiveButton("Set") { _, _ ->
+                set(String.format(java.util.Locale.US, "%02d:%02d", hp.value, mp.value))
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
-    private fun editRoutine(orig: org.json.JSONObject?) {
+    private fun editRoutine(orig: org.json.JSONObject?, isNew: Boolean = orig == null) {
         val all = Routines.load(this)
         val r = org.json.JSONObject((orig ?: org.json.JSONObject()
             .put("id", Routines.newId()).put("name", "New routine").put("on", true)
@@ -2075,10 +2747,8 @@ class MainActivity : Activity() {
         val dlg = android.app.Dialog(this,
             if (isDark()) android.R.style.Theme_DeviceDefault_NoActionBar else android.R.style.Theme_DeviceDefault_Light_NoActionBar)
 
-        val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(16.dp, 20.dp, 16.dp, 28.dp) }
-        body.addView(label(if (orig == null) "New routine" else "Edit routine", 26f, p.fg, bold = true).apply {
-            setPadding(6.dp, 0, 0, 16.dp)
-        })
+        val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val titleView = label(if (isNew) "New routine" else "Edit routine", 26f, p.fg, bold = true)
         val nameCard = card()
         nameCard.addView(label("Name", 14.5f, p.fg, bold = true))
         val nameField = android.widget.EditText(this).apply {
@@ -2108,11 +2778,25 @@ class MainActivity : Activity() {
             // ---- When
             val whenCard = card()
             whenCard.addView(label("When", 14.5f, p.fg, bold = true))
-            whenCard.addView(hScroll(chip("${Routines.TRIGGERS[type] ?: "Pick trigger"}  ▾", true) {
+            val trigName = if (type == "gesture") Routines.TRIGGERS[if (t.optInt("fingers", 2) == 1) "gesture1" else "gesture"]
+                else Routines.TRIGGERS[type]
+            whenCard.addView(hScroll(chip("${trigName ?: "Pick trigger"}  ▾", true) {
                 val flatKeys = Routines.TRIGGER_GROUPS.flatMap { (_, items) -> items.map { it.first } }
                 val groups = Routines.TRIGGER_GROUPS.map { (hdr, items) -> hdr to items.map { it.second } }
                 SuiteDialog.Builder(this).setTitle("When")
-                    .setGroupedItems(groups) { _, w -> t.put("type", flatKeys[w]); rebuild() }
+                    .setGroupedItems(groups) { _, w ->
+                        val k = flatKeys[w]
+                        if (k == "gesture" || k == "gesture1") {
+                            val f = if (k == "gesture1") 1 else 2
+                            t.put("type", "gesture").put("fingers", f)
+                            // the picked gesture may not exist that way (one-finger rules, or taken by the other card)
+                            val g = t.optString("gesture")
+                            if (g.isNotEmpty() && gestureBlock(g, f, id) != null) t.remove("gesture")
+                        } else {
+                            t.put("type", k)
+                        }
+                        rebuild()
+                    }
                     .show()
             }), LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 10.dp })
 
@@ -2122,8 +2806,7 @@ class MainActivity : Activity() {
                     textSize = 13.5f
                     setTextColor(p.fg)
                     typeface = fontRegular
-                    thumbTintList = ColorStateList(arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()), intArrayOf(p.accent, p.sub))
-                    trackTintList = ColorStateList(arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()), intArrayOf(alpha(p.accent, 0.5f), alpha(p.sub, 0.4f)))
+                    styleSwitch(this)
                     isChecked = t.optBoolean("any", false)
                     setOnCheckedChangeListener { _, c -> t.put("any", c); rebuild() }
                 }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 10.dp })
@@ -2151,12 +2834,29 @@ class MainActivity : Activity() {
                     LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { leftMargin = (-12).dp })
                 if (type == "wifi_gone") {
                     val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-                    val mins = t.optInt("minutes", 10)
-                    row.addView(label("For $mins min", 13.5f, p.fg), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-                    row.addView(chip("−", false) { t.put("minutes", maxOf(1, mins - if (mins > 5) 5 else 1)); rebuild() },
-                        LinearLayout.LayoutParams(44.dp, 32.dp))
-                    row.addView(chip("+", false) { t.put("minutes", minOf(120, mins + if (mins >= 5) 5 else 1)); rebuild() },
-                        LinearLayout.LayoutParams(44.dp, 32.dp).apply { leftMargin = 6.dp })
+                    val sec = Routines.wifiGoneSeconds(t)
+                    fun saveSec(v: Int) {
+                        if (v < 60) { t.put("seconds", v); t.remove("minutes") }
+                        else { t.put("minutes", v / 60); t.remove("seconds") }
+                        rebuild()
+                    }
+                    row.addView(label("For ${Routines.wifiGoneDurationText(sec)}", 13.5f, p.fg), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+                    row.addView(chip("−", false) {
+                        val next = when {
+                            sec > 300 -> sec - 300
+                            sec > 60 -> sec - 60
+                            else -> 30
+                        }
+                        saveSec(next)
+                    }, LinearLayout.LayoutParams(44.dp, 32.dp))
+                    row.addView(chip("+", false) {
+                        val next = when {
+                            sec < 60 -> 60
+                            sec < 300 -> sec + 60
+                            else -> minOf(7200, sec + 300)
+                        }
+                        saveSec(next)
+                    }, LinearLayout.LayoutParams(44.dp, 32.dp).apply { leftMargin = 6.dp })
                     whenCard.addView(row, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 14.dp })
                 }
             }
@@ -2171,8 +2871,7 @@ class MainActivity : Activity() {
                     textSize = 14f
                     setTextColor(p.fg)
                     typeface = fontMedium
-                    thumbTintList = ColorStateList(arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()), intArrayOf(p.accent, p.sub))
-                    trackTintList = ColorStateList(arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()), intArrayOf(alpha(p.accent, 0.5f), alpha(p.sub, 0.4f)))
+                    styleSwitch(this)
                     isChecked = gOn
                     setOnCheckedChangeListener { _, c ->
                         val ng = r.optJSONObject("wifiGuard") ?: org.json.JSONObject()
@@ -2208,6 +2907,21 @@ class MainActivity : Activity() {
                 row.addView(chip("+", false) { t.put("minutes", minOf(60, mins + 1)); rebuild() },
                     LinearLayout.LayoutParams(44.dp, 32.dp).apply { leftMargin = 6.dp })
                 whenCard.addView(row, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 10.dp })
+            }
+
+            if (type == "gesture") {
+                val gid = t.optString("gesture")
+                val gf = t.optInt("fingers", 2)
+                whenCard.addView(hScroll(chip(if (gid.isEmpty()) "Pick a gesture  ▾"
+                    else "${GestureStore.name(this, gid)}  ▾", gid.isNotEmpty()) {
+                    pickGesture(id, gf) { g -> t.put("gesture", g); rebuild() }
+                }), LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 10.dp })
+                whenCard.addView(label(when {
+                    !GestureStore.on(this) -> "Gestures are off. Turn them on in the Gestures card."
+                    gf == 1 -> "One finger, draw it big, anywhere. Not on the lock screen."
+                    else -> "Two fingers a little apart, draw it big, anywhere. Not on the lock screen."
+                }, 12f, p.sub)
+                    .apply { setPadding(0, 6.dp, 0, 0) })
             }
 
             if (type == "time") {
@@ -2455,8 +3169,7 @@ class MainActivity : Activity() {
                 textSize = 13.5f
                 setTextColor(p.fg)
                 typeface = fontRegular
-                thumbTintList = ColorStateList(arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()), intArrayOf(p.accent, p.sub))
-                trackTintList = ColorStateList(arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()), intArrayOf(alpha(p.accent, 0.5f), alpha(p.sub, 0.4f)))
+                styleSwitch(this)
                 isChecked = r.optBoolean("once")
                 setOnCheckedChangeListener { _, c -> r.put("once", c) }
             }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 12.dp })
@@ -2496,7 +3209,7 @@ class MainActivity : Activity() {
             }
         }, LinearLayout.LayoutParams(0, 46.dp, 1f).apply { leftMargin = 8.dp })
         body.addView(buttons, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 20.dp })
-        if (orig != null) body.addView(textButton("Delete routine") {
+        if (!isNew) body.addView(textButton("Delete routine") {
             SuiteDialog.Builder(this).setMessage("Delete “${r.optString("name")}”?")
                 .setPositiveButton("Delete") { _, _ ->
                     val list = all.filter { it.optString("id") != id }.onEach {
@@ -2523,16 +3236,19 @@ class MainActivity : Activity() {
         body.addView(textButton("Cancel") { dlg.dismiss() }.apply { gravity = Gravity.CENTER },
             LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
 
-        val scroll = ScrollView(this).apply { isVerticalScrollBarEnabled = false; addView(body) }
-        dlg.setContentView(FrameLayout(this).apply {
-            addView(GlassBackdrop(this@MainActivity).also { bd -> scroll.setOnScrollChangeListener { _, _, y, _, _ -> bd.setScroll(y) } }, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
-            addView(scroll, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
-        })
-        dlg.window?.apply {
-            @Suppress("DEPRECATION") statusBarColor = p.base
-            @Suppress("DEPRECATION") navigationBarColor = p.base
-            setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
-        }
+        dlg.setContentView(pinnedBackdropLayout(
+            titleView = titleView,
+            body = body,
+            titleLeftPx = 22.dp,
+            titleTopPx = 20.dp,
+            titleBottomGapPx = 16.dp,
+            bodySidePadPx = 16.dp,
+            bodyBottomPadPx = 28.dp,
+            blurBelowTitlePx = 12.dp,
+            fadeBelowTitlePx = 4.dp,
+            edgeToEdge = true,
+        ))
+        styleDialogWindow(dlg.window)
         dlg.show()
     }
 
@@ -2578,6 +3294,13 @@ class MainActivity : Activity() {
         val p = Components.prefs(this)
         if (p.getBoolean("old_backup_gone", false) || Shell.state() != Shell.State.READY) return
         io.execute { if (Shell.oneShot(this, "cleanup-old-backup") == "ok") p.edit().putBoolean("old_backup_gone", true).apply() }
+    }
+
+    /** On every open with Shizuku: Android's background exemptions (battery whitelist, run in
+     *  background, active standby bucket), so the system doesn't put Suite to sleep. */
+    private fun keepAlive() {
+        if (Shell.state() != Shell.State.READY) return
+        io.execute { Shell.oneShot(this, "keep-alive") }
     }
 
     private fun featureRequest() {
@@ -2660,6 +3383,57 @@ class MainActivity : Activity() {
         setOnClickListener { onClick() }
     }
 
+    /**
+     * Suite's switch look: a pill track (frosted when off, champagne when on, like the filled
+     * buttons) with a round white knob. Replaces the stock Material thumb and track.
+     */
+    private fun styleSwitch(sw: Switch) {
+        val trackW = 50.dp; val trackH = 30.dp; val knob = 24.dp; val inset = (trackH - knob) / 2
+        val accent = blendColors(p.accent, p.accent2)
+        fun track(on: Boolean) = GradientDrawable().apply {
+            cornerRadius = trackH / 2f
+            setSize(trackW, trackH)
+            if (on) setColor(accent)
+            else {
+                setColor(if (isDark()) Color.argb(46, 255, 255, 255) else Color.argb(38, 0, 0, 0))
+                setStroke(1.dp, if (isDark()) Color.argb(56, 255, 255, 255) else Color.argb(36, 0, 0, 0))
+            }
+        }
+        val trackStates = android.graphics.drawable.StateListDrawable().apply {
+            addState(intArrayOf(android.R.attr.state_checked), track(true))
+            addState(intArrayOf(), track(false))
+        }
+        // the knob: a white circle drawn inside a track-height square, so it sits in the track with an
+        // even margin. (An InsetDrawable reports its inset as padding, and Switch then stretches the
+        // knob over the track ends.)
+        val thumb = object : Drawable() {
+            private val fill = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
+            private val edge = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                style = android.graphics.Paint.Style.STROKE; strokeWidth = 1f; color = Color.argb(28, 0, 0, 0)
+            }
+            override fun draw(c: android.graphics.Canvas) {
+                val b = bounds
+                val r = minOf(b.width(), b.height()) / 2f - inset
+                c.drawCircle(b.exactCenterX(), b.exactCenterY(), r, fill)
+                c.drawCircle(b.exactCenterX(), b.exactCenterY(), r, edge)
+            }
+            override fun getIntrinsicWidth() = trackH
+            override fun getIntrinsicHeight() = trackH
+            override fun setAlpha(a: Int) { fill.alpha = a }
+            override fun setColorFilter(cf: android.graphics.ColorFilter?) {}
+            @Deprecated("Deprecated in Java")
+            override fun getOpacity() = android.graphics.PixelFormat.TRANSLUCENT
+        }
+        sw.thumbTintList = null
+        sw.trackTintList = null
+        sw.thumbDrawable = thumb
+        sw.trackDrawable = trackStates
+        sw.showText = false
+        sw.switchMinWidth = trackW
+        sw.switchPadding = 14.dp
+        sw.minHeight = 44.dp
+    }
+
     private fun pillButton(t: String, filled: Boolean, onClick: () -> Unit) =
         label(t, 15f, if (filled) p.onAccent else p.fg, bold = true).apply {
             gravity = Gravity.CENTER
@@ -2673,24 +3447,394 @@ class MainActivity : Activity() {
         setColor(color)
     }
 
-    private fun ripple(content: Drawable?, radius: Int) =
-        RippleDrawable(ColorStateList.valueOf(alpha(p.fg, 0.12f)), content, rounded(Color.WHITE, radius))
+    private fun ripple(content: Drawable?, radius: Int): Drawable {
+        val r = RippleDrawable(ColorStateList.valueOf(alpha(p.fg, 0.12f)), null, rounded(Color.WHITE, radius))
+        return if (content == null) r else LayerDrawable(arrayOf(content, r))
+    }
 
     private fun alpha(color: Int, a: Float) =
         Color.argb((a * 255).toInt(), Color.red(color), Color.green(color), Color.blue(color))
+
+    /** Sets the text only when it changed (a new text re-lays out the whole page). */
+    private fun TextView.put(s: CharSequence) { if (text?.toString() != s.toString()) text = s }
 
     private fun toast(t: String) = Toast.makeText(this, t, Toast.LENGTH_SHORT).show()
 
     private val Int.dp: Int get() = (this * resources.displayMetrics.density).toInt()
 
+    /**
+     * Multi-band progressive vertical blur + top fade applied strictly to the scrolling content
+     * wrapper so the underlying [GlassBackdrop] stays completely sharp.
+     */
+    /** Settings → Header blur: 3 (three steps, default) or 1 (single); 0 = off (test broadcast only). */
+    private fun headerPasses() = Components.prefs(this).getInt(KEY_HEADER_PASSES, 3)
+
+    private fun buildHeaderBlurEffect(yTop: Float, yEnd: Float, fadeStart: Float): RenderEffect {
+        val d = resources.displayMetrics.density
+        val dark = isDark()
+        val vr = if (dark) 0x12 / 255f else 0.957f
+        val vg = if (dark) 0x0D / 255f else 0.933f
+        val vb = if (dark) 0x07 / 255f else 0.902f
+        val passes = headerPasses()
+        fun bandMask(band: Float): RenderEffect {
+            val sh = RuntimeShader(HEADER_BLUR_MASK_SRC).apply {
+                setFloatUniform("yTop", yTop)
+                setFloatUniform("yEnd", yEnd)
+                setFloatUniform("fadeStart", fadeStart)
+                setFloatUniform("band", band)
+                setFloatUniform("passes", if (passes == 1) 1f else 3f)
+                setFloatUniform("veil", vr, vg, vb)
+            }
+            return RenderEffect.createRuntimeShaderEffect(sh, "src")
+        }
+        val b0 = bandMask(0f)
+        if (passes == 1) {
+            // one blur instead of three (each pass blurs the whole scrolling layer, every frame it
+            // changes): about a third of the GPU work while scrolling, nearly the same look
+            val b = RenderEffect.createChainEffect(bandMask(1f), RenderEffect.createBlurEffect(13f * d, 13f * d, Shader.TileMode.CLAMP))
+            return RenderEffect.createBlendModeEffect(b0, b, BlendMode.PLUS)
+        }
+        val b1 = RenderEffect.createChainEffect(bandMask(1f), RenderEffect.createBlurEffect(5.5f * d, 5.5f * d, Shader.TileMode.CLAMP))
+        val b2 = RenderEffect.createChainEffect(bandMask(2f), RenderEffect.createBlurEffect(11.5f * d, 11.5f * d, Shader.TileMode.CLAMP))
+        val b3 = RenderEffect.createChainEffect(bandMask(3f), RenderEffect.createBlurEffect(18f * d, 18f * d, Shader.TileMode.CLAMP))
+        val low = RenderEffect.createBlendModeEffect(b0, b1, BlendMode.PLUS)
+        val high = RenderEffect.createBlendModeEffect(b2, b3, BlendMode.PLUS)
+        return RenderEffect.createBlendModeEffect(low, high, BlendMode.PLUS)
+    }
+
+    /**
+     * Draggable and tappable 3-stop sliding selector for Light / System / Dark theme mode.
+     */
+    private inner class ThemeSliderView(
+        initialMode: Int,
+        private val onModeSelected: (Int) -> Unit,
+    ) : View(this) {
+        private val labels = arrayOf("Light", "System", "Dark")
+        private val d = resources.displayMetrics.density
+        private var mode = initialMode.coerceIn(0, 2)
+        private var pos = mode.toFloat()
+        private var anim: android.animation.ValueAnimator? = null
+
+        private val thumbRect = android.graphics.RectF()
+        private val thumbFill = blendColors(p.accent, p.accent2).let { c ->
+            Color.argb(242, Color.red(c), Color.green(c), Color.blue(c))
+        }
+        private val thumbPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            style = android.graphics.Paint.Style.FILL
+            color = thumbFill
+            setShadowLayer(4f * d, 0f, 1.5f * d, alpha(Color.BLACK, if (isDark()) 0.45f else 0.18f))
+        }
+        private val rimPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            style = android.graphics.Paint.Style.STROKE
+            strokeWidth = 1f * d
+            color = alpha(Color.WHITE, if (isDark()) 0.25f else 0.45f)
+        }
+        private val textPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            textAlign = android.graphics.Paint.Align.CENTER
+            textSize = 13.5f * d
+            typeface = fontMedium
+        }
+
+        private var downX = 0f
+        private var dragging = false
+        private var lastTickStop = mode
+        private val touchSlop = android.view.ViewConfiguration.get(context).scaledTouchSlop
+
+        init {
+            background = glass(22.dp, level = 2)
+        }
+
+        override fun onDraw(canvas: android.graphics.Canvas) {
+            super.onDraw(canvas)
+            val pad = 4f * d
+            val segW = ((width - 2f * pad) / 3f).coerceAtLeast(1f)
+            val thumbH = (height - 2f * pad).coerceAtLeast(1f)
+            val r = thumbH * 0.5f
+            val left = pad + pos * segW
+            thumbRect.set(left, pad, left + segW, pad + thumbH)
+            canvas.drawRoundRect(thumbRect, r, r, thumbPaint)
+            val rimInset = rimPaint.strokeWidth * 0.5f
+            thumbRect.inset(rimInset, rimInset)
+            canvas.drawRoundRect(thumbRect, r - rimInset, r - rimInset, rimPaint)
+
+            val fm = textPaint.fontMetrics
+            val baseline = height * 0.5f - (fm.ascent + fm.descent) * 0.5f
+            for (i in labels.indices) {
+                val w = (1f - kotlin.math.abs(pos - i)).coerceIn(0f, 1f)
+                textPaint.color = mixColor(p.sub, p.onAccent, w)
+                val cx = pad + (i + 0.5f) * segW
+                canvas.drawText(labels[i], cx, baseline, textPaint)
+            }
+        }
+
+        private fun mixColor(a: Int, b: Int, t: Float): Int {
+            val inv = 1f - t
+            return Color.argb(
+                (Color.alpha(a) * inv + Color.alpha(b) * t).toInt(),
+                (Color.red(a) * inv + Color.red(b) * t).toInt(),
+                (Color.green(a) * inv + Color.green(b) * t).toInt(),
+                (Color.blue(a) * inv + Color.blue(b) * t).toInt(),
+            )
+        }
+
+        override fun onTouchEvent(ev: MotionEvent): Boolean {
+            val pad = 4f * d
+            val segW = ((width - 2f * pad) / 3f).coerceAtLeast(1f)
+            when (ev.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    anim?.cancel()
+                    downX = ev.x
+                    dragging = false
+                    lastTickStop = kotlin.math.round(pos).toInt().coerceIn(0, 2)
+                    return true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    if (!dragging && kotlin.math.abs(ev.x - downX) > touchSlop) {
+                        dragging = true
+                        parent?.requestDisallowInterceptTouchEvent(true)
+                    }
+                    if (dragging) {
+                        pos = ((ev.x - pad - segW * 0.5f) / segW).coerceIn(0f, 2f)
+                        invalidate()
+                        val stop = kotlin.math.round(pos).toInt().coerceIn(0, 2)
+                        if (stop != lastTickStop) {
+                            lastTickStop = stop
+                            performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK)
+                        }
+                    }
+                    return true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    parent?.requestDisallowInterceptTouchEvent(false)
+                    val target = when {
+                        ev.actionMasked == MotionEvent.ACTION_CANCEL -> mode
+                        dragging -> kotlin.math.round(pos).toInt().coerceIn(0, 2)
+                        else -> ((ev.x - pad) / segW).toInt().coerceIn(0, 2)
+                    }
+                    val changed = target != mode
+                    if (changed && !dragging) {
+                        performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK)
+                    }
+                    mode = target
+                    anim?.cancel()
+                    var cancelled = false
+                    anim = android.animation.ValueAnimator.ofFloat(pos, target.toFloat()).apply {
+                        duration = 180L
+                        interpolator = android.view.animation.DecelerateInterpolator()
+                        addUpdateListener {
+                            pos = it.animatedValue as Float
+                            invalidate()
+                        }
+                        addListener(object : android.animation.AnimatorListenerAdapter() {
+                            override fun onAnimationCancel(animation: android.animation.Animator) { cancelled = true }
+                            override fun onAnimationEnd(animation: android.animation.Animator) {
+                                if (!cancelled && changed) onModeSelected(target)
+                            }
+                        })
+                        start()
+                    }
+                    return true
+                }
+            }
+            return super.onTouchEvent(ev)
+        }
+    }
+
+    /**
+     * Pinned title above a scrolling body over [GlassBackdrop].
+     * Child order is fixed as [GlassBackdrop, scrollWrap, titleView] so [LiquidGlass] finds the backdrop.
+     */
+    private fun pinnedBackdropLayout(
+        titleView: TextView,
+        body: LinearLayout,
+        titleLeftPx: Int,
+        titleTopPx: Int,
+        titleBottomGapPx: Int,
+        bodySidePadPx: Int,
+        bodyBottomPadPx: Int,
+        blurBelowTitlePx: Int,
+        fadeBelowTitlePx: Int,
+        edgeToEdge: Boolean,
+        liftPx: Int = 0,
+        liftStartPx: Int = 0,
+        liftSpanPx: Int = 1,
+        initialScrollY: Int = 0,
+        onScrollReady: ((ScrollView) -> Unit)? = null,
+    ): FrameLayout {
+        titleView.measure(
+            View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
+            View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
+        )
+        var titleH = titleView.measuredHeight
+        var topInset = 0
+        var bottomInset = 0
+        var lastKey = ""
+        var headerBlur: RenderEffect? = null
+        var appliedBlur: RenderEffect? = null
+        var targetLiftY = 0f
+        var currentLiftY = 0f
+        var liftAnimRunning = false
+        var liftLastNs = 0L
+
+        val liftFrame = object : android.view.Choreographer.FrameCallback {
+            override fun doFrame(now: Long) {
+                if (!liftAnimRunning || !titleView.isAttachedToWindow) {
+                    liftAnimRunning = false
+                    return
+                }
+                if (liftLastNs == 0L) liftLastNs = now
+                val dt = ((now - liftLastNs) / 1e9f).coerceIn(0.001f, 0.05f)
+                liftLastNs = now
+                val diff = targetLiftY - currentLiftY
+                if (kotlin.math.abs(diff) < 0.15f) {
+                    currentLiftY = targetLiftY
+                    titleView.translationY = currentLiftY
+                    liftAnimRunning = false
+                } else {
+                    val alpha = 1f - kotlin.math.exp(-dt * 5.0f)
+                    currentLiftY += diff * alpha
+                    titleView.translationY = currentLiftY
+                    android.view.Choreographer.getInstance().postFrameCallback(this)
+                }
+            }
+        }
+        titleView.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+            override fun onViewAttachedToWindow(v: View) {}
+            override fun onViewDetachedFromWindow(v: View) {
+                liftAnimRunning = false
+                android.view.Choreographer.getInstance().removeFrameCallback(liftFrame)
+            }
+        })
+
+        val bd = GlassBackdrop(this@MainActivity)
+        val scroll = BounceScrollView(this).apply {
+            isVerticalScrollBarEnabled = false
+            clipToPadding = false
+            addView(body)
+        }
+        onScrollReady?.invoke(scroll)
+        if (initialScrollY > 0) {
+            scroll.post {
+                scroll.scrollTo(0, initialScrollY)
+                if (liftPx > 0) {
+                    val lu = ((scroll.scrollY - liftStartPx).toFloat() / liftSpanPx.coerceAtLeast(1)).coerceIn(0f, 1f)
+                    val ease = lu * lu * lu * (lu * (lu * 6f - 15f) + 10f)
+                    targetLiftY = -liftPx * ease
+                    currentLiftY = targetLiftY
+                    titleView.translationY = currentLiftY
+                }
+            }
+        }
+        val scrollWrap = HeaderBlurFrame(this).apply {
+            clipChildren = false
+            clipToPadding = false
+            addView(scroll, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+        }
+        val titleLp = FrameLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply {
+            gravity = Gravity.TOP or Gravity.START
+            leftMargin = titleLeftPx
+            topMargin = titleTopPx
+        }
+
+        fun syncLayout() {
+            body.setPadding(
+                bodySidePadPx,
+                topInset + titleTopPx + titleH + titleBottomGapPx,
+                bodySidePadPx,
+                bodyBottomPadPx + bottomInset,
+            )
+            val wantTop = topInset + titleTopPx
+            if (titleLp.topMargin != wantTop) {
+                titleLp.topMargin = wantTop
+                titleView.layoutParams = titleLp
+            }
+            val key = "$topInset:$bottomInset:$titleH"
+            if (key != lastKey) {
+                lastKey = key
+                val liftedBottom = (topInset + titleTopPx - liftPx + titleH).toFloat()
+                val yTop = if (edgeToEdge) (topInset + 4.dp).toFloat() else 0f
+                val yEnd = liftedBottom + blurBelowTitlePx
+                val fadeStart = liftedBottom + fadeBelowTitlePx
+                headerBlur = buildHeaderBlurEffect(yTop, yEnd, fadeStart)
+                scrollWrap.stripBottom = kotlin.math.ceil(yEnd).toInt()
+                if (scroll.scrollY > 0 && headerPasses() > 0) {
+                    appliedBlur = headerBlur
+                    scrollWrap.effect = headerBlur
+                }
+            }
+        }
+
+        syncLayout()
+        titleView.addOnLayoutChangeListener { _, _, top, _, bottom, _, _, _, _ ->
+            val h = bottom - top
+            if (h > 0 && h != titleH) {
+                titleH = h
+                syncLayout()
+            }
+        }
+        scroll.setOnScrollChangeListener { _, _, y, _, _ ->
+            bd.setScroll(y, scroll)
+            val want = if (y > 0 && headerPasses() > 0) headerBlur else null
+            if (appliedBlur !== want) {
+                appliedBlur = want
+                scrollWrap.effect = want
+            }
+            if (liftPx > 0) {
+                val lu = ((y - liftStartPx).toFloat() / liftSpanPx.coerceAtLeast(1)).coerceIn(0f, 1f)
+                val ease = lu * lu * lu * (lu * (lu * 6f - 15f) + 10f)
+                targetLiftY = -liftPx * ease
+                if (!android.animation.ValueAnimator.areAnimatorsEnabled()) {
+                    currentLiftY = targetLiftY
+                    titleView.translationY = currentLiftY
+                } else if (!liftAnimRunning && kotlin.math.abs(targetLiftY - currentLiftY) >= 0.15f) {
+                    liftAnimRunning = true
+                    liftLastNs = 0L
+                    android.view.Choreographer.getInstance().postFrameCallback(liftFrame)
+                }
+            }
+        }
+
+        return FrameLayout(this).apply {
+            addView(bd, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+            addView(scrollWrap, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+            addView(titleView, titleLp)
+            if (edgeToEdge) {
+                setOnApplyWindowInsetsListener { _, insets ->
+                    val sys = insets.getInsets(android.view.WindowInsets.Type.systemBars())
+                    val ime = insets.getInsets(android.view.WindowInsets.Type.ime())
+                    val t = sys.top
+                    val b = maxOf(sys.bottom, ime.bottom)
+                    if (t != topInset || b != bottomInset) {
+                        topInset = t
+                        bottomInset = b
+                        syncLayout()
+                    }
+                    insets
+                }
+            }
+        }
+    }
+
     // ================================================================== theme
 
-    private fun isDark() =
-        (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+    private fun isDark() = Look.isDark(this)
 
     private fun white(a: Float) = Color.argb((a * 255).toInt(), 255, 255, 255)
 
     private fun palette() = Look.palette(this)
+
+    @Suppress("DEPRECATION")
+    private fun styleDialogWindow(w: android.view.Window?) {
+        w?.apply {
+            statusBarColor = Color.TRANSPARENT
+            navigationBarColor = Color.TRANSPARENT
+            isNavigationBarContrastEnforced = false
+            setDecorFitsSystemWindows(false)
+            setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+            val f = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+            decorView.post { insetsController?.setSystemBarsAppearance(if (isDark()) 0 else f, f) }
+        }
+    }
 
     @Suppress("DEPRECATION")
     private fun styleSystemBars() {
@@ -2699,9 +3843,45 @@ class MainActivity : Activity() {
         window.isNavigationBarContrastEnforced = false
         window.decorView.setBackgroundColor(p.base)
         window.setDecorFitsSystemWindows(false)
-        if (!isDark()) {
-            val f = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
-            window.insetsController?.setSystemBarsAppearance(f, f)
-        }
+        val f = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+        window.insetsController?.setSystemBarsAppearance(if (isDark()) 0 else f, f)
+    }
+
+    private companion object {
+        const val KEY_HEADER_PASSES = "header_passes"
+        private const val HEADER_BLUR_MASK_SRC = """
+uniform shader src;
+uniform float yTop;
+uniform float yEnd;
+uniform float fadeStart;
+uniform float band;
+uniform float passes;
+uniform float3 veil;
+
+half4 main(float2 fc) {
+    float u = clamp((yEnd - fc.y) / max(yEnd - yTop, 1.0), 0.0, 1.0);
+    float t = u * (0.85 + 0.15 * u);
+    float s = t * 3.0;
+    float w = 0.0;
+    if (passes < 1.5) {
+        // one blur pass: sharp (band 0) fading into the single blurred copy (band 1)
+        w = band < 0.5 ? 1.0 - t : t;
+    } else if (band < 0.5) {
+        w = clamp(1.0 - s, 0.0, 1.0);
+    } else if (band < 1.5) {
+        w = max(0.0, 1.0 - abs(s - 1.0));
+    } else if (band < 2.5) {
+        w = max(0.0, 1.0 - abs(s - 2.0));
+    } else {
+        w = clamp(s - 2.0, 0.0, 1.0);
+    }
+    if (w <= 0.0) return half4(0.0);
+    half4 c = src.eval(fc);
+    float fu = clamp((fadeStart - fc.y) / max(fadeStart, 1.0), 0.0, 1.0);
+    float soft = 0.25 * fu * fu * (3.0 - 2.0 * fu);
+    half3 rgb = mix(c.rgb, half3(veil) * c.a, half(soft));
+    return half4(rgb, c.a) * half(w);
+}
+"""
     }
 }

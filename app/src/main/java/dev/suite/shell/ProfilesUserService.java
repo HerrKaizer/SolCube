@@ -149,6 +149,7 @@ public class ProfilesUserService extends ISuiteService.Stub {
         goneSince = 0;
         lockedSince = 0;
         L.i("▶ " + activeName + " (" + hit.pkg + ")");
+        if (!activeName.isEmpty()) SysSettings.notice(activeName, true);
 
         JSONArray actions = p.optJSONArray("actions");
         if (actions == null) return;
@@ -191,6 +192,7 @@ public class ProfilesUserService extends ISuiteService.Stub {
     private void exitActive(String why) {
         if (activeId.isEmpty()) return;
         L.i("■ " + activeName + " (" + why + ")");
+        if (!activeName.isEmpty()) SysSettings.notice(activeName + " off", true);
         if (activeRestore && !saved.isEmpty()) {
             java.util.List<Map.Entry<String, String>> entries = new java.util.ArrayList<>(saved.entrySet());
             for (int i = entries.size() - 1; i >= 0; i--) {

@@ -89,6 +89,16 @@ public class UtilUserService extends ISuiteService.Stub {
                 L.i("old public backup removed");
                 return "ok";
             }
+            if (cmd.equals("keep-alive")) {
+                // Android's own background exemptions for Suite. vivo's per-app "background high power
+                // usage" switch lives inside com.iqoo.powersaving with no shell interface, so it can't be set here.
+                SysSettings.exec("dumpsys", "deviceidle", "whitelist", "+dev.suite");
+                SysSettings.exec("cmd", "appops", "set", "dev.suite", "RUN_ANY_IN_BACKGROUND", "allow");
+                SysSettings.exec("cmd", "appops", "set", "dev.suite", "RUN_IN_BACKGROUND", "allow");
+                SysSettings.exec("cmd", "appops", "set", "dev.suite", "AUTO_REVOKE_PERMISSIONS_IF_UNUSED", "ignore");
+                SysSettings.exec("am", "set-standby-bucket", "dev.suite", "active");
+                return "ok";
+            }
             if (cmd.equals("cts")) {   // Circle to Search straight away (no ripple: the listener isn't running)
                 return CtsTrigger.trigger(CtsTrigger.service(), 1) ? "ok" : "failed";
             }
@@ -153,7 +163,7 @@ public class UtilUserService extends ISuiteService.Stub {
      */
     private static void nfcSession(String pkg) {
         boolean wasOn = nfcOn();
-        if (!wasOn) { SysSettings.exec("svc", "nfc", "enable"); L.i("NFC on for " + pkg); SysSettings.notice("NFC on", true); }
+        if (!wasOn) { ShellActions.setNfc(true); L.i("NFC on for " + pkg); SysSettings.notice("NFC on", true); }
         else L.i("NFC was already on");
         try {
             long start = System.currentTimeMillis(), goneSince = 0, lockedSince = 0;
@@ -180,7 +190,7 @@ public class UtilUserService extends ISuiteService.Stub {
             }
         } catch (InterruptedException ignored) {}
         if (!wasOn) {
-            SysSettings.exec("svc", "nfc", "disable");
+            ShellActions.setNfc(false);
             L.i("NFC off (" + pkg + " closed)");
             // notice() runs on its own thread: send it here, before the process exits
             SysSettings.exec("am", "broadcast", "-n", "dev.suite/.IslandReceiver", "--es", "text", "NFC off", "--ez", "ok", "true");

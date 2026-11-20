@@ -72,7 +72,7 @@ class TempOverlay(private val ctx: Context) {
             if (pm.isInteractive) {
                 cpu = Thermal.cpu()
                 gpu = Thermal.gpu()
-                val wantLoad = Style.showLoad(ctx) && !isPortrait()
+                val wantLoad = Style.showLoad(ctx)
                 val needTemps = cpu == null || gpu == null
                 if (needTemps || wantLoad) {
                     val raw = runCatching { Shell.service(Shell.Kind.TEMP)?.command(if (wantLoad) "all" else "temps") }.getOrNull()
@@ -153,7 +153,7 @@ class TempOverlay(private val ctx: Context) {
         loadView?.let { lv ->
             lv.barCpu = cpuLoad
             lv.barGpu = gpuLoad
-            if (lv.barMode) lv.invalidate() else lv.text = "${fmt(cpuLoad)}$sep${fmt(gpuLoad)}"
+            if (lv.barMode || lv.vertical) lv.invalidate() else lv.text = "${fmt(cpuLoad)}$sep${fmt(gpuLoad)}"
         }
     }
 
@@ -216,6 +216,15 @@ class TempOverlay(private val ctx: Context) {
                     invalidate()
                 }
             }
+        /** Portrait: two upright bars side by side (CPU left, GPU right), filling from the bottom. */
+        var vertical: Boolean = false
+            set(value) {
+                if (field != value) {
+                    field = value
+                    requestLayout()
+                    invalidate()
+                }
+            }
         var barScale: Float = 1f
         var barRefHeightPx: Int = 0
         var barCpu: Int? = null
@@ -225,7 +234,7 @@ class TempOverlay(private val ctx: Context) {
         private val surfacePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
         private val rimPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
-            color = 0x26FFFFFF
+            color = 0x66FFFFFF   // the outline: clearly visible on light and dark wallpapers
         }
         private val trackPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.FILL
@@ -238,6 +247,15 @@ class TempOverlay(private val ctx: Context) {
         private val barRect = RectF()
 
         override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+            if (vertical) {
+                val barW = dp(3.5f * barScale)
+                val gap = dp(4f * barScale)
+                setMeasuredDimension(
+                    resolveSize(paddingLeft + (barW * 2f + gap).toInt() + paddingRight, widthMeasureSpec),
+                    resolveSize(paddingTop + dp(30f * barScale).toInt() + paddingBottom, heightMeasureSpec),
+                )
+                return
+            }
             if (!barMode) {
                 super.onMeasure(widthMeasureSpec, heightMeasureSpec)
                 return
@@ -283,6 +301,28 @@ class TempOverlay(private val ctx: Context) {
                     val rr = (r - strokePx / 2f).coerceAtLeast(0f)
                     if (strokePx > 0f && rr > 0f) canvas.drawRoundRect(rimRect, rr, rr, rimPaint)
                 }
+            }
+            if (vertical) {
+                val barW = dp(3.5f * barScale)
+                val gap = dp(4f * barScale)
+                val top = paddingTop.toFloat()
+                val trackH = (height - paddingTop - paddingBottom).toFloat()
+                if (trackH <= 0f) return
+                val x0 = (width - (barW * 2f + gap)) / 2f
+                val br = barW / 2f
+                fun drawColumn(x: Float, value: Int?) {
+                    barRect.set(x, top, x + barW, top + trackH)
+                    canvas.drawRoundRect(barRect, br, br, trackPaint)
+                    val v = value ?: return
+                    if (v <= 0) return
+                    val fillH = maxOf(barW, trackH * (v.coerceIn(0, 100) / 100f))
+                    barPaint.color = loadBarColor(v)
+                    barRect.set(x, top + trackH - minOf(trackH, fillH), x + barW, top + trackH)
+                    canvas.drawRoundRect(barRect, br, br, barPaint)
+                }
+                drawColumn(x0, barCpu)
+                drawColumn(x0 + barW + gap, barGpu)
+                return
             }
             if (!barMode) {
                 super.onDraw(canvas)
@@ -352,15 +392,27 @@ class TempOverlay(private val ctx: Context) {
             title = "SuiteTemp"
         }
 
-        // Drag to move; position is remembered.
+        // Drag to move; position is remembered. Hold still to turn the pill off.
         var downX = 0f; var downY = 0f; var startX = 0; var startY = 0
+        var dragged = false; var held = false
+        val slop = android.view.ViewConfiguration.get(ctx).scaledTouchSlop
+        val longPress = Runnable {
+            held = true
+            box.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+            Island.show(ctx, "Temp pill off")
+            Thread { Components.setTemp(ctx, false) }.start()
+        }
         box.setOnTouchListener { _, e ->
             when (e.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     downX = e.rawX; downY = e.rawY; startX = params.x; startY = params.y
+                    dragged = false; held = false
+                    box.postDelayed(longPress, 1000L)   // 1 s
                 }
                 MotionEvent.ACTION_MOVE -> {
+                    if (held) return@setOnTouchListener true
                     val dx = e.rawX - downX; val dy = e.rawY - downY
+                    if (!dragged && (abs(dx) > slop || abs(dy) > slop)) { dragged = true; box.removeCallbacks(longPress) }
                     if (abs(dx) > 2 || abs(dy) > 2) {
                         val (maxX, maxY) = travel()
                         params.x = (startX + dx.toInt()).coerceIn(0, maxX)
@@ -369,6 +421,8 @@ class TempOverlay(private val ctx: Context) {
                     }
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    box.removeCallbacks(longPress)
+                    if (held) return@setOnTouchListener true
                     // Saved as a fraction of the free space so it lands in the same spot after rotation.
                     val (maxX, maxY) = travel()
                     val o = orientationSuffix()
@@ -384,6 +438,23 @@ class TempOverlay(private val ctx: Context) {
         placeFromPrefs()
         wm.addView(box, params)
         box.post { applyStyle() }
+        // The pill's real size only settles after layout (numbers change width, the second pill
+        // comes and goes, blur material): whenever it changes, pull it back fully on screen.
+        box.addOnLayoutChangeListener { v, l, t, r, b, ol, ot, orr, ob ->
+            if (r - l != orr - ol || b - t != ob - ot) v.post { keepOnScreen() }
+        }
+    }
+
+    /** Moves the pill back inside the screen if its current size pokes past an edge. */
+    private fun keepOnScreen() {
+        val v = root ?: return
+        if (!v.isAttachedToWindow || v.width == 0) return
+        val (maxX, maxY) = travel()
+        val x = params.x.coerceIn(0, maxX); val y = params.y.coerceIn(0, maxY)
+        if (x != params.x || y != params.y) {
+            params.x = x; params.y = y
+            runCatching { wm.updateViewLayout(v, params) }
+        }
     }
 
     private fun isPortrait(): Boolean {
@@ -399,10 +470,16 @@ class TempOverlay(private val ctx: Context) {
     /** How far the pill can move on each axis while staying fully on screen. */
     private fun travel(): Pair<Int, Int> {
         val v = root ?: return 0 to 0
-        val spec = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
-        v.measure(spec, spec)
+        // the real on-screen size once laid out; a measure only as a first guess (it said less than
+        // the pill really took, so it could end up partly past the edge)
+        val pw: Int; val ph: Int
+        if (v.width > 0 && v.height > 0) { pw = v.width; ph = v.height } else {
+            val spec = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+            v.measure(spec, spec)
+            pw = v.measuredWidth; ph = v.measuredHeight
+        }
         val (w, h) = screenSize()
-        return (w - v.measuredWidth).coerceAtLeast(0) to (h - v.measuredHeight).coerceAtLeast(0)
+        return (w - pw).coerceAtLeast(0) to (h - ph).coerceAtLeast(0)
     }
 
     /** Portrait and landscape each remember their own spot. */
@@ -454,7 +531,7 @@ class TempOverlay(private val ctx: Context) {
         val v = dp((if (portrait) 9f else 4f) * scale).toInt()
         val blur = Style.blur(ctx)
         val radius = dp(100f)
-        val stroke = dp(0.55f * scale)
+        val stroke = dp(1f * scale).coerceAtLeast(dp(0.8f))
 
         for (pill in listOf(tv, lv)) {
             pill.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f * scale)
@@ -488,20 +565,25 @@ class TempOverlay(private val ctx: Context) {
             pill.invalidate()
         }
 
-        // Landscape: second pill sits to the right. Portrait: hidden.
+        // Landscape: second pill sits to the right. Portrait: below, as two upright bars.
         val fm = tv.paint.fontMetricsInt
         lv.barRefHeightPx = fm.bottom - fm.top
         lv.barScale = scale
         lv.barMode = Style.loadBars(ctx)
+        // portrait follows the "load as bars" switch too: upright bars, or the two numbers stacked
+        lv.vertical = portrait && lv.barMode
+        if (lv.vertical || lv.barMode) lv.text = "" else render()
 
         box.orientation = if (portrait) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
         box.gravity = if (portrait) Gravity.CENTER_HORIZONTAL else Gravity.CENTER_VERTICAL
-        lv.visibility = if (!portrait && Style.showLoad(ctx)) View.VISIBLE else View.GONE
+        lv.visibility = if (Style.showLoad(ctx)) View.VISIBLE else View.GONE
 
         val lp = lv.layoutParams as LinearLayout.LayoutParams
         val gap = dp(4f * scale).toInt()
         lp.leftMargin = if (portrait) 0 else gap
         lp.topMargin = if (portrait) gap else 0
+        // portrait: as wide as the temperature pill above it (the column takes its width)
+        lp.width = if (portrait) LinearLayout.LayoutParams.MATCH_PARENT else LinearLayout.LayoutParams.WRAP_CONTENT
         lv.layoutParams = lp
         lv.requestLayout()
     }

@@ -466,6 +466,9 @@ public class RoutinesUserService extends ISuiteService.Stub {
                     case "screen_off":
                         if (type.equals(event) && gate) run(r, type, 0);
                         break;
+                    case "gesture":   // event-only: GestureListener sends "gesture:<fingers>:<id>"
+                        if (event != null && event.equals("gesture:" + t.optInt("fingers", 2) + ":" + t.optString("gesture")) && gate) run(r, "gesture", 0);
+                        break;
                     case "time": {
                         int at = minutes(t.optString("at"));
                         if (at < 0 || !gate) break;
@@ -593,8 +596,10 @@ public class RoutinesUserService extends ISuiteService.Stub {
             }
             case "wifi_gone": {
                 if (!"on".equals(read("wifi"))) { goneSince.remove(id); return false; }
+                long waitMs = wifiGoneWaitMs(t);
                 Set<String> want = ssids(t);
-                if (now - lastScanRequest > 120_000) {
+                long scanEvery = Math.min(120_000L, waitMs);
+                if (now - lastScanRequest >= scanEvery) {
                     lastScanRequest = now;
                     SysSettings.exec("cmd", "wifi", "start-scan");
                 }
@@ -603,11 +608,21 @@ public class RoutinesUserService extends ISuiteService.Stub {
                 if (seen) { goneSince.remove(id); inRange.add(id); return false; }
                 if (!inRange.contains(id)) return false;
                 Long since = goneSince.get(id);
-                if (since == null) { goneSince.put(id, now); L.i(r.optString("name") + ": " + String.join(", ", want) + " not in range, waiting"); return false; }
-                return now - since >= Math.max(1, t.optInt("minutes", 10)) * 60_000L;
+                if (since == null) {
+                    goneSince.put(id, now);
+                    L.i(r.optString("name") + ": " + String.join(", ", want) + " not in range, waiting");
+                    if (waitMs < 60_000L) h.postDelayed(() -> evaluate("wifi_gone"), waitMs + 500L);
+                    return false;
+                }
+                return now - since >= waitMs;
             }
         }
         return false;
+    }
+
+    private static long wifiGoneWaitMs(JSONObject t) {
+        if (t.has("seconds")) return Math.max(30, t.optInt("seconds", 600)) * 1000L;
+        return Math.max(1, t.optInt("minutes", 10)) * 60_000L;
     }
 
     private static boolean matchesCharger(String mode, BatteryInfo b) {
@@ -927,6 +942,10 @@ public class RoutinesUserService extends ISuiteService.Stub {
             o.put("observing", observing);
             o.put("armed", armed);
             o.put("unlockEvents", unlockEvents);
+            o.put("gestures", GestureListener.listening());
+            o.put("gestureDevice", GestureListener.device);
+            o.put("lastGesture", GestureListener.last);
+            o.put("lastDrawing", GestureListener.lastDrawing);
             o.put("lastRun", state.optJSONObject("lastRun"));
             o.put("log", new JSONArray(L.recent(30)));
             return o.toString();
@@ -947,6 +966,8 @@ public class RoutinesUserService extends ISuiteService.Stub {
                 goneSince.clear();
                 inRange.clear();
                 L.i("loaded " + routines.length() + " routines");
+                GestureListener.configure(new JSONObject(json).optJSONObject("gestures"), routines,
+                        (gid, fingers, res) -> evaluate("gesture:" + fingers + ":" + gid));
                 evaluate(null);
             } catch (Exception e) {
                 L.e("configure", e);

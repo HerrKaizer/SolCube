@@ -84,8 +84,12 @@ final class SysSettings {
 
     /** Shows Suite's island pill with this text (Suite's IslandReceiver draws it). Doesn't block. */
     static void notice(String text, boolean ok) {
-        new Thread(() -> exec("am", "broadcast", "-n", "dev.suite/.IslandReceiver",
-                "--es", "text", text, "--ez", "ok", String.valueOf(ok)), "notice").start();
+        new Thread(() -> {
+            // the pill draws in Suite's accessibility overlay (above the status bar): make sure that's on
+            AppKeeper.ensureA11y();
+            exec("am", "broadcast", "-n", "dev.suite/.IslandReceiver",
+                "--es", "text", text, "--ez", "ok", String.valueOf(ok));
+        }, "notice").start();
     }
 
     static String exec(String... cmd) {

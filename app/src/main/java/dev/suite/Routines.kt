@@ -53,6 +53,10 @@ object Routines {
         "Schedule" to listOf(
             "time" to "At a time",
         ),
+        "Gestures" to listOf(
+            "gesture1" to "One-finger gesture",   // picker only: stored as type "gesture", fingers 1
+            "gesture" to "Two-finger gesture",
+        ),
     )
 
     val TRIGGERS = linkedMapOf<String, String>().apply {
@@ -278,7 +282,8 @@ object Routines {
         else runCatching { s.configure(config(ctx)) }
     }
 
-    fun config(ctx: Context): String = JSONObject().put("routines", JSONArray(load(ctx))).toString()
+    fun config(ctx: Context): String = JSONObject().put("routines", JSONArray(load(ctx)))
+        .put("gestures", GestureStore.config(ctx)).toString()
 
     fun newId() = "r" + System.currentTimeMillis().toString(36)
 
@@ -286,7 +291,15 @@ object Routines {
 
     private val DAY = listOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
-    fun summary(r: JSONObject, all: List<JSONObject>, appName: (String) -> String = { it }): String {
+    fun wifiGoneSeconds(t: JSONObject): Int =
+        if (t.has("seconds")) t.optInt("seconds", 600).coerceAtLeast(30)
+        else t.optInt("minutes", 10).coerceAtLeast(1) * 60
+
+    fun wifiGoneDurationText(sec: Int): String =
+        if (sec < 60) "$sec sec" else "${sec / 60} min"
+
+    fun summary(r: JSONObject, all: List<JSONObject>, appName: (String) -> String = { it },
+                gestureName: (String) -> String = { dev.suite.shell.Gestures.builtinName(it) ?: "custom gesture" }): String {
         val t = r.optJSONObject("trigger") ?: JSONObject()
         val ssids = strList(t.optJSONArray("ssids"))
         val nets = if (ssids.isEmpty()) "(no network)" else ssids.joinToString(" or ")
@@ -297,7 +310,7 @@ object Routines {
         val head = when (t.optString("type")) {
             "wifi_connect" -> if (t.optBoolean("any")) "Connects to any Wi-Fi" else "Connects to $nets"
             "wifi_disconnect" -> if (ssids.isEmpty()) "Wi-Fi disconnects" else "Disconnects from $nets"
-            "wifi_gone" -> "$nets out of range for ${t.optInt("minutes", 10)} min"
+            "wifi_gone" -> "$nets out of range for ${wifiGoneDurationText(wifiGoneSeconds(t))}"
             "time" -> "At ${t.optString("at", "?")}"
             "wifi_off" -> "Wi-Fi is off (checked every ${t.optInt("minutes", 3)} min)"
             "bt_connect" -> "$devText connects"
@@ -315,6 +328,8 @@ object Routines {
             "temp_above" -> "Battery temp ≥ ${t.optInt("temp", 42)} °C"
             "app_open" -> "When $appText opens"
             "app_close" -> "When $appText closes"
+            "gesture" -> t.optString("gesture").takeIf { it.isNotEmpty() }?.let { gestureName(it) }
+                ?.let { "Gesture: $it (${if (t.optInt("fingers", 2) == 1) "1 finger" else "2 fingers"})" } ?: "Gesture (none picked)"
             else -> TRIGGERS[t.optString("type")] ?: "?"
         }
         val parts = mutableListOf(head)

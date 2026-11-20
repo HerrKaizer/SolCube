@@ -69,3 +69,7 @@ vivo's background cleaner can stop apps. In Settings → Battery → Background 
 - Install the new APK over the old one. **Don't uninstall first**: updating keeps all settings and routines.
 - Settings are also part of Android's Google backup, so they come back after a reinstall or on a new phone.
 - Missing something? Tap **Can't find a feature?** in the app, or DM [u/HerrKaizer__](https://www.reddit.com/user/HerrKaizer__/) on Reddit.
+
+## Privacy
+
+Suite collects no data: no accounts, analytics, ads or tracking. Everything runs on your phone; the only network request is the update check to GitHub. Full details in the [Privacy Policy](PRIVACY.md).
