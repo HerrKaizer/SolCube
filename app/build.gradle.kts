@@ -11,8 +11,8 @@ android {
         applicationId = "dev.suite"
         minSdk = 33
         targetSdk = 34
-        versionCode = 31
-        versionName = "2.1.10"   // 2026-11-17: security fixes (ripple-port handshake, guarded hold entry, helper token, old backup removed, not debuggable)
+        versionCode = 50
+        versionName = "3.0.0"   // 2026-11-20: photo wallpaper (feather + satin) with light sweep, layered liquid glass
     }
 
     buildTypes {

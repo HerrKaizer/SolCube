@@ -28,6 +28,8 @@ object Shell {
         STREAM(Components.KEY_STREAM, dev.suite.shell.StreamUserService::class.java, "stream"),
         MIX(Components.KEY_MIX, dev.suite.shell.MixUserService::class.java, "mix"),
         ROUTINES(Routines.KEY, dev.suite.shell.RoutinesUserService::class.java, "routines"),
+        PROFILES(Profiles.KEY, dev.suite.shell.ProfilesUserService::class.java, "profiles"),
+        TEMP(Components.KEY_TEMP, dev.suite.shell.TempUserService::class.java, "temp"),
         UTIL("util_never_enabled", dev.suite.shell.UtilUserService::class.java, "util"),   // one-off jobs
         NFC("nfc_never_enabled", dev.suite.shell.UtilUserService::class.java, "nfc"),     // NFC while the double-press app is open; exits by itself
     }
@@ -76,6 +78,7 @@ object Shell {
                 if (k == Kind.FI) Thread { runCatching { s.configure(Components.gameConfig(app)) } }.start()
                 if (k == Kind.CTS) Thread { runCatching { s.configure(Components.ctsConfig(app)) } }.start()
                 if (k == Kind.ROUTINES) Thread { runCatching { s.configure(Routines.config(app)) } }.start()
+                if (k == Kind.PROFILES) Thread { runCatching { s.configure(Profiles.config(app)) } }.start()
                 if (k == Kind.STREAM) Thread { runCatching { s.configure(Components.streamConfig(app)) } }.start()
             }
 

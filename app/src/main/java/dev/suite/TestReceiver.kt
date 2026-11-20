@@ -25,8 +25,17 @@ class TestReceiver : BroadcastReceiver() {
                     "dev.suite.RT_CLOSE" -> Shell.service(Shell.Kind.ROUTINES)?.command("close_apps")
                     // --es apps pkg1,pkg2
                     "dev.suite.RT_REVIVE" -> Shell.service(Shell.Kind.ROUTINES)?.command("revive " + intent.getStringExtra("apps"))
-                    "dev.suite.RT_RUN" -> Shell.service(Shell.Kind.ROUTINES)?.command("run " + intent.getStringExtra("id"))
+                    "dev.suite.RT_RUN" -> Shell.command(ctx, Shell.Kind.ROUTINES, "run " + intent.getStringExtra("id"))
                     "dev.suite.RT_STATUS" -> android.util.Log.i("Suite", "routines: " + Shell.service(Shell.Kind.ROUTINES)?.status())
+                    "dev.suite.SET_FEATURE" -> {
+                        val on = intent.getBooleanExtra("on", false)
+                        when (intent.getStringExtra("feature")) {
+                            "mix" -> Components.setMix(ctx, on)
+                            "sr" -> Components.setSr(ctx, on)
+                            "fi" -> Components.setGame(ctx, on)
+                            "temp" -> Components.setTemp(ctx, on)
+                        }
+                    }
                     // the laptop helper hands over its per-run token (it can only reach us via adb)
                     "dev.suite.HELPER_TOKEN" -> intent.getStringExtra("token")?.takeIf { it.matches(Regex("[0-9a-f]{32,64}")) }?.let { t ->
                         Ipc.setHelperToken(ctx, t)

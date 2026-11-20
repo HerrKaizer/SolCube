@@ -38,7 +38,7 @@ object Look {
         base = Color.rgb(0x03, 0x03, 0x04),
         glows = listOf(Color.rgb(0x17, 0x0E, 0x1A), Color.rgb(0x08, 0x15, 0x18), Color.rgb(0x1B, 0x12, 0x0A), Color.rgb(0x0A, 0x0D, 0x1A)),
         glass = white(0.045f), sheen = white(0.035f), stroke = white(0.09f), chip = white(0.045f),
-        fg = Color.rgb(0xF3, 0xEE, 0xE6), sub = Color.rgb(0x9A, 0x94, 0x8C),
+        fg = Color.rgb(0xF3, 0xEE, 0xE6), sub = Color.rgb(0xBD, 0xB6, 0xAC),
         accent = Color.rgb(0xEC, 0xD3, 0xA6), accent2 = Color.rgb(0xBF, 0x93, 0x63),
         onAccent = Color.rgb(0x1C, 0x16, 0x10), link = Color.rgb(0xE2, 0xC2, 0x8E),
         warn = Color.rgb(0xF0, 0xB0, 0x5A), ok = Color.rgb(0x9C, 0xD4, 0xAE),
@@ -47,7 +47,7 @@ object Look {
         base = Color.rgb(0xF6, 0xF2, 0xEC),
         glows = listOf(Color.rgb(0xE8, 0xD4, 0xB8), Color.rgb(0xCF, 0xDC, 0xD4), Color.rgb(0xEC, 0xD2, 0xCB), Color.rgb(0xD4, 0xD7, 0xE6)),
         glass = white(0.58f), sheen = white(0.5f), stroke = white(0.9f), chip = white(0.45f),
-        fg = Color.rgb(0x18, 0x17, 0x1C), sub = Color.rgb(0x6E, 0x69, 0x64),
+        fg = Color.rgb(0x18, 0x17, 0x1C), sub = Color.rgb(0x5F, 0x5A, 0x55),
         accent = Color.rgb(0x2B, 0x29, 0x33), accent2 = Color.rgb(0x15, 0x14, 0x19),
         onAccent = Color.rgb(0xF6, 0xEF, 0xE2), link = Color.rgb(0x8A, 0x63, 0x3C),
         warn = Color.rgb(0xB0, 0x62, 0x10), ok = Color.rgb(0x2F, 0x7D, 0x50),
@@ -70,7 +70,9 @@ object SuiteDialog {
     class Builder(private val ctx: Context) {
         private var title: CharSequence? = null
         private var message: CharSequence? = null
+        private var customView: android.view.View? = null
         private var items: Array<out CharSequence>? = null
+        private var groupedItems: List<Pair<String, List<String>>>? = null
         private var onItem: ((DialogInterface, Int) -> Unit)? = null
         private var multi: BooleanArray? = null
         private var onMulti: ((DialogInterface, Int, Boolean) -> Unit)? = null
@@ -80,9 +82,12 @@ object SuiteDialog {
 
         fun setTitle(t: CharSequence) = apply { title = t }
         fun setMessage(m: CharSequence) = apply { message = m }
-        fun setItems(list: Array<out CharSequence>, l: (DialogInterface, Int) -> Unit) = apply { items = list; onItem = l }
+        fun setView(v: android.view.View) = apply { customView = v }
+        fun setItems(list: Array<out CharSequence>, l: (DialogInterface, Int) -> Unit) = apply { items = list; groupedItems = null; onItem = l }
+        fun setGroupedItems(groups: List<Pair<String, List<String>>>, l: (DialogInterface, Int) -> Unit) =
+            apply { groupedItems = groups; items = null; multi = null; onItem = l }
         fun setMultiChoiceItems(list: Array<out CharSequence>, checked: BooleanArray, l: (DialogInterface, Int, Boolean) -> Unit) =
-            apply { items = list; multi = checked; onMulti = l }
+            apply { items = list; groupedItems = null; multi = checked; onMulti = l }
         fun setPositiveButton(t: CharSequence, l: ((DialogInterface, Int) -> Unit)?) = apply { pos = t to l }
         fun setNegativeButton(t: CharSequence, l: ((DialogInterface, Int) -> Unit)?) = apply { neg = t to l }
         fun setOnDismissListener(l: (DialogInterface) -> Unit) = apply { onDismiss = { l(dlg!!) } }
@@ -98,47 +103,78 @@ object SuiteDialog {
             fun text(t: CharSequence, size: Float, color: Int, weight: Int) = TextView(ctx).apply {
                 text = t; textSize = size; setTextColor(color); typeface = Look.font(ctx, weight)
             }
+            fun glass(radius: Int, tint: Int, level: Int = 1, shine: Float = 1f) =
+                LiquidGlass(p, radius * dens, Look.isDark(ctx), dens, level = level, tint = tint, shine = shine, shadow = false)
             fun press(radius: Int) = RippleDrawable(ColorStateList.valueOf(Color.argb(30, Color.red(p.fg), Color.green(p.fg), Color.blue(p.fg))),
                 null, GradientDrawable().apply { cornerRadius = radius.toFloat(); setColor(Color.WHITE) })
 
             val root = LinearLayout(ctx).apply {
                 orientation = LinearLayout.VERTICAL
                 setPadding(22.dp, 22.dp, 22.dp, 16.dp)
-                background = GradientDrawable().apply {
-                    cornerRadius = 28.dp.toFloat(); setColor(p.panel); setStroke(1.dp, if (Look.isDark(ctx)) p.stroke else Color.argb(26, 0, 0, 0))
-                }
+                background = glass(28, Color.argb(if (Look.isDark(ctx)) 200 else 205, Color.red(p.panel), Color.green(p.panel), Color.blue(p.panel)), level = 0)
             }
             title?.let { root.addView(text(it, 20f, p.fg, 640), LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = 10.dp }) }
 
-            val body = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+            val dark = Look.isDark(ctx)
+            val body = LinearLayout(ctx).apply {
+                orientation = LinearLayout.VERTICAL
+                clipChildren = false
+                clipToPadding = false
+                setPadding(6.dp, 6.dp, 6.dp, 6.dp)
+            }
             message?.let { body.addView(text(it, 14.5f, p.sub, 400).apply { setLineSpacing(3.dp.toFloat(), 1f) }) }
-            items?.forEachIndexed { i, t ->
+            customView?.let { v ->
+                body.addView(v, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply {
+                    if (message != null) topMargin = 12.dp
+                })
+            }
+            fun itemRow(t: CharSequence, idx: Int, parent: LinearLayout, compact: Boolean = false) {
                 val row = LinearLayout(ctx).apply {
                     orientation = LinearLayout.HORIZONTAL
                     gravity = Gravity.CENTER_VERTICAL
-                    setPadding(12.dp, 13.dp, 12.dp, 13.dp)
-                    background = press(14.dp)
+                    setPadding(12.dp, if (compact) 11.dp else 13.dp, 12.dp, if (compact) 11.dp else 13.dp)
+                    background = press(12.dp)
                 }
                 row.addView(text(t, 15.5f, p.fg, 460), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
                 val m = multi
                 if (m != null) {
                     val box = text("", 13f, p.onAccent, 700).apply { gravity = Gravity.CENTER }
                     fun paint() {
-                        box.text = if (m[i]) "✓" else ""
+                        box.text = if (m[idx]) "✓" else ""
                         box.background = GradientDrawable().apply {
                             cornerRadius = 8.dp.toFloat()
-                            if (m[i]) setColor(p.accent) else { setColor(Color.TRANSPARENT); setStroke(2.dp, p.sub) }
+                            if (m[idx]) setColor(p.accent) else { setColor(Color.TRANSPARENT); setStroke(2.dp, p.sub) }
                         }
                     }
                     paint()
                     row.addView(box, LinearLayout.LayoutParams(22.dp, 22.dp).apply { leftMargin = 10.dp })
-                    row.setOnClickListener { m[i] = !m[i]; paint(); onMulti?.invoke(d, i, m[i]) }
+                    row.setOnClickListener { m[idx] = !m[idx]; paint(); onMulti?.invoke(d, idx, m[idx]) }
                 } else {
-                    row.setOnClickListener { d.dismiss(); onItem?.invoke(d, i) }
+                    row.setOnClickListener { d.dismiss(); onItem?.invoke(d, idx) }
                 }
-                body.addView(row, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+                parent.addView(row, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
             }
-            root.addView(ScrollView(ctx).apply { isVerticalScrollBarEnabled = false; addView(body) },
+            groupedItems?.let { groups ->
+                var flat = 0
+                for ((hdr, entries) in groups) {
+                    if (entries.isEmpty()) continue
+                    val secCard = LinearLayout(ctx).apply {
+                        orientation = LinearLayout.VERTICAL
+                        setPadding(0, 0, 0, 4.dp)
+                        background = glass(18, if (dark) Color.argb(16, 255, 255, 255) else Color.argb(165, 255, 255, 255))
+                    }
+                    secCard.addView(text(hdr.uppercase(), 11.5f, p.link, 640).apply {
+                        letterSpacing = 0.08f
+                        setPadding(12.dp, 10.dp, 12.dp, 4.dp)
+                    })
+                    for (entry in entries) {
+                        itemRow(entry, flat++, secCard, compact = true)
+                    }
+                    body.addView(secCard, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = 10.dp })
+                }
+            }
+            items?.forEachIndexed { i, t -> itemRow(t, i, body) }
+            root.addView(ScrollView(ctx).apply { isVerticalScrollBarEnabled = false; clipToPadding = false; addView(body) },
                 LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
 
             if (pos != null || neg != null) {
@@ -148,9 +184,9 @@ object SuiteDialog {
                         gravity = Gravity.CENTER
                         maxLines = 1
                         setPadding(18.dp, 0, 18.dp, 0)
-                        val fill = if (filled) GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(p.accent, p.accent2))
-                            else GradientDrawable().apply { setColor(p.chip); setStroke(1.dp, if (Look.isDark(ctx)) p.stroke else Color.argb(26, 0, 0, 0)) }
-                        fill.cornerRadius = 22.dp.toFloat()
+                        val fill = if (filled) glass(22, Color.argb(242, (Color.red(p.accent) + Color.red(p.accent2)) / 2,
+                                (Color.green(p.accent) + Color.green(p.accent2)) / 2, (Color.blue(p.accent) + Color.blue(p.accent2)) / 2), shine = if (dark) 0.78f else 0.37f)
+                            else glass(22, if (dark) Color.argb(20, 255, 255, 255) else Color.argb(130, 255, 255, 255))
                         background = RippleDrawable(ColorStateList.valueOf(Color.argb(40, 128, 128, 128)), fill, null)
                         setOnClickListener { d.dismiss(); l?.invoke(d, which) }
                     }
@@ -168,7 +204,9 @@ object SuiteDialog {
                 setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
                 val w = minOf(ctx.resources.displayMetrics.widthPixels - 32.dp, 420.dp)
                 setLayout(w, WRAP_CONTENT)
-                setDimAmount(if (Look.isDark(ctx)) 0.7f else 0.4f)
+                setDimAmount(if (Look.isDark(ctx)) 0.55f else 0.25f)
+                addFlags(android.view.WindowManager.LayoutParams.FLAG_BLUR_BEHIND)
+                attributes = attributes.apply { blurBehindRadius = (28 * dens).toInt() }
             }
             d.show()
             // long lists: cap the height so the buttons stay on screen

@@ -14,54 +14,201 @@ object Routines {
 
     // ------------------------------------------------------------------ vocab (engine ids → words)
 
-    val TRIGGERS = linkedMapOf(
-        "wifi_connect" to "Wi-Fi connects",
-        "wifi_gone" to "Wi-Fi out of range",
-        "wifi_off" to "Wi-Fi is off",
-        "dnd_on" to "Do Not Disturb on",
-        "dnd_off" to "Do Not Disturb off",
-        "unlock" to "Phone unlocked",
-        "screen_on" to "Screen turns on",
-        "time" to "At a time",
+    val TRIGGER_GROUPS: List<Pair<String, List<Pair<String, String>>>> = listOf(
+        "Wi-Fi & Network" to listOf(
+            "wifi_connect" to "Wi-Fi connects",
+            "wifi_disconnect" to "Wi-Fi disconnects",
+            "wifi_gone" to "Wi-Fi out of range",
+            "wifi_off" to "Wi-Fi is off",
+            "airplane_on" to "Airplane mode on",
+            "airplane_off" to "Airplane mode off",
+        ),
+        "Bluetooth & Audio" to listOf(
+            "bt_connect" to "Bluetooth connects",
+            "bt_disconnect" to "Bluetooth disconnects",
+            "headphones_connect" to "Headphones connected",
+            "headphones_disconnect" to "Headphones disconnected",
+        ),
+        "Battery & Power" to listOf(
+            "charging_on" to "Charger connected",
+            "charging_off" to "Charger disconnected",
+            "battery_below" to "Battery drops below",
+            "battery_above" to "Battery rises above",
+            "saver_on" to "Battery saver on",
+            "saver_off" to "Battery saver off",
+            "boost_on" to "Boost mode on",
+            "boost_off" to "Boost mode off",
+            "temp_above" to "Battery temperature high",
+        ),
+        "Device & Screen" to listOf(
+            "unlock" to "Phone unlocked",
+            "lock" to "Phone locked",
+            "screen_on" to "Screen turns on",
+            "screen_off" to "Screen turns off",
+            "dnd_on" to "Do Not Disturb on",
+            "dnd_off" to "Do Not Disturb off",
+            "app_open" to "App opened",
+            "app_close" to "App closed",
+        ),
+        "Schedule" to listOf(
+            "time" to "At a time",
+        ),
     )
 
-    val ACTIONS = linkedMapOf(
-        "data" to "Mobile data",
-        "wifi" to "Wi-Fi",
-        "airplane" to "Airplane mode",
-        "saver" to "Battery saver",
-        "dnd" to "Do Not Disturb",
-        "ringer" to "Sound mode",
-        "media" to "Media volume",
-        "close_apps" to "Close all apps",
-        "revive" to "Revive apps",
-        "lock" to "Lock screen",
-        "vibrate" to "Vibrate (done)",
-        "wait" to "Wait",
+    val TRIGGERS = linkedMapOf<String, String>().apply {
+        for ((_, entries) in TRIGGER_GROUPS) {
+            for ((k, v) in entries) put(k, v)
+        }
+    }
+
+    val CONDITION_GROUPS: List<Pair<String, List<Pair<String, String>>>> = listOf(
+        "Battery & Power" to listOf(
+            "battery" to "Battery level",
+            "charging" to "Charging",
+            "saver" to "Battery saver",
+            "boost" to "Boost mode",
+            "temp" to "Battery temperature",
+        ),
+        "Connectivity" to listOf(
+            "wifi_state" to "Wi-Fi state",
+            "wifi_network" to "Wi-Fi network",
+            "bt_state" to "Bluetooth state",
+            "bt_device" to "Bluetooth device",
+            "headphones" to "Headphones / audio",
+            "data" to "Mobile data",
+            "airplane" to "Airplane mode",
+        ),
+        "Device & State" to listOf(
+            "screen" to "Screen / lock",
+            "dnd" to "Do Not Disturb",
+            "ringer" to "Sound mode",
+            "dark_mode" to "Dark mode",
+            "orientation" to "Orientation",
+            "media_playing" to "Media playback",
+            "in_call" to "Phone call",
+            "app" to "Current app",
+        ),
     )
+
+    val CONDITIONS = linkedMapOf<String, String>().apply {
+        for ((_, entries) in CONDITION_GROUPS) {
+            for ((k, v) in entries) put(k, v)
+        }
+    }
+
+    val ACTIONS = Actions.ALL
 
     /** The values an action's chip cycles through (empty = no value). */
-    fun values(type: String): List<String> = when (type) {
-        "ringer" -> listOf("vibrate", "silent", "normal", "restore")
-        "media" -> listOf("0", "25", "50", "75", "100", "restore")
-        "wait" -> listOf("1", "3", "5", "10")
-        "close_apps", "lock", "vibrate", "revive" -> emptyList()
-        else -> listOf("off", "on", "restore")
+    fun values(type: String): List<String> = Actions.values(type, allowRestore = true)
+
+    fun valueText(type: String, v: String): String = Actions.valueText(type, v)
+
+    fun defaultCondition(type: String): JSONObject = JSONObject().put("type", type).apply {
+        when (type) {
+            "battery" -> put("op", "below").put("value", 25)
+            "charging" -> put("value", "charging").put("mode", "any")
+            "wifi_state" -> put("value", "on")
+            "wifi_network" -> put("op", "connected").put("ssids", JSONArray())
+            "bt_state" -> put("value", "on")
+            "bt_device" -> put("op", "connected").put("devices", JSONArray())
+            "headphones" -> put("value", "connected")
+            "data", "airplane", "dnd", "saver", "boost", "dark_mode" -> put("value", "on")
+            "ringer" -> put("value", "normal")
+            "screen" -> put("value", "unlocked")
+            "orientation" -> put("value", "landscape")
+            "media_playing" -> put("value", "playing")
+            "in_call" -> put("value", "in_call")
+            "app" -> put("op", "in").put("apps", JSONArray())
+            "temp" -> put("op", "above").put("value", 40)
+        }
     }
 
-    fun valueText(type: String, v: String): String = when {
-        v == "restore" -> "Back to before"
-        type == "media" -> "$v%"
-        type == "wait" -> "$v s"
+    fun conditionValues(type: String): List<String> = when (type) {
+        "charging" -> listOf("charging", "not_charging")
+        "wifi_state", "bt_state", "data", "airplane", "dnd", "saver", "boost", "dark_mode" -> listOf("on", "off")
+        "headphones" -> listOf("connected", "disconnected")
+        "ringer" -> listOf("normal", "vibrate", "silent")
+        "screen" -> listOf("unlocked", "locked", "screen_on", "screen_off")
+        "orientation" -> listOf("landscape", "portrait")
+        "media_playing" -> listOf("playing", "not_playing")
+        "in_call" -> listOf("in_call", "not_in_call")
+        else -> emptyList()
+    }
+
+    fun conditionValueText(type: String, v: String): String = when (v) {
+        "charging" -> "Charging"
+        "not_charging" -> "Not charging"
+        "connected" -> "Connected"
+        "disconnected" -> "Disconnected"
+        "unlocked" -> "Unlocked"
+        "locked" -> "Locked"
+        "screen_on" -> "Screen on"
+        "screen_off" -> "Screen off"
+        "playing" -> "Playing"
+        "not_playing" -> "Not playing"
+        "in_call" -> "In call"
+        "not_in_call" -> "Not in call"
         else -> v.replaceFirstChar { it.uppercase() }
     }
+
+    fun conditionText(c: JSONObject, appName: (String) -> String = { it }): String {
+        val type = c.optString("type")
+        return when (type) {
+            "battery" -> {
+                val op = if (c.optString("op", "below") == "above") "≥" else "≤"
+                "Battery $op ${c.optInt("value", 25)}%"
+            }
+            "charging" -> {
+                val base = conditionValueText(type, c.optString("value", "charging"))
+                val mode = c.optString("mode", "any")
+                if (c.optString("value", "charging") == "charging" && mode != "any" && mode.isNotEmpty()) "$base (${mode.uppercase()})" else base
+            }
+            "wifi_network" -> {
+                val ssids = strList(c.optJSONArray("ssids"))
+                val not = c.optString("op") == "not_connected"
+                when {
+                    ssids.isEmpty() -> if (not) "Not on any Wi-Fi" else "On any Wi-Fi"
+                    not -> "Not on ${ssids.joinToString("/")}"
+                    else -> "On ${ssids.joinToString("/")}"
+                }
+            }
+            "bt_device" -> {
+                val devs = strList(c.optJSONArray("devices"))
+                val not = c.optString("op") == "not_connected"
+                when {
+                    devs.isEmpty() -> if (not) "No BT connected" else "Any BT connected"
+                    not -> "${devs.joinToString("/")} disconnected"
+                    else -> "${devs.joinToString("/")} connected"
+                }
+            }
+            "app" -> {
+                val apps = strList(c.optJSONArray("apps")).map(appName)
+                val not = c.optString("op") == "not_in"
+                if (apps.isEmpty()) "App condition"
+                else if (not) "Not in ${apps.joinToString("/")}"
+                else "In ${apps.joinToString("/")}"
+            }
+            "temp" -> {
+                val op = if (c.optString("op", "above") == "below") "≤" else "≥"
+                "Temp $op ${c.optInt("value", 40)} °C"
+            }
+            else -> {
+                val name = CONDITIONS[type] ?: type
+                val v = c.optString("value")
+                if (v.isEmpty()) name else "$name: ${conditionValueText(type, v)}"
+            }
+        }
+    }
+
+    private fun strList(a: JSONArray?): List<String> =
+        if (a == null) emptyList() else (0 until a.length()).mapNotNull { a.optString(it).takeIf(String::isNotEmpty) }
 
     // ------------------------------------------------------------------ storage
 
     fun load(ctx: Context): MutableList<JSONObject> {
         val prefs = Components.prefs(ctx)
         val raw = prefs.getString(PREF, null)
-            ?: return defaults().also { save(ctx, it, push = false); prefs.edit().putInt(VERSION, 4).commit() }
+            ?: return defaults().also { save(ctx, it, push = false); prefs.edit().putInt(VERSION, 5).commit() }
         val list = runCatching { JSONArray(raw).let { a -> (0 until a.length()).map { a.getJSONObject(it) }.toMutableList() } }
             .getOrElse { defaults() }
         if (prefs.getInt(VERSION, 1) < 2) {
@@ -104,6 +251,16 @@ object Routines {
             save(ctx, list, push = false)
             prefs.edit().putInt(VERSION, 4).commit()
         }
+        if (prefs.getInt(VERSION, 1) < 5) {
+            // 2026-11-19: the user wants Outside only between Morning and Sleep (it fired at night
+            // after Sleep turned Wi-Fi off)
+            val morning = list.firstOrNull { it.optString("id") == "morning" }
+            val sleep = list.firstOrNull { it.optString("id") == "sleep" }
+            if (morning != null && sleep != null) list.filter { it.optString("name").trim().equals("Outside", ignoreCase = true) }
+                .forEach { if (!it.has("between")) it.put("between", JSONObject().put("start", "morning").put("end", "sleep")) }
+            save(ctx, list, push = false)
+            prefs.edit().putInt(VERSION, 5).commit()
+        }
         return list
     }
 
@@ -129,26 +286,57 @@ object Routines {
 
     private val DAY = listOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
-    fun summary(r: JSONObject, all: List<JSONObject>): String {
+    fun summary(r: JSONObject, all: List<JSONObject>, appName: (String) -> String = { it }): String {
         val t = r.optJSONObject("trigger") ?: JSONObject()
-        val ssids = t.optJSONArray("ssids")?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: emptyList()
+        val ssids = strList(t.optJSONArray("ssids"))
         val nets = if (ssids.isEmpty()) "(no network)" else ssids.joinToString(" or ")
+        val devs = strList(t.optJSONArray("devices"))
+        val devText = if (devs.isEmpty()) "any Bluetooth" else devs.joinToString(" or ")
+        val apps = strList(t.optJSONArray("apps")).map(appName)
+        val appText = if (apps.isEmpty()) "(no app)" else apps.joinToString(" or ")
         val head = when (t.optString("type")) {
-            "wifi_connect" -> "Connects to $nets"
+            "wifi_connect" -> if (t.optBoolean("any")) "Connects to any Wi-Fi" else "Connects to $nets"
+            "wifi_disconnect" -> if (ssids.isEmpty()) "Wi-Fi disconnects" else "Disconnects from $nets"
             "wifi_gone" -> "$nets out of range for ${t.optInt("minutes", 10)} min"
             "time" -> "At ${t.optString("at", "?")}"
             "wifi_off" -> "Wi-Fi is off (checked every ${t.optInt("minutes", 3)} min)"
+            "bt_connect" -> "$devText connects"
+            "bt_disconnect" -> "$devText disconnects"
+            "charging_on" -> {
+                val m = t.optString("mode", "any")
+                if (m == "any" || m.isEmpty()) "Charger connected" else "Charger (${m.uppercase()}) connected"
+            }
+            "charging_off" -> {
+                val m = t.optString("mode", "any")
+                if (m == "any" || m.isEmpty()) "Charger disconnected" else "Charger (${m.uppercase()}) disconnected"
+            }
+            "battery_below" -> "Battery ≤ ${t.optInt("percent", 20)}%"
+            "battery_above" -> "Battery ≥ ${t.optInt("percent", 80)}%"
+            "temp_above" -> "Battery temp ≥ ${t.optInt("temp", 42)} °C"
+            "app_open" -> "When $appText opens"
+            "app_close" -> "When $appText closes"
             else -> TRIGGERS[t.optString("type")] ?: "?"
         }
         val parts = mutableListOf(head)
         days(r).takeIf { it.isNotEmpty() && it.size < 7 }?.let { parts += dayText(it) }
         val from = r.optString("from"); val to = r.optString("to")
         if (from.isNotEmpty() && to.isNotEmpty()) parts += "$from–$to"
+        r.optJSONArray("conditions")?.takeIf { it.length() > 0 }?.let { cs ->
+            val joiner = if (r.optString("conditionsMode") == "any") " OR " else ", "
+            parts += "if " + (0 until cs.length()).joinToString(joiner) { conditionText(cs.getJSONObject(it), appName) }
+        }
         r.optString("after").takeIf { it.isNotEmpty() }?.let { id ->
             parts += "after " + (all.firstOrNull { it.optString("id") == id }?.optString("name") ?: "?")
         }
         r.optString("unless").takeIf { it.isNotEmpty() }?.let { id ->
             parts += "until " + (all.firstOrNull { it.optString("id") == id }?.optString("name") ?: "?") + " runs"
+        }
+        r.optJSONObject("between")?.let { b ->
+            fun name(id: String) = all.firstOrNull { it.optString("id") == id }?.optString("name") ?: "?"
+            val s = b.optString("start"); val e = b.optString("end")
+            if (s.isNotEmpty() || e.isNotEmpty())
+                parts += listOfNotNull(s.takeIf { it.isNotEmpty() }?.let { "after ${name(it)}" },
+                    e.takeIf { it.isNotEmpty() }?.let { "before ${name(it)}" }).joinToString(" ")
         }
         return parts.joinToString(" · ")
     }
@@ -162,14 +350,14 @@ object Routines {
         return s.joinToString(", ") { DAY[it - 1] }
     }
 
-    fun actionsText(r: JSONObject): String {
+    fun actionsText(
+        r: JSONObject,
+        appName: (String) -> String = { it },
+        routineName: (String) -> String = { it },
+    ): String {
         val a = r.optJSONArray("actions") ?: return ""
         return (0 until a.length()).joinToString(", ") { i ->
-            val o = a.getJSONObject(i)
-            val type = o.optString("type")
-            val name = ACTIONS[type] ?: type
-            if (type == "revive") "Revive ${o.optJSONArray("apps")?.length() ?: 0} apps"
-            else if (values(type).isEmpty()) name else "$name ${valueText(type, o.optString("value")).lowercase()}"
+            Actions.describe(a.getJSONObject(i), appName, routineName)
         }
     }
 

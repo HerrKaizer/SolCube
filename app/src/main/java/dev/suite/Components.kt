@@ -64,12 +64,13 @@ object Components {
         val stream: JSONObject? = null,
         val mix: JSONObject? = null,
         val routines: JSONObject? = null,
+        val profiles: JSONObject? = null,
     )
 
     /** Call off the main thread (binder calls into the shell-side services). */
     fun status(): Status {
         val st = Shell.state()
-        return Status(st, read(Shell.Kind.CTS), read(Shell.Kind.FI), read(Shell.Kind.SR), read(Shell.Kind.STREAM), read(Shell.Kind.MIX), read(Shell.Kind.ROUTINES))
+        return Status(st, read(Shell.Kind.CTS), read(Shell.Kind.FI), read(Shell.Kind.SR), read(Shell.Kind.STREAM), read(Shell.Kind.MIX), read(Shell.Kind.ROUTINES), read(Shell.Kind.PROFILES))
     }
 
     fun read(k: Shell.Kind) = runCatching { Shell.service(k)?.status()?.let { JSONObject(it) } }.getOrNull()
@@ -229,6 +230,7 @@ object Components {
     fun setTemp(ctx: Context, on: Boolean) {
         prefs(ctx).edit().putBoolean(KEY_TEMP, on).commit()
         SuiteService.sync(ctx)
+        if (on) Shell.start(ctx, Shell.Kind.TEMP) else Shell.stop(ctx, Shell.Kind.TEMP)
     }
 
     /** Starts whatever is enabled but not running (after a reboot, when Shizuku comes back, after a crash). */
@@ -239,6 +241,9 @@ object Components {
         if (enabled(ctx, KEY_SR)) Shell.start(ctx, Shell.Kind.SR)
         if (enabled(ctx, KEY_MIX)) Shell.start(ctx, Shell.Kind.MIX)
         if (enabled(ctx, Routines.KEY)) Shell.start(ctx, Shell.Kind.ROUTINES)
+        Profiles.load(ctx)   // one-time migration from DoublePress NFC if not initialized yet
+        if (enabled(ctx, Profiles.KEY)) Shell.start(ctx, Shell.Kind.PROFILES)
+        if (enabled(ctx, KEY_TEMP)) Shell.start(ctx, Shell.Kind.TEMP)
         if (enabled(ctx, KEY_STREAM)) Shell.start(ctx, Shell.Kind.STREAM)
     }
 }

@@ -26,7 +26,7 @@ final class Haptics {
         0, 0, -15, 40, 10, -15, 280, 30, -15, 480, 0, -15,
     };
 
-    private static Object service, combined, popCombined, attrs;
+    private static Object service, combined, popCombined, attrs, doneAttrs;
     private static Method vibrate;
     private static boolean broken;
 
@@ -46,14 +46,26 @@ final class Haptics {
 
             Class<?> va = Class.forName("android.os.VibrationAttributes");
             Class<?> vab = Class.forName("android.os.VibrationAttributes$Builder");
+            int bypassFlags = flagOrDefault(va, "FLAG_BYPASS_INTERRUPTION_POLICY", 1)
+                    | flagOrDefault(va, "FLAG_BYPASS_USER_VIBRATION_INTENSITY_OFF", 2)
+                    | flagOrDefault(va, "FLAG_BYPASS_USER_VIBRATION_INTENSITY_SCALE", 8);
+
             Object b = vab.getConstructor().newInstance();
-            int usage = va.getField("USAGE_HARDWARE_FEEDBACK").getInt(null);
-            vab.getMethod("setUsage", int.class).invoke(b, usage);
-            try {   // like `cmd vibrator_manager -f`: don't let Do Not Disturb swallow it
-                int f = va.getField("FLAG_BYPASS_INTERRUPTION_POLICY").getInt(null);
-                vab.getMethod("setFlags", int.class, int.class).invoke(b, f, f);
+            int hwUsage = va.getField("USAGE_HARDWARE_FEEDBACK").getInt(null);
+            vab.getMethod("setUsage", int.class).invoke(b, hwUsage);
+            try {
+                vab.getMethod("setFlags", int.class, int.class).invoke(b, bypassFlags, bypassFlags);
             } catch (Throwable ignored) {}
             attrs = vab.getMethod("build").invoke(b);
+
+            Object db = vab.getConstructor().newInstance();
+            int doneUsage = flagOrDefault(va, "USAGE_COMMUNICATION_REQUEST",
+                    flagOrDefault(va, "USAGE_ALARM", hwUsage));
+            vab.getMethod("setUsage", int.class).invoke(db, doneUsage);
+            try {
+                vab.getMethod("setFlags", int.class, int.class).invoke(db, bypassFlags, bypassFlags);
+            } catch (Throwable ignored) {}
+            doneAttrs = vab.getMethod("build").invoke(db);
 
             IBinder binder = (IBinder) Class.forName("android.os.ServiceManager")
                     .getMethod("getService", String.class).invoke(null, "vibrator_manager");
@@ -77,6 +89,10 @@ final class Haptics {
         }
     }
 
+    private static int flagOrDefault(Class<?> cls, String name, int fallback) {
+        try { return cls.getField(name).getInt(null); } catch (Throwable ignored) { return fallback; }
+    }
+
     /** Builds the effect ahead of time so the first trigger isn't slowed by reflection. */
     static void warm() { init(); }
 
@@ -88,9 +104,9 @@ final class Haptics {
     static boolean bluelmTrigger() {
         if (!init()) return false;
         Thread t = new Thread(() -> {
-            play(popCombined);
+            play(popCombined, attrs);
             try { Thread.sleep(40); } catch (InterruptedException ignored) {}
-            play(combined);
+            play(combined, attrs);
         }, "haptic");
         t.setDaemon(true);
         t.start();
@@ -99,8 +115,8 @@ final class Haptics {
 
     /**
      * "Done" signal for routines: two full-strength buzzes (250 ms, gap 150 ms), long enough that
-     * vivo plays them as a real buzz rather than a click, so it's heard on a table. Bypasses
-     * Do Not Disturb.
+     * vivo plays them as a real buzz rather than a click, so it's heard on a table. Uses
+     * USAGE_COMMUNICATION_REQUEST + bypass flags so it plays even when touch feedback is off or DND is on.
      */
     static void done() {
         if (init()) {
@@ -110,7 +126,7 @@ final class Haptics {
                         .invoke(null, new long[]{0, 250, 150, 250}, new int[]{0, 255, 0, 255}, -1);
                 Object c = Class.forName("android.os.CombinedVibration")
                         .getMethod("createParallel", ve).invoke(null, buzz);
-                if (play(c)) return;
+                if (play(c, doneAttrs)) return;
             } catch (Throwable t) {
                 L.e("haptics: buzz", t);
             }
@@ -118,7 +134,7 @@ final class Haptics {
         SysSettings.exec("cmd", "vibrator_manager", "synced", "-f", "waveform", "-a", "250", "255", "150", "0", "250", "255");
     }
 
-    private static boolean play(Object vibration) {
+    private static boolean play(Object vibration, Object useAttrs) {
         try {
             Class<?>[] ps = vibrate.getParameterTypes();
             Object[] args = new Object[ps.length];
@@ -128,7 +144,7 @@ final class Haptics {
                 else if (ps[i] == String.class) args[i] = strings++ == 0 ? "com.android.shell" : "Suite trigger";
                 else if (ps[i] == IBinder.class) args[i] = new Binder();
                 else if (ps[i].isInstance(vibration)) args[i] = vibration;
-                else args[i] = attrs;
+                else args[i] = useAttrs != null ? useAttrs : attrs;
             }
             vibrate.invoke(service, args);
             return true;

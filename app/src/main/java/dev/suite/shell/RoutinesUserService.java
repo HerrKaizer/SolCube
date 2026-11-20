@@ -1,15 +1,22 @@
 package dev.suite.shell;
 
-import android.content.BroadcastReceiver;
+import android.bluetooth.BluetoothAdapter;
+import android.bluetooth.BluetoothDevice;
+import android.bluetooth.BluetoothManager;
 import android.content.Context;
-import android.content.Intent;
-import android.content.IntentFilter;
 import android.database.ContentObserver;
+import android.hardware.display.DisplayManager;
+import android.media.AudioDeviceInfo;
+import android.media.AudioManager;
 import android.net.Uri;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.IBinder;
+import android.view.Display;
+import android.view.Surface;
 
+import java.io.BufferedReader;
+import java.io.FileReader;
 import java.lang.reflect.Method;
 
 import dev.suite.ISuiteService;
@@ -21,10 +28,11 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
-import java.util.List;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
@@ -34,18 +42,6 @@ import java.util.regex.Pattern;
  * Routines engine, run by Shizuku as a UserService ("dev.suite:routines"). The app sends the
  * routines as JSON (configure); this process watches the triggers and runs the actions as the
  * shell user.
- *
- * Routine: {id, name, on, trigger:{type, ssids[], minutes, at}, days:[1..7 Mon=1], from, to
- *           ("HH:MM", empty = any time), after: routine id (only if that one ran more recently,
- *           within 24 h), once: at most once a day, unless: routine id (skip for the rest of the
- *           day once that one ran today), actions:[{type, value, except[]}]}
- * Triggers: wifi_connect, wifi_gone, wifi_off (checked every N min), dnd_on, dnd_off, unlock,
- *           screen_on, time.
- * Actions:  data, wifi, airplane, saver, dnd (on/off/restore), ringer (normal/vibrate/silent/
- *           restore), media (0..100 % or restore), close_apps, lock, vibrate.
- *
- * "restore" puts back what the last change of that setting replaced. Run times and the values
- * to restore are kept in a global setting (no files), so they survive reboots.
  */
 public class RoutinesUserService extends ISuiteService.Stub {
     private static final String STATE_KEY = "suite_routines_state";
@@ -58,8 +54,12 @@ public class RoutinesUserService extends ISuiteService.Stub {
     private JSONArray routines = new JSONArray();
     private JSONObject state = new JSONObject();      // {lastRun:{id:ms}, saved:{type:{v,t}}}
     private final Map<String, Boolean> prevCond = new HashMap<>();
+    private final Map<String, Boolean> prevRaw = new HashMap<>();
+    private final Map<String, String> prevWifiSsid = new HashMap<>();
+    private final Map<String, Set<String>> prevBtDevs = new HashMap<>();
     private final Map<String, Long> goneSince = new HashMap<>();
     private final Map<String, Long> lastCheck = new HashMap<>();
+    private final Set<String> inRange = new HashSet<>();   // wifi_gone routines whose network was seen since they last ran
     private long lastScanRequest;
     private volatile String error = "";
     private volatile boolean dndEvents, unlockEvents;
@@ -91,55 +91,122 @@ public class RoutinesUserService extends ISuiteService.Stub {
         }
     };
 
-    /**
-     * Broadcast receivers can't be registered from a shell process (Android finds no app record
-     * for it: "Failed to find PID"), so: Do Not Disturb via a settings observer, and unlock /
-     * screen-on by checking the lock state every 1.5 s, but only while a routine is waiting for it
-     * (its time window, days and "only after" all pass). Those checks don't wake the phone; they
-     * run when it's awake anyway. Wi-Fi is checked on the 30 s tick, again only inside windows.
-     */
+    private boolean observe(String table, String key, String event) {
+        try {
+            ContentObserver o = new ContentObserver(h) {
+                @Override public void onChange(boolean self) {
+                    if ("dnd".equals(event)) dndEvents = true;
+                    evaluate(event);
+                }
+            };
+            ctx.getContentResolver().registerContentObserver(Uri.parse("content://settings/" + table + "/" + key), false, o);
+            return true;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
     private void listen() {
-        ContentObserver o = new ContentObserver(h) {
-            @Override public void onChange(boolean self) { dndEvents = true; evaluate("dnd"); }
-        };
-        ctx.getContentResolver().registerContentObserver(Uri.parse("content://settings/global/zen_mode"), false, o);
+        if (!observe("global", "zen_mode", "dnd")) {
+            observing = false;
+            L.i("settings observer unavailable, using in-process polling");
+            return;
+        }
         observing = true;
-        L.i("watching Do Not Disturb");
+        observe("global", "airplane_mode_on", "airplane");
+        observe("system", "power_save_type", "saver");
+        observe("global", "low_power", "saver");
+        observe("global", "wifi_on", "wifi");
+        observe("global", "bluetooth_on", "bt");
+        L.i("watching system settings");
     }
 
     private volatile boolean observing;
-    private boolean armed;                 // a routine is waiting for unlock / screen on (or DND without observer)
-    private Boolean wasLocked, wasInteractive;
-    private String lastZen;
+    private boolean armed, needLock, needApp, needCharge, needAudioBt, needDnd, needAirplane, needPowerMode;
+    private int fastCycle;
+    private Boolean wasLocked, wasInteractive, wasCharging, wasHeadphones;
+    private String lastZen, lastAir, lastPowerMode, lastFrontPkg = "";
+    private Set<String> lastBtSet;
     private Object wm, pm;
     private Method isLocked, isInteractive;
 
     private final Runnable fast = new Runnable() {
         @Override public void run() {
-            if (!armed) { wasLocked = null; wasInteractive = null; return; }
+            if (!armed) {
+                wasLocked = null; wasInteractive = null;
+                wasCharging = null; wasHeadphones = null; lastBtSet = null;
+                lastZen = null; lastAir = null; lastPowerMode = null;
+                return;
+            }
             try {
-                if (wm == null) {
-                    Method get = Class.forName("android.os.ServiceManager").getMethod("getService", String.class);
-                    wm = Class.forName("android.view.IWindowManager$Stub").getMethod("asInterface", IBinder.class)
-                            .invoke(null, get.invoke(null, "window"));
-                    pm = Class.forName("android.os.IPowerManager$Stub").getMethod("asInterface", IBinder.class)
-                            .invoke(null, get.invoke(null, "power"));
-                    isLocked = wm.getClass().getMethod("isKeyguardLocked");
-                    isInteractive = pm.getClass().getMethod("isInteractive");
+                fastCycle++;
+                boolean interactive = true;
+                boolean locked = false;
+                if (needLock || needApp) {
+                    if (wm == null) {
+                        Method get = Class.forName("android.os.ServiceManager").getMethod("getService", String.class);
+                        wm = Class.forName("android.view.IWindowManager$Stub").getMethod("asInterface", IBinder.class)
+                                .invoke(null, get.invoke(null, "window"));
+                        pm = Class.forName("android.os.IPowerManager$Stub").getMethod("asInterface", IBinder.class)
+                                .invoke(null, get.invoke(null, "power"));
+                        isLocked = wm.getClass().getMethod("isKeyguardLocked");
+                        isInteractive = pm.getClass().getMethod("isInteractive");
+                    }
+                    locked = (boolean) isLocked.invoke(wm);
+                    interactive = (boolean) isInteractive.invoke(pm);
+                    if (needLock) {
+                        if (wasInteractive != null && !wasInteractive && interactive) evaluate("screen_on");
+                        if (wasInteractive != null && wasInteractive && !interactive) evaluate("screen_off");
+                        if (wasLocked != null && wasLocked && !locked) { unlockEvents = true; evaluate("unlock"); }
+                        if (wasLocked != null && !wasLocked && locked) evaluate("lock");
+                    }
+                    wasLocked = locked;
+                    wasInteractive = interactive;
                 }
-                boolean locked = (boolean) isLocked.invoke(wm);
-                boolean on = (boolean) isInteractive.invoke(pm);
-                if (wasInteractive != null && !wasInteractive && on) evaluate("screen_on");
-                if (wasLocked != null && wasLocked && !locked) { unlockEvents = true; evaluate("unlock"); }
-                wasLocked = locked;
-                wasInteractive = on;
-                if (!observing) {
+                if (needApp && interactive && !locked) {
+                    String fp = ShellActions.frontTask().pkg;
+                    if (!fp.equals(lastFrontPkg)) {
+                        lastFrontPkg = fp;
+                        evaluate("app");
+                    }
+                }
+                if (needCharge) {
+                    Boolean ch = quickCharging();
+                    if (ch == null && fastCycle % 3 == 0) {
+                        BatteryInfo bi = readBattery();
+                        ch = bi != null ? bi.charging : null;
+                    }
+                    if (ch != null) {
+                        if (wasCharging != null && !wasCharging.equals(ch)) evaluate("battery");
+                        wasCharging = ch;
+                    }
+                }
+                if (needAudioBt && fastCycle % 2 == 0) {
+                    boolean hp = queryHeadphones();
+                    Set<String> bt = queryConnectedBt();
+                    boolean changed = (wasHeadphones != null && wasHeadphones != hp)
+                            || (lastBtSet != null && !lastBtSet.equals(bt));
+                    wasHeadphones = hp;
+                    lastBtSet = bt;
+                    if (changed) evaluate("bt_audio");
+                }
+                if (needDnd) {
                     String z = SysSettings.get("global", "zen_mode");
                     if (lastZen != null && !lastZen.equals(z)) evaluate("dnd");
                     lastZen = z;
                 }
+                if (needAirplane) {
+                    String a = SysSettings.get("global", "airplane_mode_on");
+                    if (lastAir != null && !lastAir.equals(a)) evaluate("airplane");
+                    lastAir = a;
+                }
+                if (needPowerMode) {
+                    String pmVal = SysSettings.get("system", "power_save_type") + ":" + SysSettings.get("global", "low_power");
+                    if (lastPowerMode != null && !lastPowerMode.equals(pmVal)) evaluate("saver");
+                    lastPowerMode = pmVal;
+                }
             } catch (Throwable t) {
-                L.e("lock-state check", t);
+                L.e("fast check", t);
                 armed = false;
                 return;
             }
@@ -153,12 +220,106 @@ public class RoutinesUserService extends ISuiteService.Stub {
         if (a) { h.removeCallbacks(fast); h.post(fast); }
     }
 
+    private static Boolean quickCharging() {
+        try (BufferedReader r = new BufferedReader(new FileReader("/sys/class/power_supply/battery/status"))) {
+            String s = r.readLine();
+            if (s == null) return null;
+            s = s.trim();
+            if ("Charging".equalsIgnoreCase(s) || "Full".equalsIgnoreCase(s)) return true;
+            if ("Discharging".equalsIgnoreCase(s) || "Not charging".equalsIgnoreCase(s)) return false;
+        } catch (Throwable ignored) {}
+        return null;
+    }
+
     // ================================================================== evaluation (handler thread)
 
-    /** Per-pass cache so Wi-Fi is queried at most once per evaluation. */
+    private static final class BatteryInfo {
+        int level = -1;
+        int tempTenths = 0;
+        boolean ac, usb, wireless, charging;
+    }
+
+    private BatteryInfo readBattery() {
+        BatteryInfo b = new BatteryInfo();
+        for (String l : SysSettings.exec("dumpsys", "battery").split("\n")) {
+            String t = l.trim();
+            if (t.startsWith("AC powered:")) b.ac = t.endsWith("true");
+            else if (t.startsWith("USB powered:")) b.usb = t.endsWith("true");
+            else if (t.startsWith("Wireless powered:")) b.wireless = t.endsWith("true");
+            else if (t.startsWith("level:")) { try { b.level = Integer.parseInt(t.substring(6).trim()); } catch (Exception ignored) {} }
+            else if (t.startsWith("temperature:")) { try { b.tempTenths = Integer.parseInt(t.substring(12).trim()); } catch (Exception ignored) {} }
+        }
+        b.charging = b.ac || b.usb || b.wireless;
+        return b;
+    }
+
+    private Set<String> queryConnectedBt() {
+        Set<String> res = new LinkedHashSet<>();
+        try {
+            BluetoothManager bm = ctx != null ? ctx.getSystemService(BluetoothManager.class) : null;
+            BluetoothAdapter ba = bm != null ? bm.getAdapter() : BluetoothAdapter.getDefaultAdapter();
+            if (ba != null && ba.isEnabled()) {
+                Method isConn = BluetoothDevice.class.getMethod("isConnected");
+                Set<BluetoothDevice> bonded = ba.getBondedDevices();
+                if (bonded != null) {
+                    for (BluetoothDevice d : bonded) {
+                        if ((boolean) isConn.invoke(d)) {
+                            String n = d.getName();
+                            res.add(n != null && !n.isEmpty() ? n : d.getAddress());
+                        }
+                    }
+                }
+                return res;
+            }
+        } catch (Throwable ignored) {}
+        if (!"on".equals(read("bluetooth"))) return res;
+        boolean inBonded = false;
+        for (String l : SysSettings.exec("dumpsys", "bluetooth_manager").split("\n")) {
+            String t = l.trim();
+            if (t.startsWith("Bonded devices:")) { inBonded = true; continue; }
+            if (inBonded) {
+                if (t.isEmpty() || (!t.contains(":") && !t.startsWith("["))) { inBonded = false; continue; }
+                if (t.contains("Connected") || t.contains("connected=true")) {
+                    Matcher m = Pattern.compile("\\[([^]]+)\\]").matcher(t);
+                    if (m.find()) res.add(m.group(1).trim());
+                }
+            }
+        }
+        return res;
+    }
+
+    private boolean queryHeadphones() {
+        try {
+            AudioManager am = ctx != null ? ctx.getSystemService(AudioManager.class) : null;
+            if (am != null) {
+                for (AudioDeviceInfo d : am.getDevices(AudioManager.GET_DEVICES_OUTPUTS)) {
+                    int type = d.getType();
+                    if (type == AudioDeviceInfo.TYPE_WIRED_HEADSET
+                            || type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES
+                            || type == AudioDeviceInfo.TYPE_USB_HEADSET
+                            || type == AudioDeviceInfo.TYPE_USB_DEVICE
+                            || type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP
+                            || type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO
+                            || type == AudioDeviceInfo.TYPE_BLE_HEADSET
+                            || type == AudioDeviceInfo.TYPE_HEARING_AID) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+        } catch (Throwable ignored) {}
+        return !queryConnectedBt().isEmpty();
+    }
+
+    /** Per-pass cache so system state is queried at most once per evaluation. */
     private final class Snapshot {
-        String connected;            // SSID or ""
-        Set<String> nearby;          // SSIDs seen in the last 3 minutes
+        String connected;
+        Set<String> nearby;
+        BatteryInfo battery;
+        Set<String> connectedBt;
+        Boolean headphones, mediaPlaying, inCall, darkMode, landscape, interactive, locked;
+        String frontApp;
+
         String connected() {
             if (connected == null) {
                 Matcher m = Pattern.compile("connected to \"(.*)\"").matcher(SysSettings.exec("cmd", "wifi", "status"));
@@ -166,6 +327,7 @@ public class RoutinesUserService extends ISuiteService.Stub {
             }
             return connected;
         }
+
         Set<String> nearby() {
             if (nearby == null) {
                 nearby = new HashSet<>();
@@ -177,6 +339,95 @@ public class RoutinesUserService extends ISuiteService.Stub {
             }
             return nearby;
         }
+
+        BatteryInfo battery() {
+            if (battery == null) battery = readBattery();
+            return battery;
+        }
+
+        Set<String> connectedBt() {
+            if (connectedBt == null) connectedBt = queryConnectedBt();
+            return connectedBt;
+        }
+
+        boolean headphones() {
+            if (headphones == null) headphones = queryHeadphones();
+            return headphones;
+        }
+
+        boolean mediaPlaying() {
+            if (mediaPlaying == null) {
+                try {
+                    AudioManager am = ctx != null ? ctx.getSystemService(AudioManager.class) : null;
+                    mediaPlaying = am != null && am.isMusicActive();
+                } catch (Throwable t) {
+                    mediaPlaying = false;
+                }
+            }
+            return mediaPlaying;
+        }
+
+        boolean inCall() {
+            if (inCall == null) {
+                try {
+                    AudioManager am = ctx != null ? ctx.getSystemService(AudioManager.class) : null;
+                    int m = am != null ? am.getMode() : AudioManager.MODE_NORMAL;
+                    inCall = m == AudioManager.MODE_IN_CALL
+                            || m == AudioManager.MODE_IN_COMMUNICATION
+                            || m == AudioManager.MODE_RINGTONE;
+                } catch (Throwable t) {
+                    inCall = false;
+                }
+            }
+            return inCall;
+        }
+
+        boolean darkMode() {
+            if (darkMode == null) {
+                String out = SysSettings.exec("dumpsys", "uimode");
+                if (out.contains("mComputedNightMode=true")) darkMode = true;
+                else if (out.contains("mComputedNightMode=false")) darkMode = false;
+                else darkMode = "2".equals(SysSettings.get("secure", "ui_night_mode"));
+            }
+            return darkMode;
+        }
+
+        boolean landscape() {
+            if (landscape == null) {
+                try {
+                    DisplayManager dm = ctx != null ? ctx.getSystemService(DisplayManager.class) : null;
+                    Display d = dm != null ? dm.getDisplay(Display.DEFAULT_DISPLAY) : null;
+                    if (d != null) {
+                        int rot = d.getRotation();
+                        landscape = rot == Surface.ROTATION_90 || rot == Surface.ROTATION_270;
+                    } else {
+                        Method get = Class.forName("android.os.ServiceManager").getMethod("getService", String.class);
+                        Object iwm = Class.forName("android.view.IWindowManager$Stub").getMethod("asInterface", IBinder.class)
+                                .invoke(null, get.invoke(null, "window"));
+                        int rot = (int) iwm.getClass().getMethod("getDefaultDisplayRotation").invoke(iwm);
+                        landscape = rot == Surface.ROTATION_90 || rot == Surface.ROTATION_270;
+                    }
+                } catch (Throwable t) {
+                    landscape = false;
+                }
+            }
+            return landscape;
+        }
+
+        String frontApp() {
+            if (frontApp == null) frontApp = interactive() && !locked() ? ShellActions.frontTask().pkg : "";
+            return frontApp;
+        }
+
+        boolean interactive() {
+            if (interactive == null) interactive = ShellActions.interactive();
+            return interactive;
+        }
+
+        boolean locked() {
+            if (locked == null) locked = ShellActions.locked();
+            return locked;
+        }
     }
 
     private synchronized void evaluate(String event) {
@@ -184,7 +435,7 @@ public class RoutinesUserService extends ISuiteService.Stub {
         try {
             long now = System.currentTimeMillis();
             Snapshot snap = new Snapshot();
-            boolean arm = false;
+            boolean nLock = false, nApp = false, nCharge = false, nAudioBt = false, nDnd = false, nAir = false, nPwr = false;
             for (int i = 0; i < routines.length(); i++) {
                 JSONObject r = routines.getJSONObject(i);
                 if (!r.optBoolean("on", true)) continue;
@@ -192,22 +443,35 @@ public class RoutinesUserService extends ISuiteService.Stub {
                 JSONObject t = r.optJSONObject("trigger");
                 if (t == null) continue;
                 String type = t.optString("type");
-                boolean gate = gate(r, now);
-                if (gate && (type.equals("unlock") || type.equals("screen_on"))) arm = true;
-                if (!observing && type.startsWith("dnd_")) arm = true;
+                boolean sched = scheduleGate(r, now);
+                if (sched) {
+                    if (type.equals("unlock") || type.equals("lock") || type.equals("screen_on") || type.equals("screen_off")) nLock = true;
+                    if (type.equals("app_open") || type.equals("app_close")) nApp = true;
+                    if (type.equals("charging_on") || type.equals("charging_off")) nCharge = true;
+                    if (type.equals("bt_connect") || type.equals("bt_disconnect")
+                            || type.equals("headphones_connect") || type.equals("headphones_disconnect")) nAudioBt = true;
+                    if (!observing) {
+                        if (type.startsWith("dnd_")) nDnd = true;
+                        if (type.startsWith("airplane_")) nAir = true;
+                        if (type.startsWith("saver_") || type.startsWith("boost_")) nPwr = true;
+                    }
+                }
                 wifiGuard(r, id, now);
 
+                boolean gate = sched && conditionsGate(r, snap);
                 switch (type) {
                     case "unlock":
+                    case "lock":
                     case "screen_on":
-                        if (type.equals(event) && gate) run(r, type);
+                    case "screen_off":
+                        if (type.equals(event) && gate) run(r, type, 0);
                         break;
                     case "time": {
                         int at = minutes(t.optString("at"));
                         if (at < 0 || !gate) break;
                         LocalDateTime n = LocalDateTime.now();
                         long todayAt = n.toLocalDate().atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli() + at * 60_000L;
-                        if (now >= todayAt && now - todayAt < 15 * 60_000L && lastRun(id) < todayAt) run(r, "time");
+                        if (now >= todayAt && now - todayAt < 15 * 60_000L && lastRun(id) < todayAt) run(r, "time", 0);
                         break;
                     }
                     case "wifi_off": {   // checked every N minutes inside the conditions
@@ -216,20 +480,73 @@ public class RoutinesUserService extends ISuiteService.Stub {
                         Long last = lastCheck.get(id);
                         if (last != null && now - last < every - 5_000) break;
                         lastCheck.put(id, now);
-                        if ("off".equals(read("wifi"))) run(r, "Wi-Fi was off");
+                        if ("off".equals(read("wifi"))) run(r, "Wi-Fi was off", 0);
                         break;
                     }
-                    default: {   // state triggers: fire when (state && conditions) becomes true
+                    case "wifi_disconnect": {
+                        String cur = snap.connected();
+                        String prev = prevWifiSsid.put(id, cur);
+                        if (prev != null && !prev.isEmpty() && !prev.equals(cur)) {
+                            Set<String> want = ssids(t);
+                            if (gate && (want.isEmpty() || want.contains(prev))) run(r, "wifi_disconnect", 0);
+                        }
+                        break;
+                    }
+                    case "bt_disconnect": {
+                        Set<String> cur = snap.connectedBt();
+                        Set<String> prev = prevBtDevs.put(id, new LinkedHashSet<>(cur));
+                        if (prev != null && !prev.isEmpty()) {
+                            Set<String> lost = new HashSet<>(prev);
+                            lost.removeAll(cur);
+                            if (!lost.isEmpty() && gate) {
+                                Set<String> want = deviceSet(t);
+                                boolean match = want.isEmpty();
+                                if (!match) for (String d : lost) if (containsIgnoreCase(want, d)) { match = true; break; }
+                                if (match) run(r, "bt_disconnect", 0);
+                            }
+                        }
+                        break;
+                    }
+                    case "charging_off":
+                    case "headphones_disconnect":
+                    case "app_close": {
+                        boolean raw = rawActive(t, type, snap);
+                        Boolean prev = prevRaw.put(id, raw);
+                        if (prev != null && prev && !raw && gate) run(r, type, 0);
+                        break;
+                    }
+                    default: {   // state triggers: fire when (state && gate) becomes true
                         boolean cond = gate && state(r, t, type, snap, now);
                         Boolean prev = prevCond.put(id, cond);
-                        if (prev != null && cond && !prev) run(r, type);
+                        if (prev != null && cond && !prev) run(r, type, 0);
                     }
                 }
             }
-            setArmed(arm);
+            needLock = nLock;
+            needApp = nApp;
+            needCharge = nCharge;
+            needAudioBt = nAudioBt;
+            needDnd = nDnd;
+            needAirplane = nAir;
+            needPowerMode = nPwr;
+            setArmed(nLock || nApp || nCharge || nAudioBt || nDnd || nAir || nPwr);
         } catch (Throwable t) {
             L.e("evaluate", t);
         }
+    }
+
+    private boolean rawActive(JSONObject t, String type, Snapshot snap) {
+        switch (type) {
+            case "charging_off":
+                return matchesCharger(t.optString("mode", "any"), snap.battery());
+            case "headphones_disconnect":
+                return snap.headphones();
+            case "app_close": {
+                Set<String> apps = strSet(t.optJSONArray("apps"));
+                return !apps.isEmpty() && apps.contains(snap.frontApp());
+            }
+        }
+        return false;
     }
 
     private boolean state(JSONObject r, JSONObject t, String type, Snapshot snap, long now) {
@@ -237,22 +554,161 @@ public class RoutinesUserService extends ISuiteService.Stub {
         switch (type) {
             case "dnd_on": return !"0".equals(SysSettings.get("global", "zen_mode"));
             case "dnd_off": return "0".equals(SysSettings.get("global", "zen_mode"));
-            case "wifi_connect": return ssids(t).contains(snap.connected());
+            case "airplane_on": return "on".equals(read("airplane"));
+            case "airplane_off": return "off".equals(read("airplane"));
+            case "saver_on": return "on".equals(read("saver"));
+            case "saver_off": return "off".equals(read("saver"));
+            case "boost_on": return "on".equals(read("boost"));
+            case "boost_off": return "off".equals(read("boost"));
+            case "charging_on": return matchesCharger(t.optString("mode", "any"), snap.battery());
+            case "battery_below": {
+                int lvl = snap.battery().level;
+                return lvl >= 0 && lvl <= t.optInt("percent", 20);
+            }
+            case "battery_above": {
+                int lvl = snap.battery().level;
+                return lvl >= 0 && lvl >= t.optInt("percent", 80);
+            }
+            case "temp_above":
+                return snap.battery().tempTenths >= t.optInt("temp", 42) * 10;
+            case "bt_connect": {
+                Set<String> cur = snap.connectedBt();
+                if (cur.isEmpty()) return false;
+                Set<String> want = deviceSet(t);
+                if (want.isEmpty()) return true;
+                for (String d : cur) if (containsIgnoreCase(want, d)) return true;
+                return false;
+            }
+            case "headphones_connect":
+                return snap.headphones();
+            case "app_open": {
+                Set<String> apps = strSet(t.optJSONArray("apps"));
+                return !apps.isEmpty() && apps.contains(snap.frontApp());
+            }
+            case "wifi_connect": {
+                String cur = snap.connected();
+                if (cur.isEmpty()) return false;
+                if (t.optBoolean("any")) return true;
+                return ssids(t).contains(cur);
+            }
             case "wifi_gone": {
+                if (!"on".equals(read("wifi"))) { goneSince.remove(id); return false; }
                 Set<String> want = ssids(t);
-                if (now - lastScanRequest > 120_000) {   // screen-off scans are rare: ask for one
+                if (now - lastScanRequest > 120_000) {
                     lastScanRequest = now;
                     SysSettings.exec("cmd", "wifi", "start-scan");
                 }
                 boolean seen = want.contains(snap.connected());
                 if (!seen) for (String s : snap.nearby()) if (want.contains(s)) { seen = true; break; }
-                if (seen) { goneSince.remove(id); return false; }
+                if (seen) { goneSince.remove(id); inRange.add(id); return false; }
+                if (!inRange.contains(id)) return false;
                 Long since = goneSince.get(id);
-                if (since == null) { goneSince.put(id, now); L.i(r.optString("name") + ": office networks not in range, waiting"); return false; }
+                if (since == null) { goneSince.put(id, now); L.i(r.optString("name") + ": " + String.join(", ", want) + " not in range, waiting"); return false; }
                 return now - since >= Math.max(1, t.optInt("minutes", 10)) * 60_000L;
             }
         }
         return false;
+    }
+
+    private static boolean matchesCharger(String mode, BatteryInfo b) {
+        if (!b.charging) return false;
+        if ("ac".equals(mode)) return b.ac;
+        if ("usb".equals(mode)) return b.usb;
+        if ("wireless".equals(mode)) return b.wireless;
+        return true;
+    }
+
+    private boolean conditionsGate(JSONObject r, Snapshot snap) {
+        JSONArray cs = r.optJSONArray("conditions");
+        if (cs == null || cs.length() == 0) return true;
+        boolean any = "any".equals(r.optString("conditionsMode"));
+        for (int i = 0; i < cs.length(); i++) {
+            JSONObject c = cs.optJSONObject(i);
+            if (c == null) continue;
+            boolean ok = evalCondition(c, snap);
+            if (any && ok) return true;
+            if (!any && !ok) return false;
+        }
+        return !any;
+    }
+
+    private boolean evalCondition(JSONObject c, Snapshot snap) {
+        String type = c.optString("type");
+        String v = c.optString("value");
+        switch (type) {
+            case "battery": {
+                int lvl = snap.battery().level;
+                if (lvl < 0) return false;
+                int target = c.optInt("value", 25);
+                return "above".equals(c.optString("op")) ? lvl >= target : lvl <= target;
+            }
+            case "charging": {
+                boolean ch = matchesCharger(c.optString("mode", "any"), snap.battery());
+                return "not_charging".equals(v) ? !snap.battery().charging : ch;
+            }
+            case "wifi_state":
+                return v.equals(read("wifi"));
+            case "wifi_network": {
+                String cur = snap.connected();
+                Set<String> want = strSet(c.optJSONArray("ssids"));
+                boolean match = !cur.isEmpty() && (want.isEmpty() || want.contains(cur));
+                return "not_connected".equals(c.optString("op")) ? !match : match;
+            }
+            case "bt_state":
+                return v.equals(read("bluetooth"));
+            case "bt_device": {
+                Set<String> cur = snap.connectedBt();
+                Set<String> want = strSet(c.optJSONArray("devices"));
+                boolean match;
+                if (want.isEmpty()) match = !cur.isEmpty();
+                else {
+                    match = false;
+                    for (String d : cur) if (containsIgnoreCase(want, d)) { match = true; break; }
+                }
+                return "not_connected".equals(c.optString("op")) ? !match : match;
+            }
+            case "headphones":
+                return "disconnected".equals(v) ? !snap.headphones() : snap.headphones();
+            case "data":
+                return v.equals(read("data"));
+            case "airplane":
+                return v.equals(read("airplane"));
+            case "dnd":
+                return v.equals(read("dnd"));
+            case "saver":
+                return v.equals(read("saver"));
+            case "boost":
+                return v.equals(read("boost"));
+            case "ringer":
+                return v.equals(read("ringer"));
+            case "screen":
+                switch (v) {
+                    case "unlocked": return snap.interactive() && !snap.locked();
+                    case "locked": return !snap.interactive() || snap.locked();
+                    case "screen_on": return snap.interactive();
+                    case "screen_off": return !snap.interactive();
+                    default: return true;
+                }
+            case "dark_mode":
+                return "off".equals(v) ? !snap.darkMode() : snap.darkMode();
+            case "orientation":
+                return "portrait".equals(v) ? !snap.landscape() : snap.landscape();
+            case "media_playing":
+                return "not_playing".equals(v) ? !snap.mediaPlaying() : snap.mediaPlaying();
+            case "in_call":
+                return "not_in_call".equals(v) ? !snap.inCall() : snap.inCall();
+            case "app": {
+                Set<String> apps = strSet(c.optJSONArray("apps"));
+                boolean match = !apps.isEmpty() && apps.contains(snap.frontApp());
+                return "not_in".equals(c.optString("op")) ? !match : match;
+            }
+            case "temp": {
+                int tTenths = snap.battery().tempTenths;
+                int target = c.optInt("value", 40) * 10;
+                return "below".equals(c.optString("op")) ? tTenths <= target : tTenths >= target;
+            }
+        }
+        return true;
     }
 
     /**
@@ -287,15 +743,27 @@ public class RoutinesUserService extends ISuiteService.Stub {
         }
     }
 
-    private static Set<String> ssids(JSONObject t) {
+    private static Set<String> ssids(JSONObject t) { return strSet(t.optJSONArray("ssids")); }
+
+    private static Set<String> deviceSet(JSONObject t) { return strSet(t.optJSONArray("devices")); }
+
+    private static Set<String> strSet(JSONArray a) {
         Set<String> s = new LinkedHashSet<>();
-        JSONArray a = t.optJSONArray("ssids");
-        if (a != null) for (int i = 0; i < a.length(); i++) s.add(a.optString(i));
+        if (a != null) for (int i = 0; i < a.length(); i++) {
+            String v = a.optString(i);
+            if (!v.isEmpty()) s.add(v);
+        }
         return s;
     }
 
+    private static boolean containsIgnoreCase(Set<String> set, String target) {
+        if (target == null) return false;
+        for (String s : set) if (s.equalsIgnoreCase(target)) return true;
+        return false;
+    }
+
     /** Days, time window, "only after", once a day. */
-    private boolean gate(JSONObject r, long now) {
+    private boolean scheduleGate(JSONObject r, long now) {
         LocalDateTime n = LocalDateTime.now();
         JSONArray days = r.optJSONArray("days");
         if (days != null && days.length() > 0) {
@@ -319,6 +787,15 @@ public class RoutinesUserService extends ISuiteService.Stub {
         if (r.optBoolean("once") && lastRun(id) >= today) return false;
         String unless = r.optString("unless");   // stop for the day once that routine has run today
         if (!unless.isEmpty() && lastRun(unless) >= today) return false;
+        // {start, end}: only while start has run more recently than end (e.g. after Morning,
+        // until Sleep). Can run any number of times inside that stretch.
+        JSONObject span = r.optJSONObject("between");
+        if (span != null) {
+            String s = span.optString("start"), e = span.optString("end");
+            if (!s.isEmpty() && lastRun(s) == 0) return false;
+            if (!s.isEmpty() && !e.isEmpty() && lastRun(s) <= lastRun(e)) return false;
+            if (s.isEmpty() && !e.isEmpty() && lastRun(e) >= today) return false;
+        }
         return true;
     }
 
@@ -333,9 +810,11 @@ public class RoutinesUserService extends ISuiteService.Stub {
 
     // ================================================================== running
 
-    private void run(JSONObject r, String why) {
+    private void run(JSONObject r, String why, int depth) {
         String id = r.optString("id");
         L.i("▶ " + r.optString("name") + " (" + why + ")");
+        inRange.remove(id);
+        goneSince.remove(id);
         try {
             state.optJSONObject("lastRun").put(id, System.currentTimeMillis());
             saveState();
@@ -346,15 +825,15 @@ public class RoutinesUserService extends ISuiteService.Stub {
             for (int i = 0; i < actions.length(); i++) {
                 JSONObject a = actions.optJSONObject(i);
                 if (a == null) continue;
-                try { act(a); } catch (Throwable t) { failed++; L.e("action " + a.optString("type"), t); }
+                try { act(a, id, depth); } catch (Throwable t) { failed++; L.e("action " + a.optString("type"), t); }
             }
         }
         saveState();
-        prevCond.clear();   // re-baseline: our own changes (e.g. DND off) shouldn't chain-fire on stale edges
+        if (depth == 0) prevCond.clear();   // re-baseline at end of top-level run
         L.i("✓ " + r.optString("name") + " done");
-        // no pill for routines that lock the screen (Sleep): nobody's looking
-        if (!hasAction(actions, "lock"))
+        if (depth == 0 && !hasAction(actions, "lock") && !hasAction(actions, "notice"))
             SysSettings.notice(failed == 0 ? r.optString("name") : r.optString("name") + ": " + failed + " failed", failed == 0);
+        if (depth == 0) h.post(() -> evaluate("post_run"));
     }
 
     private static boolean hasAction(JSONArray actions, String type) {
@@ -366,190 +845,54 @@ public class RoutinesUserService extends ISuiteService.Stub {
         return false;
     }
 
-    private void act(JSONObject a) throws Exception {
+    private void act(JSONObject a, String selfId, int depth) throws Exception {
         String type = a.optString("type");
-        String v = a.optString("value");
-        switch (type) {
-            case "vibrate": Haptics.done(); return;
-            case "lock": SysSettings.exec("input", "keyevent", "223"); L.i("screen locked"); return;
-            case "close_apps": closeApps(a.optJSONArray("except")); return;
-            case "revive": revive(a.optJSONArray("apps")); return;
-            case "wait": Thread.sleep(Math.min(60, Math.max(0, a.optInt("value", 1))) * 1000L); return;
+        if ("run_routine".equals(type)) {
+            if (depth >= 4) { L.i("run_routine: max chain depth reached"); return; }
+            String targetId = a.optString("routineId").trim();
+            if (targetId.isEmpty() || targetId.equals(selfId)) return;
+            for (int i = 0; i < routines.length(); i++) {
+                JSONObject target = routines.optJSONObject(i);
+                if (target != null && targetId.equals(target.optString("id"))) {
+                    run(target, "chained", depth + 1);
+                    return;
+                }
+            }
+            L.i("run_routine: unknown " + targetId);
+            return;
         }
-        String current = read(type);
+        if (ShellActions.runInstant(a, null, null)) return;
+        String v = a.optString("value");
+        String current = ShellActions.read(type);
         if (current == null) { L.i("unknown action " + type); return; }
         JSONObject saved = state.optJSONObject("saved");
         if (v.equals("restore")) {
             JSONObject s = saved.optJSONObject(type);
             if (s == null) { L.i(type + ": nothing to restore"); return; }
             saved.remove(type);
-            write(type, s.optString("v"));
+            ShellActions.write(type, s.optString("v"));
             L.i(type + ": restored " + s.optString("v"));
             return;
         }
-        String target = type.equals("media") ? String.valueOf(percentToIndex(a.optInt("value", 0))) : v;
+        String target = ShellActions.targetValue(type, a);
+        if (target == null) { L.i("unknown action " + type); return; }
         JSONObject s = saved.optJSONObject(type);
         if (s != null && s.optString("v").equals(target)) {
-            saved.remove(type);   // going back to the remembered value: nothing left to restore
+            saved.remove(type);
         } else if (s == null || System.currentTimeMillis() - s.optLong("t") > 20 * 3600_000L) {
             saved.put(type, new JSONObject().put("v", current).put("t", System.currentTimeMillis()));
         }
-        write(type, target);
+        ShellActions.write(type, target);
+        if (!target.equals(current) && !ShellActions.settled(type, target)) {
+            ShellActions.write(type, target);
+            if (!ShellActions.settled(type, target))
+                throw new IllegalStateException(type + " still " + ShellActions.read(type) + " after setting " + target);
+        }
         L.i(type + ": " + current + " → " + target);
     }
 
-    /** Current value in the same vocabulary write() takes. */
-    private String read(String type) {
-        switch (type) {
-            case "data": {
-                // per-SIM keys can be stale for the SIM that isn't used for data: read the data SIM's
-                String sub = SysSettings.get("global", "multi_sim_data_call");
-                String v = sub != null && sub.matches("\\d+") ? SysSettings.get("global", "mobile_data" + sub) : null;
-                if (v == null || v.equals("null")) v = SysSettings.get("global", "mobile_data");
-                return "1".equals(v) ? "on" : "off";
-            }
-            case "wifi": {   // wifi_on: 1 on, 2 on in airplane mode, 0 off, 3 off by airplane mode
-                String w = SysSettings.get("global", "wifi_on");
-                return "1".equals(w) || "2".equals(w) ? "on" : "off";
-            }
-            case "airplane": return "1".equals(SysSettings.get("global", "airplane_mode_on")) ? "on" : "off";
-            case "saver": return "1".equals(SysSettings.get("global", "low_power")) ? "on" : "off";
-            case "dnd": return "0".equals(SysSettings.get("global", "zen_mode")) ? "off" : "on";
-            case "ringer": {
-                String m = SysSettings.get("global", "mode_ringer");
-                return "0".equals(m) ? "silent" : "1".equals(m) ? "vibrate" : "normal";
-            }
-            case "media": return String.valueOf(mediaIndex());
-        }
-        return null;
-    }
-
-    private void write(String type, String v) {
-        boolean on = v.equals("on");
-        switch (type) {
-            case "data": SysSettings.exec("svc", "data", on ? "enable" : "disable"); break;
-            case "wifi": SysSettings.exec("cmd", "wifi", "set-wifi-enabled", on ? "enabled" : "disabled"); break;
-            case "airplane": SysSettings.exec("cmd", "connectivity", "airplane-mode", on ? "enable" : "disable"); break;
-            case "saver": SysSettings.exec("cmd", "power", "set-mode", on ? "1" : "0"); break;
-            case "dnd": SysSettings.exec("cmd", "notification", "set_dnd", on ? "on" : "off"); break;
-            case "ringer": SysSettings.exec("cmd", "audio", "set-ringer-mode", v.toUpperCase()); break;
-            case "media": SysSettings.exec("cmd", "audio", "set-volume", "3", v); break;
-        }
-    }
-
-    private static int lastInt(String s) {
-        Matcher m = Pattern.compile("(-?\\d+)\\s*$").matcher(s.trim());
-        return m.find() ? Integer.parseInt(m.group(1)) : -1;
-    }
-
-    private int mediaIndex() { return lastInt(SysSettings.exec("cmd", "audio", "get-stream-volume", "3")); }
-
-    private int percentToIndex(int pct) {
-        int max = lastInt(SysSettings.exec("cmd", "audio", "get-max-volume", "3"));
-        if (max <= 0) max = 15;
-        return Math.round(Math.max(0, Math.min(100, pct)) * max / 100f);
-    }
-
-    /**
-     * Closes everything: clears recents (like swiping every card away), then force-stops every
-     * user-installed app still running, background ones included (KWGT, VPNs, messengers…).
-     * Keeps the launcher, the keyboard, Suite and Shizuku (Suite runs on it). The background ones
-     * are logged; which apps come back is the "revive" action's own list.
-     */
-    private void closeApps(JSONArray except) {
-        Set<String> keep = new HashSet<>();
-        keep.add("dev.suite");
-        keep.add("moe.shizuku.privileged.api");
-        String ime = SysSettings.get("secure", "default_input_method");
-        if (ime != null && ime.contains("/")) keep.add(ime.substring(0, ime.indexOf('/')));
-        for (String l : SysSettings.exec("cmd", "package", "resolve-activity", "--brief",
-                "-a", "android.intent.action.MAIN", "-c", "android.intent.category.HOME").split("\n"))
-            if (l.contains("/")) keep.add(l.trim().substring(0, l.trim().indexOf('/')));
-        if (except != null) for (int i = 0; i < except.length(); i++) keep.add(except.optString(i));
-
-        Method remove;
-        Object atm;
-        try {
-            atm = Class.forName("android.app.ActivityTaskManager").getMethod("getService").invoke(null);
-            remove = atm.getClass().getMethod("removeTask", int.class);
-        } catch (Throwable t) {
-            L.e("close apps: task service unavailable", t);
-            return;
-        }
-        Pattern p = Pattern.compile("Recent #\\d+: Task\\{\\S+ #(\\d+) type=standard (?:A=\\d+:|I=)([\\w.]+)");
-        int n = 0;
-        Set<String> inRecents = new HashSet<>();
-        for (String l : SysSettings.exec("dumpsys", "activity", "recents").split("\n")) {
-            Matcher m = p.matcher(l);
-            if (!m.find() || keep.contains(m.group(2))) continue;
-            inRecents.add(m.group(2));
-            try {
-                if ((boolean) remove.invoke(atm, Integer.parseInt(m.group(1)))) n++;
-            } catch (Throwable t) {
-                L.e("close " + m.group(2), t);
-            }
-        }
-
-        // then every user app that still has a process
-        Set<String> third = new HashSet<>();
-        for (String l : SysSettings.exec("pm", "list", "packages", "-3").split("\n"))
-            if (l.startsWith("package:")) third.add(l.substring(8).trim());
-        Set<String> running = new LinkedHashSet<>();
-        for (String l : SysSettings.exec("ps", "-A", "-o", "NAME=").split("\n")) {
-            String pkg = l.trim();
-            int c = pkg.indexOf(':');
-            if (c > 0) pkg = pkg.substring(0, c);
-            if (third.contains(pkg) && !keep.contains(pkg)) running.add(pkg);
-        }
-        List<String> bg = new ArrayList<>();
-        for (String pkg : running) {
-            SysSettings.exec("am", "force-stop", pkg);
-            if (!inRecents.contains(pkg)) bg.add(pkg);
-        }
-        L.i("closed " + n + " from recents, force-stopped " + running.size() + " (background: " + String.join(", ", bg) + ")");
-    }
-
-    /**
-     * Revives the chosen apps after Close all apps: takes them out of Android's "stopped" state
-     * (so push messages and alarms reach them again; nothing is opened) and refreshes their
-     * home-screen widgets, which starts e.g. KWGT again.
-     */
-    private void revive(JSONArray stopped) {
-        if (stopped == null || stopped.length() == 0) { L.i("revive: no apps chosen"); return; }
-        Object ipm = null;
-        Method unstop = null;
-        try {
-            IBinder b = (IBinder) Class.forName("android.os.ServiceManager").getMethod("getService", String.class).invoke(null, "package");
-            ipm = Class.forName("android.content.pm.IPackageManager$Stub").getMethod("asInterface", IBinder.class).invoke(null, b);
-            unstop = ipm.getClass().getMethod("setPackageStoppedState", String.class, boolean.class, int.class);
-        } catch (Throwable t) {
-            L.e("revive: package service", t);
-        }
-        // widget ids per provider, from `dumpsys appwidget`
-        Map<String, List<String>> widgets = new HashMap<>();   // "pkg/cls" -> ids
-        String id = null;
-        Pattern pid = Pattern.compile("^\\s*\\[\\d+\\] id=(\\d+)");
-        Pattern pcmp = Pattern.compile("provider=.*cmp:ComponentInfo\\{([^}]+)\\}");   // ICU needs the \\}
-        for (String l : SysSettings.exec("dumpsys", "appwidget").split("\n")) {
-            Matcher a = pid.matcher(l);
-            if (a.find()) { id = a.group(1); continue; }
-            Matcher c = pcmp.matcher(l);
-            if (c.find() && id != null) { widgets.computeIfAbsent(c.group(1), k -> new ArrayList<>()).add(id); id = null; }
-        }
-        int un = 0, w = 0;
-        for (int i = 0; i < stopped.length(); i++) {
-            String pkg = stopped.optString(i);
-            try { if (unstop != null) { unstop.invoke(ipm, pkg, false, 0); un++; } }
-            catch (Throwable t) { L.e("revive " + pkg, t); }
-            for (Map.Entry<String, List<String>> e : widgets.entrySet()) {
-                if (!e.getKey().startsWith(pkg + "/")) continue;
-                SysSettings.exec("am", "broadcast", "-f", "0x20", "-n", e.getKey(),
-                        "-a", "android.appwidget.action.APPWIDGET_UPDATE", "--eia", "appWidgetIds", String.join(",", e.getValue()));
-                w++;
-            }
-        }
-        L.i("revived " + un + " apps, refreshed " + w + " widget providers");
-    }
+    private static String read(String type) { return ShellActions.read(type); }
+    private static void write(String type, String v) { ShellActions.write(type, v); }
 
     // ================================================================== state
 
@@ -598,7 +941,11 @@ public class RoutinesUserService extends ISuiteService.Stub {
                 routines = new JSONObject(json).optJSONArray("routines");
                 if (routines == null) routines = new JSONArray();
                 prevCond.clear();
+                prevRaw.clear();
+                prevWifiSsid.clear();
+                prevBtDevs.clear();
                 goneSince.clear();
+                inRange.clear();
                 L.i("loaded " + routines.length() + " routines");
                 evaluate(null);
             } catch (Exception e) {
@@ -613,17 +960,17 @@ public class RoutinesUserService extends ISuiteService.Stub {
             h.post(() -> {
                 for (int i = 0; i < routines.length(); i++) {
                     JSONObject r = routines.optJSONObject(i);
-                    if (r != null && id.equals(r.optString("id"))) { run(r, "run now"); return; }
+                    if (r != null && id.equals(r.optString("id"))) { run(r, "run now", 0); return; }
                 }
                 L.i("no routine " + id);
             });
             return "ok";
         }
-        if (cmd.equals("close_apps")) { h.post(() -> closeApps(null)); return "ok"; }   // test hooks
+        if (cmd.equals("close_apps")) { h.post(() -> ShellActions.closeApps(null, null)); return "ok"; }
         if (cmd.startsWith("revive ")) {
             JSONArray apps = new JSONArray();
             for (String s : cmd.substring(7).split(",")) if (!s.trim().isEmpty()) apps.put(s.trim());
-            h.post(() -> revive(apps));
+            h.post(() -> ShellActions.revive(apps));
             return "ok";
         }
         if (cmd.equals("networks")) {
@@ -633,6 +980,34 @@ public class RoutinesUserService extends ISuiteService.Stub {
                 if (m.find()) names.add(m.group(1).trim());
             }
             return new JSONArray(names).toString();
+        }
+        if (cmd.equals("bt_devices")) {
+            Set<String> names = new LinkedHashSet<>();
+            try {
+                BluetoothManager bm = ctx != null ? ctx.getSystemService(BluetoothManager.class) : null;
+                BluetoothAdapter ba = bm != null ? bm.getAdapter() : BluetoothAdapter.getDefaultAdapter();
+                if (ba != null && ba.getBondedDevices() != null) {
+                    for (BluetoothDevice d : ba.getBondedDevices()) {
+                        String n = d.getName();
+                        if (n != null && !n.trim().isEmpty()) names.add(n.trim());
+                    }
+                }
+            } catch (Throwable ignored) {}
+            if (names.isEmpty()) {
+                boolean inBonded = false;
+                for (String l : SysSettings.exec("dumpsys", "bluetooth_manager").split("\n")) {
+                    String t = l.trim();
+                    if (t.startsWith("Bonded devices:")) { inBonded = true; continue; }
+                    if (inBonded) {
+                        if (t.isEmpty() || (!t.contains(":") && !t.startsWith("["))) { inBonded = false; continue; }
+                        Matcher m = Pattern.compile("\\[([^]]+)\\]").matcher(t);
+                        if (m.find()) names.add(m.group(1).trim());
+                    }
+                }
+            }
+            List<String> sorted = new ArrayList<>(names);
+            Collections.sort(sorted, String.CASE_INSENSITIVE_ORDER);
+            return new JSONArray(sorted).toString();
         }
         return "";
     }

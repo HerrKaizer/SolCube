@@ -85,7 +85,10 @@ class PressAction(slot: String, private val allowCts: Boolean) {
         val a = action(act)
         Log.i(TAG, "power action → ${a ?: target(act)}")
         if (vibrate && a != CTS) runCatching {
-            act.getSystemService(Vibrator::class.java).vibrate(VibrationEffect.createOneShot(60, 255))
+            val attrs = android.os.VibrationAttributes.Builder()
+                .setUsage(android.os.VibrationAttributes.USAGE_COMMUNICATION_REQUEST)
+                .build()
+            act.getSystemService(Vibrator::class.java).vibrate(VibrationEffect.createOneShot(60, 255), attrs)
         }
         when {
             a == CTS -> Thread {
@@ -170,7 +173,7 @@ object DoublePress {
         return Shell.oneShot(ctx, cmd) == "ok"
     }
 
-    fun run(act: Activity) = action.perform(act, vibrate(act), nfc(act))
+    fun run(act: Activity) = action.perform(act, vibrate(act), nfc = false)
 }
 
 /** Ring / vibrate / silent for the power-button actions. */

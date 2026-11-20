@@ -24,12 +24,14 @@ class SuiteService : Service() {
         private const val CHANNEL = "suite_bg"
         private const val WATCHDOG_MS = 60_000L
 
+        fun anyEnabled(ctx: Context): Boolean =
+            listOf(Components.KEY_CTS, Components.KEY_GAME, Components.KEY_SR, Components.KEY_TEMP, Components.KEY_STREAM, Components.KEY_MIX, Routines.KEY, Profiles.KEY)
+                .any { Components.enabled(ctx, it) }
+
         /** Starts/updates or stops the service to match the switches. */
         fun sync(ctx: Context) {
-            val any = listOf(Components.KEY_CTS, Components.KEY_GAME, Components.KEY_SR, Components.KEY_TEMP, Components.KEY_STREAM, Components.KEY_MIX, Routines.KEY)
-                .any { Components.enabled(ctx, it) }
             val i = Intent(ctx, SuiteService::class.java)
-            if (any) ctx.startForegroundService(i) else ctx.stopService(i)
+            if (anyEnabled(ctx)) ctx.startForegroundService(i) else ctx.stopService(i)
         }
     }
 
@@ -75,11 +77,17 @@ class SuiteService : Service() {
         startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
         Shizuku.addBinderReceivedListenerSticky(binderListener)
         Shizuku.addBinderDeadListener(deadListener)
+        bg.postDelayed({ Components.reconcile(this@SuiteService) }, 2000)
         bg.postDelayed(watchdog, WATCHDOG_MS)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (!anyEnabled(this)) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
         apply()
+        bg.post { Components.reconcile(this) }
         return START_STICKY
     }
 

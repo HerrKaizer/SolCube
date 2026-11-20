@@ -19,8 +19,57 @@ public class UtilUserService extends ISuiteService.Stub {
 
     private static volatile Thread session;
 
+    private static final String RESTART_SCRIPT =
+            "sleep 0.3\n" +
+            "HAD_A11Y=0\n" +
+            "A11Y='dev.suite/dev.suite.SuiteA11y'\n" +
+            "CUR=$(settings get secure enabled_accessibility_services 2>/dev/null)\n" +
+            "case \":$CUR:\" in\n" +
+            "  *\":$A11Y:\"*|*\":dev.suite/.SuiteA11y:\"*) HAD_A11Y=1 ;;\n" +
+            "esac\n" +
+            "kill_suite() {\n" +
+            "  ps -A -o PID=,NAME= 2>/dev/null | while read -r p n; do\n" +
+            "    [ \"$p\" = \"$$\" ] && continue\n" +
+            "    case \"$n\" in\n" +
+            "      dev.suite|dev.suite:*) kill -9 \"$p\" 2>/dev/null ;;\n" +
+            "    esac\n" +
+            "  done\n" +
+            "}\n" +
+            "kill_suite\n" +
+            "am force-stop dev.suite >/dev/null 2>&1\n" +
+            "sleep 0.3\n" +
+            "kill_suite\n" +
+            "am force-stop dev.suite >/dev/null 2>&1\n" +
+            "sleep 2\n" +
+            "if [ \"$HAD_A11Y\" = 1 ]; then\n" +
+            "  NOW=$(settings get secure enabled_accessibility_services 2>/dev/null)\n" +
+            "  [ \"$NOW\" = \"null\" ] && NOW=''\n" +
+            "  case \":$NOW:\" in\n" +
+            "    *\":$A11Y:\"*|*\":dev.suite/.SuiteA11y:\"*) ;;\n" +
+            "    *)\n" +
+            "      if [ -z \"$NOW\" ]; then NEXT=\"$A11Y\"; else NEXT=\"$NOW:$A11Y\"; fi\n" +
+            "      ESC=$(printf '%s' \"$NEXT\" | sed 's/:/\\\\:/g')\n" +
+            "      content insert --uri content://settings/secure --bind name:s:enabled_accessibility_services --bind \"value:s:$ESC\" >/dev/null 2>&1\n" +
+            "      ;;\n" +
+            "  esac\n" +
+            "  content insert --uri content://settings/secure --bind name:s:accessibility_enabled --bind value:s:1 >/dev/null 2>&1\n" +
+            "fi\n" +
+            "am start-foreground-service -n dev.suite/.SuiteService >/dev/null 2>&1\n" +
+            "sleep 0.4\n" +
+            "am start -n dev.suite/.MainActivity -f 0x10008000 >/dev/null 2>&1\n";
+
     @Override public String command(String cmd) {
         try {
+            if (cmd.equals("restart-suite")) {
+                ProcessBuilder pb = new ProcessBuilder("/system/bin/sh", "-c",
+                        "setsid /system/bin/sh -c 'eval \"$SUITE_RESTART_SCRIPT\"' </dev/null >/dev/null 2>&1 &");
+                pb.environment().put("SUITE_RESTART_SCRIPT", RESTART_SCRIPT);
+                pb.redirectInput(new java.io.File("/dev/null"));
+                pb.redirectOutput(new java.io.File("/dev/null"));
+                pb.redirectError(new java.io.File("/dev/null"));
+                pb.start().waitFor();
+                return "ok";
+            }
             if (cmd.startsWith("put ")) {   // put <table> <key> <value>
                 String[] p = cmd.split(" ");
                 SysSettings.put(p[1], p[2], p[3]);
