@@ -1,4 +1,4 @@
-plugins {
+﻿plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
 }
@@ -11,8 +11,8 @@ android {
         applicationId = "dev.suite"
         minSdk = 33
         targetSdk = 34
-        versionCode = 91
-        versionName = "3.5.4"  // 2026-11-20: temp pill hold 1 s; pill rim a bit stronger; notices for every action, temp pill hold-to-off + edge fix, rubber-band overscroll
+        versionCode = 92
+        versionName = "3.5.5"  // 2026-11-20: temp pill hold 1 s; pill rim a bit stronger; notices for every action, temp pill hold-to-off + edge fix, rubber-band overscroll
     }
 
     buildTypes {
