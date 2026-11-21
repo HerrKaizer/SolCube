@@ -47,7 +47,18 @@ class LiquidGlass(
     /** Soft shadow outside the outline (nested panes only, never level 0). Small cards get
      *  theirs from FloatingCardHost and the chevron badges from their elevation, so it's off by default. */
     shadow: Boolean = false,
+    /** Soft coloured halo around the pane (0 = none), e.g. the glowing gold buttons. */
+    halo: Int = 0,
+    /** Thin coloured rim on the outline (0 = none). */
+    stroke: Int = 0,
 ) : Drawable() {
+    private val haloPaint = if (halo == 0) null else Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = halo
+        maskFilter = BlurMaskFilter(9f * density, BlurMaskFilter.Blur.NORMAL)
+    }
+    private val strokePaint = if (stroke == 0) null else Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = stroke; style = Paint.Style.STROKE; strokeWidth = 1.2f * density
+    }
 
     private val shader = RuntimeShader(SRC)
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -133,6 +144,14 @@ class LiquidGlass(
             canvas.drawRoundRect(shadowRect, r, r, shadowPaint)
             canvas.restore()
         }
+        if (haloPaint != null) Glow.request(host())
+        if (haloPaint != null && !parentClips) {
+            canvas.save()
+            canvas.clipOutPath(path)
+            val r = minOf(radius, rect.width() / 2, rect.height() / 2)
+            canvas.drawRoundRect(rect, r, r, haloPaint)
+            canvas.restore()
+        }
 
         val view = host()
         var sees = 0f
@@ -153,6 +172,11 @@ class LiquidGlass(
         shader.setFloatUniform("hasBd", sees)
         paint.shader = shader
         canvas.drawRect(rect, paint)
+        strokePaint?.let { sp ->
+            val r = minOf(radius, rect.width() / 2, rect.height() / 2)
+            val i = sp.strokeWidth / 2
+            canvas.drawRoundRect(rect.left + i, rect.top + i, rect.right - i, rect.bottom - i, r - i, r - i, sp)
+        }
         canvas.restore()
     }
 
@@ -285,4 +309,80 @@ half4 main(float2 fc) {
 }
 """
     }
+}
+
+/**
+ * The gold glow around filled controls lies outside their bounds. Any container that clips its
+ * children cuts it off square, so the first time a glowing control draws, its containers (up to
+ * the scroll view, which must keep clipping) stop clipping.
+ */
+object Glow {
+    private val done = java.util.Collections.newSetFromMap(WeakHashMap<View, Boolean>())
+
+    fun hostOf(d: Drawable): View? {
+        var cb: Any? = d.callback
+        while (cb is Drawable) cb = cb.callback
+        return cb as? View
+    }
+
+    /** Call from draw(); does the work once per view, after the current frame. */
+    fun request(v: View?) {
+        if (v == null || !done.add(v)) return
+        v.post { unclip(v) }
+    }
+
+    fun unclip(v: View) {
+        var p = v.parent
+        var n = 0
+        while (p is ViewGroup && p !is android.widget.ScrollView && p !is android.widget.HorizontalScrollView && n < 10) {
+            // Re-set even when already false: setClipChildren only pushes the flag to the children
+            // that exist at the time, so children added later still clip their own drawing.
+            p.clipChildren = true
+            p.clipChildren = false
+            p.clipToPadding = false
+            p.invalidate()
+            if (p.id == android.R.id.content) break
+            p = p.parent
+            n++
+        }
+        v.invalidate()
+    }
+}
+
+/** A glowing gold pill (switch tracks): halo outside the bounds, top→bottom gradient, bright rim. */
+class GlowPill(
+    private val top: Int, private val bottom: Int, rim: Int, halo: Int, density: Float,
+    private val w: Int = -1, private val h: Int = -1,
+) : Drawable() {
+    override fun getIntrinsicWidth() = w
+    override fun getIntrinsicHeight() = h
+    private val haloPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = halo; maskFilter = BlurMaskFilter(8f * density, BlurMaskFilter.Blur.NORMAL)
+    }
+    private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val rimPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = rim; style = Paint.Style.STROKE; strokeWidth = 1.2f * density
+    }
+    private val r = RectF()
+
+    override fun onBoundsChange(b: Rect) {
+        r.set(b)
+        fillPaint.shader = android.graphics.LinearGradient(0f, r.top, 0f, r.bottom, top, bottom,
+            android.graphics.Shader.TileMode.CLAMP)
+    }
+
+    override fun draw(canvas: Canvas) {
+        if (r.isEmpty) return
+        Glow.request(Glow.hostOf(this))
+        val rad = r.height() / 2
+        if (Color.alpha(haloPaint.color) > 0) canvas.drawRoundRect(r, rad, rad, haloPaint)
+        canvas.drawRoundRect(r, rad, rad, fillPaint)
+        val i = rimPaint.strokeWidth / 2
+        canvas.drawRoundRect(r.left + i, r.top + i, r.right - i, r.bottom - i, rad - i, rad - i, rimPaint)
+    }
+
+    override fun setAlpha(alpha: Int) {}
+    override fun setColorFilter(colorFilter: ColorFilter?) {}
+    @Deprecated("Deprecated in Java")
+    override fun getOpacity() = PixelFormat.TRANSLUCENT
 }

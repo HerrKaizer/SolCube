@@ -12,13 +12,13 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 /**
- * Twice a day asks GitHub for the latest Suite release. When it's newer than this build, a
+ * Twice a day asks GitHub for the latest SolCube release. When it's newer than this build, a
  * pop-up shows its notes and a link to the releases page (once per version; MainActivity
  * also shows an "Update available" link until it's installed).
  */
 object Updates {
-    const val RELEASES = "https://github.com/HerrKaizer/Suite/releases"
-    private const val API = "https://api.github.com/repos/HerrKaizer/Suite/releases/latest"
+    const val RELEASES = "https://github.com/HerrKaizer/SolCube/releases"
+    private const val API = "https://api.github.com/repos/HerrKaizer/SolCube/releases/latest"
     private const val EVERY = 12 * 60 * 60 * 1000L   // twice a day
     private const val P = "updates"
 
@@ -58,7 +58,7 @@ object Updates {
             c.connectTimeout = 10_000
             c.readTimeout = 10_000
             c.setRequestProperty("Accept", "application/vnd.github+json")
-            c.setRequestProperty("User-Agent", "Suite-app")
+            c.setRequestProperty("User-Agent", "SolCube-app")
             val code = c.responseCode
             if (code != 200) { Log.w("Suite", "update check: HTTP $code"); return available(ctx) }
             val j = JSONObject(c.inputStream.bufferedReader().use { it.readText() })

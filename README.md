@@ -1,8 +1,8 @@
-﻿# Suite
+﻿# SolCube
 
-All-in-one Android app for vivo / OriginOS phones. Tested on a vivo X300 Ultra running OriginOS 7; other devices may not work.
+Formerly **Suite**. All-in-one Android app for vivo / OriginOS phones. Tested on a vivo X300 Ultra running OriginOS 7; other devices may not work.
 
-**Download:** [latest release](https://github.com/HerrKaizer/Suite/releases/latest) (debug-signed APK)
+**Download:** [latest release](https://github.com/HerrKaizer/SolCube/releases/latest) (debug-signed APK)
 
 ## Features
 
@@ -12,7 +12,7 @@ All-in-one Android app for vivo / OriginOS phones. Tested on a vivo X300 Ultra r
 - **Temperature overlay** (CPU / GPU / battery)
 - **Play together**: audio mixing (several apps play at once)
 - **Routines** (beta): Wi-Fi, DND, unlock and time triggers with actions like data, ringer, airplane mode, close apps
-- **Double power press**: open an app (optionally turning NFC on while it is open), Circle to Search, or switch sound mode: Ring › Vibrate › Silent, silent on/off, vibrate on/off. Suite turns on vivo Wallet's double-press switch for you ("Set up double press")
+- **Double power press**: open an app (optionally turning NFC on while it is open), Circle to Search, or switch sound mode: Ring › Vibrate › Silent, silent on/off, vibrate on/off. SolCube turns on vivo Wallet's double-press switch for you ("Set up double press")
 - **Power button hold**: instead of Circle to Search, the hold can open an app or switch sound mode
 - **Stream to laptop** (beta, scrcpy based)
 
@@ -21,16 +21,16 @@ All-in-one Android app for vivo / OriginOS phones. Tested on a vivo X300 Ultra r
 - A vivo / iQOO phone on OriginOS (tested on OriginOS 7, Android 17)
 - **[Shizuku](https://shizuku.rikka.app/)** installed and running (no root needed)
 - **Developer options → Wireless debugging** (to start Shizuku; needs Wi-Fi once per boot)
-- **Circle to Search triggers only:** the **Google app** set as your default digital assistant. Suite makes the same call as MiCTS, so MiCTS itself is not needed.
+- **Circle to Search triggers only:** the **Google app** set as your default digital assistant. SolCube makes the same call as MiCTS, so MiCTS itself is not needed.
 - **Overlay permission** ("Display over other apps") for the ripple, pill and temperature overlay
-- **Accessibility service "Suite"**: only used to draw overlays above the status bar. It reads no screen content. Suite can enable it for you through Shizuku.
+- **Accessibility service "SolCube ripple"**: only used to draw overlays above the status bar. It reads no screen content. SolCube can enable it for you through Shizuku.
 - Installing from unknown sources allowed (the APK is debug-signed)
 - **Stream to laptop only:** a PC with adb, scrcpy and the helper script, plus a USB cable
 
 ## Setup guide
 
 ### 1. Install the APK
-Download `Suite.apk` from the [release page](https://github.com/HerrKaizer/Suite/releases/latest), open it and allow installs from this source when asked. If vivo rejects the install ("User rejected permissions"), unlock the phone and try again with the screen on.
+Download `SolCube.apk` from the [release page](https://github.com/HerrKaizer/SolCube/releases/latest), open it and allow installs from this source when asked. If vivo rejects the install ("User rejected permissions"), unlock the phone and try again with the screen on.
 
 ### 2. Enable Developer options and Wireless debugging
 1. Settings → About phone → tap **Software version** (or Build number) 7 times.
@@ -45,18 +45,18 @@ Download `Suite.apk` from the [release page](https://github.com/HerrKaizer/Suite
 
 Shizuku stops when the phone reboots, so repeat step 3 (the pairing is remembered, only Start is needed) after each reboot.
 
-### 4. Give Suite its permissions
-1. Open Suite. When Shizuku asks, **allow** Suite.
-2. Allow **Display over other apps** for Suite when prompted.
+### 4. Give SolCube its permissions
+1. Open SolCube. When Shizuku asks, **allow** SolCube.
+2. Allow **Display over other apps** for SolCube when prompted.
 3. Turn on the features you want with each card's **Enable** button.
 
 ### 5. Circle to Search (optional)
 1. Settings → Apps → Default apps → **Digital assistant app** → choose **Google**.
 2. Make sure the Google app is up to date and Circle to Search is enabled in the Google app settings.
-3. In Suite, enable the Circle to Search card, then hold two fingers on the screen, hold the power button, or hold the navigation bar at the bottom.
+3. In SolCube, enable the Circle to Search card, then hold two fingers on the screen, hold the power button, or hold the navigation bar at the bottom.
 
-### 6. Keep Suite alive (recommended)
-vivo's background cleaner can stop apps. In Settings → Battery → Background power consumption (name varies), allow Suite to run in the background.
+### 6. Keep SolCube alive (recommended)
+vivo's background cleaner can stop apps. In Settings → Battery → Background power consumption (name varies), allow SolCube to run in the background.
 
 ## Notes
 
@@ -65,11 +65,11 @@ vivo's background cleaner can stop apps. In Settings → Battery → Background 
 
 ## Updates and your settings
 
-- Suite checks GitHub twice a day. While a new version is out, a pop-up with the release notes opens every time you open Suite. "Check for updates" at the bottom of the app checks right away.
+- SolCube checks GitHub twice a day. While a new version is out, a pop-up with the release notes opens every time you open SolCube. "Check for updates" at the bottom of the app checks right away.
 - Install the new APK over the old one. **Don't uninstall first**: updating keeps all settings and routines.
 - Settings are also part of Android's Google backup, so they come back after a reinstall or on a new phone.
 - Missing something? Tap **Can't find a feature?** in the app, or DM [u/HerrKaizer__](https://www.reddit.com/user/HerrKaizer__/) on Reddit.
 
 ## Privacy
 
-Suite collects no data: no accounts, analytics, ads or tracking. Everything runs on your phone; the only network request is the update check to GitHub. Full details in the [Privacy Policy](PRIVACY.md).
+SolCube collects no data: no accounts, analytics, ads or tracking. Everything runs on your phone; the only network request is the update check to GitHub. Full details in the [Privacy Policy](PRIVACY.md).

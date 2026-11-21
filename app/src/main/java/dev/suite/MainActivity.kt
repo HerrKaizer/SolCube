@@ -67,6 +67,8 @@ class MainActivity : Activity() {
         val dot: View,
         val status: TextView,
         val detail: TextView,
+        /** Looks like the group cards: dot + one-line summary, no Running/Not running. */
+        val compact: Boolean = false,
     )
 
     private class GroupCard(
@@ -179,11 +181,11 @@ class MainActivity : Activity() {
         shizukuCard.visibility = if (s.shell == Shell.State.READY) View.GONE else View.VISIBLE
         when (s.shell) {
             Shell.State.NOT_RUNNING -> {
-                shizukuText.text = "Shizuku isn't running — it stops on every reboot. Start it again in the Shizuku app (Wireless debugging). Circle to Search, Frame interpolation and Super resolution need it; Suite brings them back by itself once it's running."
+                shizukuText.text = "Shizuku isn't running — it stops on every reboot. Start it again in the Shizuku app (Wireless debugging). Circle to Search, Frame interpolation and Super resolution need it; SolCube brings them back by itself once it's running."
                 shizukuButton.text = "Open Shizuku"
             }
             Shell.State.NO_PERMISSION -> {
-                shizukuText.text = "Allow Suite to use Shizuku so it can start and stop the shell-side parts."
+                shizukuText.text = "Allow SolCube to use Shizuku so it can start and stop the shell-side parts."
                 shizukuButton.text = "Allow"
             }
             Shell.State.READY -> {}
@@ -442,9 +444,17 @@ class MainActivity : Activity() {
             sec.toggle.setTextColor(if (on) p.fg else p.onAccent)
             sec.toggle.background = ripple(if (on) glass(20.dp) else accentGradient(20.dp), 20.dp)
         }
+        (sec.dot.background as GradientDrawable).setColor(if (running) p.ok else alpha(p.sub, 0.5f))
+        if (sec.compact) {
+            // first line next to the dot; anything after it (e.g. "Last drawing ignored") below
+            sec.status.put(detail.substringBefore('\n'))
+            val rest = if ('\n' in detail) detail.substringAfter('\n') else ""
+            sec.detail.put(rest)
+            sec.detail.visibility = if (rest.isEmpty()) View.GONE else View.VISIBLE
+            return
+        }
         sec.status.put(if (running) "Running" else "Not running")
         sec.status.setTextColor(if (running) p.ok else p.sub)
-        (sec.dot.background as GradientDrawable).setColor(if (running) p.ok else alpha(p.sub, 0.5f))
         sec.detail.put(detail)
     }
 
@@ -499,7 +509,7 @@ class MainActivity : Activity() {
             isFocusableInTouchMode = true
             descendantFocusability = android.view.ViewGroup.FOCUS_BEFORE_DESCENDANTS
         }
-        val suiteTitle = label("Suite", 42f, p.fg).apply {
+        val suiteTitle = label("SolCube", 42f, p.fg).apply {
             typeface = fontBold
             letterSpacing = -0.02f
         }
@@ -590,7 +600,7 @@ class MainActivity : Activity() {
         root.addView(automationGroup.card, cardParams())
 
         // 3. Gestures (standalone card): two-finger drawings that trigger routines
-        gestSec = section(GestureStore.KEY, "Gestures")
+        gestSec = section(GestureStore.KEY, "Gestures", compact = true)
         addGestureSettings(gestSec.body)
         root.addView(gestSec.card, cardParams())
 
@@ -673,7 +683,7 @@ class MainActivity : Activity() {
         powerRow.addView(label("vivo background power settings", 15f, p.link, bold = true), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
         powerRow.addView(label("›", 18f, p.sub))
         powerCard.addView(powerRow)
-        powerCard.addView(label("Allow Suite to use power in the background, or vivo freezes it.", 12.5f, p.sub).apply {
+        powerCard.addView(label("Allow SolCube to use power in the background, or vivo freezes it.", 12.5f, p.sub).apply {
             setPadding(0, 4.dp, 0, 0)
         })
         settingsHost.addView(powerCard, innerCardParams())
@@ -718,7 +728,7 @@ class MainActivity : Activity() {
             val report = lastDiagReport
             if (report.isNotEmpty()) {
                 val cm = getSystemService(android.content.ClipboardManager::class.java)
-                cm?.setPrimaryClip(android.content.ClipData.newPlainText("Suite diagnostics", report))
+                cm?.setPrimaryClip(android.content.ClipData.newPlainText("SolCube diagnostics", report))
                 toast("Diagnostics copied")
             }
         }.apply {
@@ -735,7 +745,7 @@ class MainActivity : Activity() {
             setPadding(8.dp, 0, 8.dp, 0)
         }
         lateinit var restartBtn: TextView
-        restartBtn = pillButton("Restart Suite", filled = false) { restartSuite(restartBtn) }.apply {
+        restartBtn = pillButton("Restart SolCube", filled = false) { restartSuite(restartBtn) }.apply {
             textSize = 13.5f
             setPadding(8.dp, 0, 8.dp, 0)
         }
@@ -747,7 +757,7 @@ class MainActivity : Activity() {
             topMargin = 56.dp
             bottomMargin = 12.dp
         })
-        root.addView(label("Suite ${Updates.current(this)}", 12f, p.sub).apply { gravity = Gravity.CENTER },
+        root.addView(label("SolCube ${Updates.current(this)}", 12f, p.sub).apply { gravity = Gravity.CENTER },
             LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 8.dp })
 
         return pinnedBackdropLayout(
@@ -786,7 +796,7 @@ class MainActivity : Activity() {
     private fun restartSuite(btn: TextView? = null) {
         btn?.isEnabled = false
         btn?.text = "Restarting…"
-        toast("Restarting Suite (back in ~2 s)…")
+        toast("Restarting SolCube (back in ~2 s)…")
         io.execute {
             if (Shell.state() == Shell.State.READY) {
                 val res = Shell.command(this, Shell.Kind.UTIL, "restart-suite")
@@ -798,7 +808,7 @@ class MainActivity : Activity() {
             SuiteService.sync(this)
             main.post {
                 btn?.isEnabled = true
-                btn?.text = "Restart Suite"
+                btn?.text = "Restart SolCube"
                 poll()
                 toast("Restarted (Shizuku wasn't running)")
             }
@@ -1082,16 +1092,22 @@ class MainActivity : Activity() {
     }
 
     /** A switchable block: its own card, an inner card, or (with [into]) a sub-row inside a card. */
-    private fun section(key: String, title: String, into: LinearLayout? = null, collapsible: Boolean = into == null, inner: Boolean = false): Section {
+    private fun section(key: String, title: String, into: LinearLayout? = null, collapsible: Boolean = into == null, inner: Boolean = false, compact: Boolean = false): Section {
         val card = into ?: if (inner) innerCard() else card()
+        if (compact) card.setPadding(16.dp, 16.dp, 16.dp, 16.dp)   // same as the group cards
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             clipChildren = false
             clipToPadding = false
         }
-        header.addView(label(title, if (into != null) 15.5f else if (inner) 16.5f else 18f, p.fg, bold = true),
-            LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        // compact: title and status line stacked on the left like the group cards, buttons to the right
+        val titleCol = if (compact) LinearLayout(this).apply { orientation = LinearLayout.VERTICAL } else null
+        val titleView = label(title, if (into != null) 15.5f else if (inner) 16.5f else if (compact) 20f else 18f, p.fg, bold = true)
+        if (titleCol != null) {
+            titleCol.addView(titleView)
+            header.addView(titleCol, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        } else header.addView(titleView, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
         val chevron = if (collapsible) chevronBadge(false).also {
             header.addView(it, LinearLayout.LayoutParams(30.dp, 30.dp).apply { leftMargin = 8.dp })
         } else null
@@ -1109,10 +1125,15 @@ class MainActivity : Activity() {
 
         val statusRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         val dot = View(this).apply { background = GradientDrawable().apply { shape = GradientDrawable.OVAL } }
-        statusRow.addView(dot, LinearLayout.LayoutParams(8.dp, 8.dp).apply { rightMargin = 8.dp })
-        val status = label("", 14.5f, p.sub, bold = true)
-        statusRow.addView(status)
-        card.addView(statusRow, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 8.dp })
+        if (compact) statusRow.addView(dot, LinearLayout.LayoutParams(7.dp, 7.dp).apply { rightMargin = 7.dp })
+        else statusRow.addView(dot, LinearLayout.LayoutParams(8.dp, 8.dp).apply { rightMargin = 8.dp })
+        val status = if (compact) label("", 12.5f, p.sub).apply {
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        } else label("", 14.5f, p.sub, bold = true)
+        if (compact) statusRow.addView(status, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)) else statusRow.addView(status)
+        if (titleCol != null) titleCol.addView(statusRow, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 4.dp })
+        else card.addView(statusRow, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 8.dp })
 
         val detail = label("", 13f, p.sub).apply { setLineSpacing(2.dp.toFloat(), 1f) }
         card.addView(detail, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 6.dp })
@@ -1124,7 +1145,7 @@ class MainActivity : Activity() {
             }
         } else card
 
-        sec = Section(key, card, body, toggle, dot, status, detail)
+        sec = Section(key, card, body, toggle, dot, status, detail, compact)
         return sec
     }
 
@@ -1509,7 +1530,7 @@ class MainActivity : Activity() {
         card.addView(statusRow, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 8.dp })
         dpDetail = label("", 13f, p.sub)
         card.addView(dpDetail, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 6.dp })
-        dpMake = pillButton("Make Suite the handler", filled = true) {
+        dpMake = pillButton("Make SolCube the handler", filled = true) {
             if (dpBusy) return@pillButton
             dpBusy = true
             renderDouble()
@@ -1568,9 +1589,9 @@ class MainActivity : Activity() {
         val wallet = DoublePress.walletSwitchOn(this)
         val ready = mine && wallet
         dpStatus.put(when {
-            ready -> "Suite handles it"
+            ready -> "SolCube handles it"
             mine -> "vivo's double press is off"
-            else -> "Not handled by Suite"
+            else -> "Not handled by SolCube"
         })
         dpStatus.setTextColor(if (ready) p.ok else p.sub)
         (dpDot.background as GradientDrawable).setColor(if (ready) p.ok else alpha(p.sub, 0.5f))
@@ -2024,7 +2045,7 @@ class MainActivity : Activity() {
             }
             gestList.addView(box, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 14.dp })
         }
-        gestList.addView(label("Highlighted = has action(s). Tap a gesture to change them or teach Suite your way of drawing it.",
+        gestList.addView(label("Highlighted = has action(s). Tap a gesture to change them or teach SolCube your way of drawing it.",
             12f, p.sub).apply { setPadding(0, 8.dp, 0, 0) })
         gestList.addView(textButton("Record a custom gesture") { recordGesture(null) { renderGestureList() } },
             LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = 4.dp; leftMargin = (-12).dp })
@@ -2174,7 +2195,7 @@ class MainActivity : Activity() {
             }
             box.addView(nameField, LinearLayout.LayoutParams(MATCH_PARENT, 46.dp).apply { topMargin = 12.dp })
         } else {
-            box.addView(label("Draw ${GestureStore.name(this, forId)} your way, $need times. Suite keeps these next to its own version.",
+            box.addView(label("Draw ${GestureStore.name(this, forId)} your way, $need times. SolCube keeps these next to its own version.",
                 12.5f, p.sub))
         }
         val progress = label("", 13.5f, p.fg, bold = true)
@@ -3281,7 +3302,7 @@ class MainActivity : Activity() {
                     }
                 } else if (manual) {
                     SuiteDialog.Builder(this).setTitle("You're up to date")
-                        .setMessage("Suite ${Updates.current(this)} is the latest version.")
+                        .setMessage("SolCube ${Updates.current(this)} is the latest version.")
                         .setPositiveButton("OK", null).show()
                 }
                 openedNow = false
@@ -3342,9 +3363,8 @@ class MainActivity : Activity() {
 
     /** Filled buttons: ink (day) / champagne (night) tinted glass. */
     private fun accentGradient(radius: Int): Drawable {
-        val c = blendColors(p.accent, p.accent2)
         return LiquidGlass(p, radius.toFloat(), isDark(), resources.displayMetrics.density, level = 2,
-            tint = Color.argb(242, Color.red(c), Color.green(c), Color.blue(c)), shine = if (isDark()) 0.78f else 0.37f, shadow = true)
+            tint = p.fill, shine = p.fillShine, shadow = p.halo == 0, halo = p.halo, stroke = p.fillStroke)
     }
 
     private fun blendColors(a: Int, b: Int) = Color.rgb((Color.red(a) + Color.red(b)) / 2,
@@ -3389,11 +3409,12 @@ class MainActivity : Activity() {
      */
     private fun styleSwitch(sw: Switch) {
         val trackW = 50.dp; val trackH = 30.dp; val knob = 24.dp; val inset = (trackH - knob) / 2
-        val accent = blendColors(p.accent, p.accent2)
-        fun track(on: Boolean) = GradientDrawable().apply {
+        fun track(on: Boolean): Drawable = if (on && p.halo != 0)
+            GlowPill(p.fill or 0xFF000000.toInt(), p.fill or 0xFF000000.toInt(), p.fillStroke, p.halo, resources.displayMetrics.density, trackW, trackH)
+        else GradientDrawable().apply {
             cornerRadius = trackH / 2f
             setSize(trackW, trackH)
-            if (on) setColor(accent)
+            if (on) setColor(p.fill)
             else {
                 setColor(if (isDark()) Color.argb(46, 255, 255, 255) else Color.argb(38, 0, 0, 0))
                 setStroke(1.dp, if (isDark()) Color.argb(56, 255, 255, 255) else Color.argb(36, 0, 0, 0))
@@ -3516,18 +3537,18 @@ class MainActivity : Activity() {
         private var anim: android.animation.ValueAnimator? = null
 
         private val thumbRect = android.graphics.RectF()
-        private val thumbFill = blendColors(p.accent, p.accent2).let { c ->
-            Color.argb(242, Color.red(c), Color.green(c), Color.blue(c))
-        }
+        private val thumbFill = p.fill
         private val thumbPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
             style = android.graphics.Paint.Style.FILL
             color = thumbFill
-            setShadowLayer(4f * d, 0f, 1.5f * d, alpha(Color.BLACK, if (isDark()) 0.45f else 0.18f))
+            if (p.halo != 0) setShadowLayer(8f * d, 0f, 0f, p.halo)
+            else setShadowLayer(4f * d, 0f, 1.5f * d, alpha(Color.BLACK, if (isDark()) 0.45f else 0.18f))
         }
         private val rimPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
             style = android.graphics.Paint.Style.STROKE
             strokeWidth = 1f * d
-            color = alpha(Color.WHITE, if (isDark()) 0.25f else 0.45f)
+            color = if (p.fillStroke != 0) p.fillStroke else alpha(Color.WHITE, if (isDark()) 0.25f else 0.45f)
+            if (p.fillStroke != 0) strokeWidth = 1.2f * d
         }
         private val textPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
             textAlign = android.graphics.Paint.Align.CENTER
@@ -3552,6 +3573,9 @@ class MainActivity : Activity() {
             val r = thumbH * 0.5f
             val left = pad + pos * segW
             thumbRect.set(left, pad, left + segW, pad + thumbH)
+            if (p.halo != 0) {
+                Glow.request(this)
+            }
             canvas.drawRoundRect(thumbRect, r, r, thumbPaint)
             val rimInset = rimPaint.strokeWidth * 0.5f
             thumbRect.inset(rimInset, rimInset)

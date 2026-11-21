@@ -11,8 +11,8 @@ android {
         applicationId = "dev.suite"
         minSdk = 33
         targetSdk = 34
-        versionCode = 92
-        versionName = "3.5.5"  // 2026-11-20: temp pill hold 1 s; pill rim a bit stronger; notices for every action, temp pill hold-to-off + edge fix, rubber-band overscroll
+        versionCode = 100
+        versionName = "3.6.7"  // update check uses github.com/HerrKaizer/SolCube; Gestures card same height as the groups; Gestures card styled like the group cards; flat gold on switches + theme picker, greener "running"; glow on every gold control, halo no longer clipped square; glowing gold matched to the icon; 2026-11-21: renamed to SolCube (visible name only), palette matched to the new icon (amber gold on black)
     }
 
     buildTypes {

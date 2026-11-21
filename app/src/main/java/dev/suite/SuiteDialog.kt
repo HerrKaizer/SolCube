@@ -51,6 +51,8 @@ object Look {
         val glass: Int, val sheen: Int, val stroke: Int, val chip: Int,
         val fg: Int, val sub: Int, val accent: Int, val accent2: Int, val onAccent: Int, val link: Int, val warn: Int, val ok: Int,
         val panel: Int,   // solid surface for pop-ups
+        /** Filled buttons / switches / chips: ARGB fill, halo around them (0 = none), rim (0 = none), highlight strength. */
+        val fill: Int = 0, val halo: Int = 0, val fillStroke: Int = 0, val fillShine: Float = 0.78f,
     )
 
     const val THEME_LIGHT = 0
@@ -71,27 +73,42 @@ object Look {
     }
 
     private fun white(a: Float) = Color.argb((a * 255).toInt(), 255, 255, 255)
+    private fun mid(a: Int, b: Int, alpha: Int) = Color.argb(alpha, (Color.red(a) + Color.red(b)) / 2,
+        (Color.green(a) + Color.green(b)) / 2, (Color.blue(a) + Color.blue(b)) / 2)
 
-    // "Champagne & ink": near-black with muted plum / deep teal / bronze glows and champagne-gold
-    // buttons at night; warm porcelain with sand / sage / blush glows and ink buttons by day.
-    fun palette(ctx: Context) = if (isDark(ctx)) Palette(
+    fun palette(ctx: Context): Palette {
+        val base = basePalette(ctx)
+        if (!isDark(ctx)) return base.copy(fill = mid(base.accent, base.accent2, 242), fillShine = 0.37f)
+        // Glow, matched to the icon's floating cube: honey-cream top into burnt amber, a bright
+        // gold rim and a saturated orange-gold halo.
+        return base.copy(
+            accent = Color.rgb(0xFF, 0xDF, 0x9E), accent2 = Color.rgb(0xE0, 0x8C, 0x24),
+            onAccent = Color.rgb(0x1E, 0x10, 0x02), link = Color.rgb(0xFF, 0xB6, 0x45),
+            fill = Color.argb(250, 0xF4, 0xB2, 0x4C), fillStroke = Color.argb(210, 0xFF, 0xE4, 0x9A),
+            halo = Color.argb(185, 0xFF, 0x9E, 0x1A), fillShine = 1.1f,
+        )
+    }
+
+    // "Sol": colours of the SolCube icon. Night = the icon's black with its amber-gold glow on
+    // buttons and links; day = porcelain (the white cubes) with ink buttons and amber links.
+    private fun basePalette(ctx: Context) = if (isDark(ctx)) Palette(
         // almost pitch black; the glows are barely-there tints
-        base = Color.rgb(0x03, 0x03, 0x04),
-        glows = listOf(Color.rgb(0x17, 0x0E, 0x1A), Color.rgb(0x08, 0x15, 0x18), Color.rgb(0x1B, 0x12, 0x0A), Color.rgb(0x0A, 0x0D, 0x1A)),
+        base = Color.rgb(0x04, 0x03, 0x02),
+        glows = listOf(Color.rgb(0x1E, 0x12, 0x05), Color.rgb(0x12, 0x0C, 0x06), Color.rgb(0x1A, 0x10, 0x04), Color.rgb(0x0E, 0x0B, 0x08)),
         glass = white(0.045f), sheen = white(0.035f), stroke = white(0.09f), chip = white(0.045f),
-        fg = Color.rgb(0xF3, 0xEE, 0xE6), sub = Color.rgb(0xBD, 0xB6, 0xAC),
-        accent = Color.rgb(0xEC, 0xD3, 0xA6), accent2 = Color.rgb(0xBF, 0x93, 0x63),
-        onAccent = Color.rgb(0x1C, 0x16, 0x10), link = Color.rgb(0xE2, 0xC2, 0x8E),
-        warn = Color.rgb(0xF0, 0xB0, 0x5A), ok = Color.rgb(0x9C, 0xD4, 0xAE),
-        panel = Color.rgb(0x10, 0x0F, 0x12),
+        fg = Color.rgb(0xF5, 0xF1, 0xEA), sub = Color.rgb(0xBC, 0xB3, 0xA6),
+        accent = Color.rgb(0xFF, 0xD2, 0x7E), accent2 = Color.rgb(0xE0, 0x93, 0x2C),
+        onAccent = Color.rgb(0x1A, 0x11, 0x05), link = Color.rgb(0xF5, 0xB8, 0x5A),
+        warn = Color.rgb(0xFF, 0x86, 0x5E), ok = Color.rgb(0x5E, 0xE0, 0x82),
+        panel = Color.rgb(0x11, 0x0E, 0x0A),
     ) else Palette(
         base = Color.rgb(0xF6, 0xF2, 0xEC),
-        glows = listOf(Color.rgb(0xE8, 0xD4, 0xB8), Color.rgb(0xCF, 0xDC, 0xD4), Color.rgb(0xEC, 0xD2, 0xCB), Color.rgb(0xD4, 0xD7, 0xE6)),
+        glows = listOf(Color.rgb(0xEE, 0xD6, 0xAE), Color.rgb(0xE6, 0xDC, 0xCC), Color.rgb(0xF2, 0xD9, 0xB4), Color.rgb(0xE2, 0xDA, 0xD0)),
         glass = white(0.58f), sheen = white(0.5f), stroke = white(0.9f), chip = white(0.45f),
         fg = Color.rgb(0x18, 0x17, 0x1C), sub = Color.rgb(0x5F, 0x5A, 0x55),
-        accent = Color.rgb(0x2B, 0x29, 0x33), accent2 = Color.rgb(0x15, 0x14, 0x19),
-        onAccent = Color.rgb(0xF6, 0xEF, 0xE2), link = Color.rgb(0x8A, 0x63, 0x3C),
-        warn = Color.rgb(0xB0, 0x62, 0x10), ok = Color.rgb(0x2F, 0x7D, 0x50),
+        accent = Color.rgb(0x2A, 0x25, 0x20), accent2 = Color.rgb(0x12, 0x0F, 0x0C),
+        onAccent = Color.rgb(0xFF, 0xE2, 0xA8), link = Color.rgb(0xA8, 0x62, 0x10),
+        warn = Color.rgb(0xB8, 0x3E, 0x1C), ok = Color.rgb(0x16, 0x8F, 0x3E),
         panel = Color.rgb(0xFB, 0xF8, 0xF3),
     )
 
@@ -175,8 +192,8 @@ object SuiteDialog {
             fun text(t: CharSequence, size: Float, color: Int, weight: Int) = TextView(ctx).apply {
                 text = t; textSize = size; setTextColor(color); typeface = Look.font(ctx, weight)
             }
-            fun glass(radius: Int, tint: Int, level: Int = 1, shine: Float = 1f, shadow: Boolean = false) =
-                LiquidGlass(p, radius * dens, dark, dens, level = level, tint = tint, shine = shine, shadow = shadow)
+            fun glass(radius: Int, tint: Int, level: Int = 1, shine: Float = 1f, shadow: Boolean = false, halo: Int = 0, stroke: Int = 0) =
+                LiquidGlass(p, radius * dens, dark, dens, level = level, tint = tint, shine = shine, shadow = shadow, halo = halo, stroke = stroke)
             fun press(radius: Int) = RippleDrawable(
                 ColorStateList.valueOf(Color.argb(30, Color.red(p.fg), Color.green(p.fg), Color.blue(p.fg))),
                 null,
@@ -264,7 +281,8 @@ object SuiteDialog {
                     )
                     fun paint() {
                         box.text = if (m[idx]) "✓" else ""
-                        box.background = GradientDrawable().apply {
+                        box.background = if (m[idx] && p.halo != 0) GlowPill(p.fill or 0xFF000000.toInt(), p.fill or 0xFF000000.toInt(), p.fillStroke, p.halo, dens)
+                        else GradientDrawable().apply {
                             cornerRadius = 9.dp.toFloat()
                             if (m[idx]) setColor(fillAccent)
                             else {
@@ -359,11 +377,9 @@ object SuiteDialog {
                         setPadding(14.dp, 0, 14.dp, 0)
                         val fill = if (filled) glass(
                             22,
-                            Color.argb(242, (Color.red(p.accent) + Color.red(p.accent2)) / 2,
-                                (Color.green(p.accent) + Color.green(p.accent2)) / 2,
-                                (Color.blue(p.accent) + Color.blue(p.accent2)) / 2),
-                            shine = if (dark) 0.78f else 0.37f,
-                            shadow = true,
+                            p.fill,
+                            shine = p.fillShine,
+                            shadow = p.halo == 0, halo = p.halo, stroke = p.fillStroke,
                         ) else glass(
                             22,
                             if (dark) Color.argb(26, 255, 255, 255) else Color.argb(145, 255, 255, 255),

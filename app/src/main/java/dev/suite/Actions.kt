@@ -51,7 +51,7 @@ object Actions {
             "go_home" to "Go to Home screen",
             "open_url" to "Open link / URL",
         ),
-        "Suite & Utilities" to listOf(
+        "SolCube & Utilities" to listOf(
             "play_together" to "Play together",
             "super_res" to "Super resolution",
             "notice" to "Show status pill",

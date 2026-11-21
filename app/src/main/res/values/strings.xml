@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="a11y_label">Suite ripple</string>
-    <string name="a11y_description">Lets Suite draw the Circle to Search ripple above the status bar. It does not read anything on screen.</string>
+    <string name="a11y_label">SolCube ripple</string>
+    <string name="a11y_description">Lets SolCube draw the Circle to Search ripple above the status bar. It does not read anything on screen.</string>
 </resources>

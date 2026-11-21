@@ -46,9 +46,9 @@ class StreamOverlay(private val ctx: Context) {
     private fun dp(v: Float) = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v, ctx.resources.displayMetrics).toInt()
 
     private val ink = 0xE6101012.toInt()
-    private val fg = 0xFFF3EEE6.toInt()
+    private val fg = 0xFFF5F1EA.toInt()
     private val sub = 0xFF9A948C.toInt()
-    private val accent = 0xFFECD3A6.toInt()
+    private val accent = 0xFFF4B24C.toInt()
 
     fun start() {
         if (!android.provider.Settings.canDrawOverlays(ctx)) return
@@ -101,7 +101,7 @@ class StreamOverlay(private val ctx: Context) {
         text = t
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
         typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-        setTextColor(if (filled) 0xFF1C1610.toInt() else fg)
+        setTextColor(if (filled) 0xFF1E1002.toInt() else fg)
         gravity = Gravity.CENTER
         setPadding(dp(14f), 0, dp(14f), 0)
         background = GradientDrawable().apply {
