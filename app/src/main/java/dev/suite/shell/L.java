@@ -9,10 +9,10 @@ import java.util.Locale;
 
 /**
  * Shell-side log: kept in memory (shown in the app) and mirrored to logcat. No files.
- * `adb logcat -s Suite.cts Suite.fi`
+ * `adb logcat -s SolCube.cts SolCube.fi`
  */
 public final class L {
-    static String tag = "Suite";
+    static String tag = "SolCube";
     private static final int MAX = 60;
     private static final ArrayDeque<String> lines = new ArrayDeque<>();
     private static final SimpleDateFormat fmt = new SimpleDateFormat("HH:mm:ss", Locale.US);

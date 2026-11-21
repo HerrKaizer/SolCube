@@ -25,7 +25,7 @@ class RippleHost(private val ctx: Context) {
 
     companion object {
         const val PORT = 47321
-        private const val TAG = "Suite.ripple"
+        private const val TAG = "SolCube.ripple"
         @Volatile var running = false
         @Volatile var instance: RippleHost? = null
     }
@@ -102,7 +102,7 @@ class RippleHost(private val ctx: Context) {
             out0.write("hello $ns\n".toByteArray()); out0.flush()
             val auth = readLine(input)?.trim()?.split(" ") ?: return
             if (auth.size != 3 || auth[0] != "auth" || !Ipc.same(auth[2], Ipc.mac(secret, "client|$ns|${auth[1]}"))) {
-                Log.w(TAG, "ripple port: rejected a connection that isn't Suite's listener")
+                Log.w(TAG, "ripple port: rejected a connection that isn't SolCube's listener")
                 return
             }
             out0.write("auth ${Ipc.mac(secret, "server|${auth[1]}|$ns")}\n".toByteArray()); out0.flush()
@@ -184,7 +184,7 @@ class RippleHost(private val ctx: Context) {
         ).apply {
             gravity = android.view.Gravity.TOP or android.view.Gravity.START
             alpha = 0f
-            title = "SuiteKeepAlive"
+            title = "SolCubeKeepAlive"
         }
         try { wm.addView(v, lp); keepAlive = v } catch (e: Exception) { Log.w(TAG, "keepAlive", e) }
     }
@@ -197,7 +197,7 @@ class RippleHost(private val ctx: Context) {
         // Prefer the accessibility overlay: it is drawn above the status and navigation bars, so
         // the real status bar doesn't show on top of the screenshot's own. Fall back to the
         // normal app overlay (under the bars) if the accessibility service isn't connected.
-        val a11y = SuiteA11y.instance
+        val a11y = SolCubeA11y.instance
         val vctx: Context = a11y ?: winCtx
         val vwm: WindowManager = a11y?.getSystemService(WindowManager::class.java) ?: wm
         val type = if (a11y != null) WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
@@ -222,7 +222,7 @@ class RippleHost(private val ctx: Context) {
         ).apply {
             layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
             setFitInsetsTypes(0)
-            title = "SuiteRipple"
+            title = "SolCubeRipple"
             colorMode = 1   // ActivityInfo.COLOR_MODE_WIDE_COLOR; the screenshot is Display P3
         }
         // Map the panel's natural-orientation point to current screen coordinates.

@@ -9,9 +9,9 @@ import android.view.accessibility.AccessibilityEvent
  * them, so the real status bar showed on top of the screenshot's own one). It does not read
  * window content or react to events. The shell-side listener keeps it enabled.
  */
-class SuiteA11y : AccessibilityService() {
+class SolCubeA11y : AccessibilityService() {
     companion object {
-        @Volatile var instance: SuiteA11y? = null
+        @Volatile var instance: SolCubeA11y? = null
     }
 
     override fun onServiceConnected() {

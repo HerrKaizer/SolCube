@@ -5,7 +5,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * Per-app Profiles: stored as JSON in Suite's prefs and watched by ProfilesUserService.
+ * Per-app Profiles: stored as JSON in SolCube's prefs and watched by ProfilesUserService.
  * When any listed app is in the foreground, its actions apply; on leaving, modified settings
  * restore automatically (unless restoreOnExit is turned off).
  */
@@ -57,7 +57,7 @@ object Profiles {
             .putBoolean(KEY, any)
             .commit()
         if (!push) return
-        SuiteService.sync(ctx)
+        SolCubeService.sync(ctx)
         if (!any) {
             Shell.stop(ctx, Shell.Kind.PROFILES)
             return

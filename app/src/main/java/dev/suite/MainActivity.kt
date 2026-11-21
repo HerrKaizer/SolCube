@@ -143,7 +143,7 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         resumed = true
-        SuiteService.sync(this)   // e.g. overlay permission was just granted
+        SolCubeService.sync(this)   // e.g. overlay permission was just granted
         io.execute { Components.reconcile(this) }
         poll()
         checkUpdates()
@@ -366,7 +366,7 @@ class MainActivity : Activity() {
         val pm = getSystemService(android.os.PowerManager::class.java)
         val dndGranted = nm?.isNotificationPolicyAccessGranted == true
         val dozeIgnored = pm?.isIgnoringBatteryOptimizations(packageName) == true
-        val a11yRunning = SuiteA11y.instance != null
+        val a11yRunning = SolCubeA11y.instance != null
         val doubleReady = DoublePress.ready(this)
         val themeName = arrayOf("Light", "System", "Dark")[Look.themeMode(this)]
         val verName = Updates.current(this)
@@ -375,7 +375,7 @@ class MainActivity : Activity() {
         val appInfo = buildString {
             appendLine("Version: $verName ($verCode)")
             appendLine("Device: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL} · Android ${android.os.Build.VERSION.RELEASE} (SDK ${android.os.Build.VERSION.SDK_INT})")
-            appendLine("Theme: $themeName (${if (isDark()) "dark" else "light"}) · Keep-alive: ${if (SuiteService.anyEnabled(this@MainActivity)) "active" else "idle"}")
+            appendLine("Theme: $themeName (${if (isDark()) "dark" else "light"}) · Keep-alive: ${if (SolCubeService.anyEnabled(this@MainActivity)) "active" else "idle"}")
             appendLine("Shizuku: $shState · Overlay: ${if (canDraw) "ok" else "missing"} · A11y: ${if (a11yRunning) "on" else "off"}")
             append("DND: ${if (dndGranted) "ok" else "no"} · Battery whitelist: ${if (dozeIgnored) "ok" else "no"} · Double-press: ${if (doubleReady) "suite" else "other"}")
         }
@@ -745,7 +745,7 @@ class MainActivity : Activity() {
             setPadding(8.dp, 0, 8.dp, 0)
         }
         lateinit var restartBtn: TextView
-        restartBtn = pillButton("Restart SolCube", filled = false) { restartSuite(restartBtn) }.apply {
+        restartBtn = pillButton("Restart SolCube", filled = false) { restartSolCube(restartBtn) }.apply {
             textSize = 13.5f
             setPadding(8.dp, 0, 8.dp, 0)
         }
@@ -793,7 +793,7 @@ class MainActivity : Activity() {
         card.addView(row, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 10.dp })
     }
 
-    private fun restartSuite(btn: TextView? = null) {
+    private fun restartSolCube(btn: TextView? = null) {
         btn?.isEnabled = false
         btn?.text = "Restarting…"
         toast("Restarting SolCube (back in ~2 s)…")
@@ -802,10 +802,10 @@ class MainActivity : Activity() {
                 val res = Shell.command(this, Shell.Kind.UTIL, "restart-suite")
                 if (res == "ok") return@execute
             }
-            stopService(Intent(this, SuiteService::class.java))
+            stopService(Intent(this, SolCubeService::class.java))
             Shell.reset()
             Thread.sleep(250)
-            SuiteService.sync(this)
+            SolCubeService.sync(this)
             main.post {
                 btn?.isEnabled = true
                 btn?.text = "Restart SolCube"
@@ -1628,7 +1628,7 @@ class MainActivity : Activity() {
         box.addView(hScroll(*apps.map { pkg ->
             chip(appName(pkg), pkg == t && act == null) { pa.setTarget(this, pkg); rerender() }.apply {
                 setOnLongClickListener {
-                    SuiteDialog.Builder(this@MainActivity).setMessage("Remove ${appName(pkg)} from the list?")
+                    SolCubeDialog.Builder(this@MainActivity).setMessage("Remove ${appName(pkg)} from the list?")
                         .setPositiveButton("Remove") { _, _ ->
                             val rest = apps - pkg
                             pa.saveApps(this@MainActivity, rest)
@@ -1666,7 +1666,7 @@ class MainActivity : Activity() {
         val launch = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
         val list = packageManager.queryIntentActivities(launch, 0).map { it.activityInfo.packageName }.distinct()
             .filter { it != packageName && it !in exclude }.map { it to appName(it) }.sortedBy { it.second.lowercase() }
-        SuiteDialog.Builder(this).setTitle(title)
+        SolCubeDialog.Builder(this).setTitle(title)
             .setItems(list.map { it.second }.toTypedArray()) { _, w -> onPick(list[w].first) }
             .show()
     }
@@ -1917,7 +1917,7 @@ class MainActivity : Activity() {
         pkgs += chosen   // keep picks that have no launcher icon
         val list = pkgs.map { it to appName(it) }.sortedWith(compareBy({ it.first !in chosen }, { it.second.lowercase() }))
         val checked = BooleanArray(list.size) { list[it].first in chosen }
-        SuiteDialog.Builder(this).setTitle(title)
+        SolCubeDialog.Builder(this).setTitle(title)
             .setMultiChoiceItems(list.map { it.second }.toTypedArray(), checked) { _, i, c -> checked[i] = c }
             .setPositiveButton("Done") { _, _ ->
                 while (apps.length() > 0) apps.remove(0)
@@ -2054,7 +2054,7 @@ class MainActivity : Activity() {
     /** A grayed-out gesture was tapped: say why (and offer the routine that holds it). */
     private fun gestureBlocked(id: String, fingers: Int, why: String) {
         val other = if (fingers == 1 && GestureStore.oneFingerWhy(this, id) != null) emptyList() else takenElsewhere(id, fingers)
-        val b = SuiteDialog.Builder(this)
+        val b = SolCubeDialog.Builder(this)
             .setTitle("${GestureStore.name(this, id)} · ${GestureStore.fingersText(fingers)}")
             .setMessage(why)
         if (other.isNotEmpty()) b.setItems(other.map { "Edit “${it.optString("name")}”" }.toTypedArray()) { _, i -> editRoutine(other[i]) }
@@ -2091,7 +2091,7 @@ class MainActivity : Activity() {
         this.hint = hint
     }
 
-    /** Draw on a pad and see what Suite makes of it, with one or two fingers. */
+    /** Draw on a pad and see what SolCube makes of it, with one or two fingers. */
     private fun tryGestures() {
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         box.addView(label("Draw like you would on the screen, with one or two fingers.", 12.5f, p.sub))
@@ -2136,7 +2136,7 @@ class MainActivity : Activity() {
                 }
             }
         }
-        SuiteDialog.Builder(this).setTitle("Try a gesture").setView(box).setNegativeButton("Close", null).show()
+        SolCubeDialog.Builder(this).setTitle("Try a gesture").setView(box).setNegativeButton("Close", null).show()
     }
 
     private fun gestureOptions(id: String, fingers: Int) {
@@ -2160,13 +2160,13 @@ class MainActivity : Activity() {
             }
         }
         if (custom) opts += "Delete" to {
-            SuiteDialog.Builder(this).setTitle("Delete “$name”?")
+            SolCubeDialog.Builder(this).setTitle("Delete “$name”?")
                 .setMessage(if (by.isEmpty()) "It isn't used by any routine." else "Used by: ${by.joinToString(", ")}. Those routines won't run until you pick another gesture.")
                 .setNegativeButton("Cancel", null)
                 .setPositiveButton("Delete") { _, _ -> io.execute { GestureStore.deleteCustom(this, id); main.post { renderGestureList() } } }
                 .show()
         }
-        SuiteDialog.Builder(this).setTitle("$name · ${GestureStore.fingersText(fingers)}")
+        SolCubeDialog.Builder(this).setTitle("$name · ${GestureStore.fingersText(fingers)}")
             .setMessage(if (mine.isEmpty()) "Nothing assigned yet." else "Runs: " + mine.joinToString(", ") { it.optString("name") })
             .setItems(opts.map { it.first }.toTypedArray()) { _, i -> opts[i].second() }
             .setNegativeButton("Close", null).show()
@@ -2252,7 +2252,7 @@ class MainActivity : Activity() {
                 else -> "Looks distinct from the other gestures. Save it."
             }
         }
-        dlg = SuiteDialog.Builder(this).setTitle(if (forId == null) "Custom gesture" else "Teach ${GestureStore.name(this, forId)}")
+        dlg = SolCubeDialog.Builder(this).setTitle(if (forId == null) "Custom gesture" else "Teach ${GestureStore.name(this, forId)}")
             .setView(box).setNegativeButton("Cancel", null).show()
     }
 
@@ -2267,7 +2267,7 @@ class MainActivity : Activity() {
             ok.forEach { picks += it.first }
         }
         shown += "New" to listOf("Record a custom gesture…")
-        SuiteDialog.Builder(this).setTitle(if (fingers == 1) "One-finger gesture" else "Two-finger gesture")
+        SolCubeDialog.Builder(this).setTitle(if (fingers == 1) "One-finger gesture" else "Two-finger gesture")
             .setGroupedItems(shown) { _, w ->
                 if (w < picks.size) done(picks[w])
                 else recordGesture(null) { id ->
@@ -2417,7 +2417,7 @@ class MainActivity : Activity() {
             setPadding(14.dp, 12.dp, 14.dp, 12.dp)
             setSelection(text.length)
         }
-        SuiteDialog.Builder(this).setTitle(title)
+        SolCubeDialog.Builder(this).setTitle(title)
             .setView(field)
             .setPositiveButton("Done") { _, _ -> onDone(field.text.toString().trim()) }
             .setNegativeButton("Cancel", null)
@@ -2436,7 +2436,7 @@ class MainActivity : Activity() {
                     }
                     return@post
                 }
-                SuiteDialog.Builder(this).setTitle("Saved networks")
+                SolCubeDialog.Builder(this).setTitle("Saved networks")
                     .setItems(nets.toTypedArray()) { _, w -> target.put(nets[w]); onDone() }
                     .show()
             }
@@ -2450,7 +2450,7 @@ class MainActivity : Activity() {
                 .getOrDefault(emptyList())
             main.post {
                 val items = devs + "Type device name…"
-                SuiteDialog.Builder(this).setTitle("Bluetooth device")
+                SolCubeDialog.Builder(this).setTitle("Bluetooth device")
                     .setItems(items.toTypedArray()) { _, w ->
                         if (w == devs.size) {
                             promptText("Bluetooth device name", "", "Exact device name") { name ->
@@ -2485,7 +2485,7 @@ class MainActivity : Activity() {
                 "shell_cmd" -> promptText("Shell command", act.optString("cmd"), "e.g. input keyevent 3") { c -> act.put("cmd", c); rebuild() }
                 "run_routine" -> {
                     if (selectableRoutines.isEmpty()) { toast("No other routines"); return }
-                    SuiteDialog.Builder(this).setTitle("Run routine")
+                    SolCubeDialog.Builder(this).setTitle("Run routine")
                         .setItems(selectableRoutines.map { it.optString("name") }.toTypedArray()) { _, w ->
                             act.put("routineId", selectableRoutines[w].optString("id")); rebuild()
                         }.show()
@@ -2550,7 +2550,7 @@ class MainActivity : Activity() {
                     if (vals.size <= 6) {
                         a.put("value", vals[(vals.indexOf(v) + 1) % vals.size]); rebuild()
                     } else {
-                        SuiteDialog.Builder(this).setTitle(Actions.ALL[at] ?: at)
+                        SolCubeDialog.Builder(this).setTitle(Actions.ALL[at] ?: at)
                             .setItems(vals.map { Actions.valueText(at, it) }.toTypedArray()) { _, w ->
                                 a.put("value", vals[w]); rebuild()
                             }.show()
@@ -2574,7 +2574,7 @@ class MainActivity : Activity() {
         doCard.addView(textButton("Add action") {
             val flatKeys = Actions.GROUPS.flatMap { (_, items) -> items.map { it.first } }
             val groups = Actions.GROUPS.map { (hdr, items) -> hdr to items.map { it.second } }
-            SuiteDialog.Builder(this).setTitle("Add action")
+            SolCubeDialog.Builder(this).setTitle("Add action")
                 .setGroupedItems(groups) { _, w ->
                     val k = flatKeys[w]
                     val act = Actions.defaultAction(k, allowRestore = isRoutine)
@@ -2694,7 +2694,7 @@ class MainActivity : Activity() {
             dlg.dismiss()
         }, LinearLayout.LayoutParams(MATCH_PARENT, 46.dp).apply { topMargin = 20.dp })
         if (orig != null) body.addView(textButton("Delete profile") {
-            SuiteDialog.Builder(this).setMessage("Delete “${pr.optString("name")}”?")
+            SolCubeDialog.Builder(this).setMessage("Delete “${pr.optString("name")}”?")
                 .setPositiveButton("Delete") { _, _ ->
                     val list = all.filter { it.optString("id") != id }
                     io.execute { Profiles.save(this, list); main.post { renderProfileList(); poll() } }
@@ -2748,7 +2748,7 @@ class MainActivity : Activity() {
             addView(label(":", 26f, p.fg, bold = true).apply { setPadding(12.dp, 0, 12.dp, 0) })
             addView(mp, LinearLayout.LayoutParams(92.dp, WRAP_CONTENT))
         }
-        SuiteDialog.Builder(this)
+        SolCubeDialog.Builder(this)
             .setTitle("Pick time")
             .setView(wrap)
             .setPositiveButton("Set") { _, _ ->
@@ -2804,7 +2804,7 @@ class MainActivity : Activity() {
             whenCard.addView(hScroll(chip("${trigName ?: "Pick trigger"}  ▾", true) {
                 val flatKeys = Routines.TRIGGER_GROUPS.flatMap { (_, items) -> items.map { it.first } }
                 val groups = Routines.TRIGGER_GROUPS.map { (hdr, items) -> hdr to items.map { it.second } }
-                SuiteDialog.Builder(this).setTitle("When")
+                SolCubeDialog.Builder(this).setTitle("When")
                     .setGroupedItems(groups) { _, w ->
                         val k = flatKeys[w]
                         if (k == "gesture" || k == "gesture1") {
@@ -3063,7 +3063,7 @@ class MainActivity : Activity() {
                         }, LinearLayout.LayoutParams(WRAP_CONTENT, 32.dp))
                         row.addView(chip("$pct%", false) {
                             val opts = listOf(10, 15, 20, 25, 30, 40, 50, 60, 70, 80, 90, 95)
-                            SuiteDialog.Builder(this).setTitle("Battery level")
+                            SolCubeDialog.Builder(this).setTitle("Battery level")
                                 .setItems(opts.map { "$it%" }.toTypedArray()) { _, w -> c.put("value", opts[w]); rebuild() }.show()
                         }, LinearLayout.LayoutParams(WRAP_CONTENT, 32.dp).apply { leftMargin = 4.dp })
                     }
@@ -3075,7 +3075,7 @@ class MainActivity : Activity() {
                         }, LinearLayout.LayoutParams(WRAP_CONTENT, 32.dp))
                         row.addView(chip("$deg °C", false) {
                             val opts = (30..50 step 2).toList()
-                            SuiteDialog.Builder(this).setTitle("Battery temperature")
+                            SolCubeDialog.Builder(this).setTitle("Battery temperature")
                                 .setItems(opts.map { "$it °C" }.toTypedArray()) { _, w -> c.put("value", opts[w]); rebuild() }.show()
                         }, LinearLayout.LayoutParams(WRAP_CONTENT, 32.dp).apply { leftMargin = 4.dp })
                     }
@@ -3127,7 +3127,7 @@ class MainActivity : Activity() {
             ifCard.addView(textButton("Add condition") {
                 val flatKeys = Routines.CONDITION_GROUPS.flatMap { (_, items) -> items.map { it.first } }
                 val groups = Routines.CONDITION_GROUPS.map { (hdr, items) -> hdr to items.map { it.second } }
-                SuiteDialog.Builder(this).setTitle("Add condition")
+                SolCubeDialog.Builder(this).setTitle("Add condition")
                     .setGroupedItems(groups) { _, w ->
                         val k = flatKeys[w]
                         val cond = Routines.defaultCondition(k)
@@ -3150,7 +3150,7 @@ class MainActivity : Activity() {
             ifCard.addView(label("Only after another routine ran (within 24 h)", 12.5f, p.sub).apply { setPadding(0, 12.dp, 0, 0) })
             ifCard.addView(hScroll(chip(afterName ?: "No", afterName != null) {
                 val names = listOf("No") + others.map { it.optString("name") }
-                SuiteDialog.Builder(this).setTitle("Only after")
+                SolCubeDialog.Builder(this).setTitle("Only after")
                     .setItems(names.toTypedArray()) { _, w ->
                         if (w == 0) r.remove("after") else r.put("after", others[w - 1].optString("id"))
                         rebuild()
@@ -3161,7 +3161,7 @@ class MainActivity : Activity() {
             ifCard.addView(label("Stop for the day once this routine ran today", 12.5f, p.sub).apply { setPadding(0, 12.dp, 0, 0) })
             ifCard.addView(hScroll(chip(unlessName ?: "No", unlessName != null) {
                 val names = listOf("No") + others.map { it.optString("name") }
-                SuiteDialog.Builder(this).setTitle("Stop once this ran")
+                SolCubeDialog.Builder(this).setTitle("Stop once this ran")
                     .setItems(names.toTypedArray()) { _, w ->
                         if (w == 0) r.remove("unless") else r.put("unless", others[w - 1].optString("id"))
                         rebuild()
@@ -3171,7 +3171,7 @@ class MainActivity : Activity() {
             val span = r.optJSONObject("between") ?: org.json.JSONObject()
             fun spanPick(key: String, title: String) {
                 val names = listOf("No") + others.map { it.optString("name") }
-                SuiteDialog.Builder(this).setTitle(title)
+                SolCubeDialog.Builder(this).setTitle(title)
                     .setItems(names.toTypedArray()) { _, w ->
                         if (w == 0) span.remove(key) else span.put(key, others[w - 1].optString("id"))
                         if (span.length() == 0) r.remove("between") else r.put("between", span)
@@ -3231,7 +3231,7 @@ class MainActivity : Activity() {
         }, LinearLayout.LayoutParams(0, 46.dp, 1f).apply { leftMargin = 8.dp })
         body.addView(buttons, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 20.dp })
         if (!isNew) body.addView(textButton("Delete routine") {
-            SuiteDialog.Builder(this).setMessage("Delete “${r.optString("name")}”?")
+            SolCubeDialog.Builder(this).setMessage("Delete “${r.optString("name")}”?")
                 .setPositiveButton("Delete") { _, _ ->
                     val list = all.filter { it.optString("id") != id }.onEach {
                         if (it.optString("after") == id) it.remove("after")
@@ -3301,7 +3301,7 @@ class MainActivity : Activity() {
                         Updates.dialog(this, r) { updateDialogUp = false }
                     }
                 } else if (manual) {
-                    SuiteDialog.Builder(this).setTitle("You're up to date")
+                    SolCubeDialog.Builder(this).setTitle("You're up to date")
                         .setMessage("SolCube ${Updates.current(this)} is the latest version.")
                         .setPositiveButton("OK", null).show()
                 }
@@ -3318,14 +3318,14 @@ class MainActivity : Activity() {
     }
 
     /** On every open with Shizuku: Android's background exemptions (battery whitelist, run in
-     *  background, active standby bucket), so the system doesn't put Suite to sleep. */
+     *  background, active standby bucket), so the system doesn't put SolCube to sleep. */
     private fun keepAlive() {
         if (Shell.state() != Shell.State.READY) return
         io.execute { Shell.oneShot(this, "keep-alive") }
     }
 
     private fun featureRequest() {
-        SuiteDialog.Builder(this)
+        SolCubeDialog.Builder(this)
             .setTitle("Can't find something?")
             .setMessage("Missing a feature, or something doesn't work on your phone? Send the creator a DM on Reddit with your idea.")
             .setPositiveButton("Message on Reddit") { _, _ ->
@@ -3404,7 +3404,7 @@ class MainActivity : Activity() {
     }
 
     /**
-     * Suite's switch look: a pill track (frosted when off, champagne when on, like the filled
+     * SolCube's switch look: a pill track (frosted when off, champagne when on, like the filled
      * buttons) with a round white knob. Replaces the stock Material thumb and track.
      */
     private fun styleSwitch(sw: Switch) {

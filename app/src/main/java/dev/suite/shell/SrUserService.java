@@ -1,6 +1,6 @@
 package dev.suite.shell;
 
-import dev.suite.ISuiteService;
+import dev.suite.ISolCubeService;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -8,13 +8,13 @@ import org.json.JSONObject;
  * vivo super resolution (SR), run by Shizuku as a UserService ("dev.suite:sr"). Turns SR on,
  * rewrites it if vivo resets it (checked every 5 s), and turns it off when stopped.
  */
-public class SrUserService extends ISuiteService.Stub {
+public class SrUserService extends ISolCubeService.Stub {
     static final long CHECK = 5000;
     private volatile boolean stop;
     private final Thread loop;
 
     public SrUserService() {
-        L.tag = "Suite.sr";
+        L.tag = "SolCube.sr";
         loop = new Thread(this::run, "sr-loop");
         loop.start();
     }

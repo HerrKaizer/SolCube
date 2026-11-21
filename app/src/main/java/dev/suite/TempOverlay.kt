@@ -389,7 +389,7 @@ class TempOverlay(private val ctx: Context) {
         ).apply {
             gravity = Gravity.TOP or Gravity.START
             layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
-            title = "SuiteTemp"
+            title = "SolCubeTemp"
         }
 
         // Drag to move; position is remembered. Hold still to turn the pill off.

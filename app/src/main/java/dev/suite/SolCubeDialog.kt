@@ -25,7 +25,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 
-/** AGSL for SuiteDialog's list edges (see SuiteDialog.Builder.edgeEffect). No pow(), no reversed smoothstep. */
+/** AGSL for SolCubeDialog's list edges (see SolCubeDialog.Builder.edgeEffect). No pow(), no reversed smoothstep. */
 private const val EDGE_SRC = """
 uniform shader src;
 uniform float h;
@@ -121,10 +121,10 @@ object Look {
 }
 
 /**
- * Pop-ups in Suite's own style. Same calls as AlertDialog.Builder (title, message, items,
+ * Pop-ups in SolCube's own style. Same calls as AlertDialog.Builder (title, message, items,
  * multi-choice items, two buttons, dismiss listener) so call sites just swap the class.
  */
-object SuiteDialog {
+object SolCubeDialog {
     class Builder(private val ctx: Context) {
         private var title: CharSequence? = null
         private var message: CharSequence? = null

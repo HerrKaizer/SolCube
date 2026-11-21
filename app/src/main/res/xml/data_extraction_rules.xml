@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Android 12+: Google backup and phone-to-phone transfer carry Suite's settings -->
+<!-- Android 12+: Google backup and phone-to-phone transfer carry SolCube's settings -->
 <data-extraction-rules>
     <cloud-backup>
         <include domain="sharedpref" path="." />

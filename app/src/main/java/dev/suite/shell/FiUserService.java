@@ -1,6 +1,6 @@
 package dev.suite.shell;
 
-import dev.suite.ISuiteService;
+import dev.suite.ISolCubeService;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
@@ -19,7 +19,7 @@ import org.json.JSONObject;
  * PID is found by scanning /proc and the battery temperature comes from sysfs, so the loop
  * normally spawns no processes at all.
  */
-public class FiUserService extends ISuiteService.Stub {
+public class FiUserService extends ISolCubeService.Stub {
 
     static final class Game {
         final String pkg; final int src, dst;
@@ -42,7 +42,7 @@ public class FiUserService extends ISuiteService.Stub {
     private volatile boolean paused;
 
     public FiUserService() {
-        L.tag = "Suite.fi";
+        L.tag = "SolCube.fi";
     }
 
     // ------------------------------------------------------------------ binder

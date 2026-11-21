@@ -29,7 +29,7 @@ import kotlin.math.min
 import kotlin.math.sin
 
 /**
- * Suite's status pill (Samsung position, vivo-island motion): a small dark pill in the status bar
+ * SolCube's status pill (Samsung position, vivo-island motion): a small dark pill in the status bar
  * between the clock and the punch hole. It comes out of the hole like a water drop: a blob
  * leaves the hole, stays joined to it by a thinning neck (metaball) until it snaps free, then
  * stretches into the pill and the text fades in. Closing runs the same in reverse.
@@ -37,7 +37,7 @@ import kotlin.math.sin
  * sits above the status bar; never takes touches.
  */
 object Island {
-    private const val TAG = "Suite"
+    private const val TAG = "SolCube"
     private val main = Handler(Looper.getMainLooper())
     private var current: PillView? = null
     private val pending = ArrayList<Triple<String, Boolean, Boolean>>()   // wait for the current pill to go back in
@@ -86,9 +86,9 @@ object Island {
                 it.replace(text, ok, still); return
             }
         }
-        val a11y = SuiteA11y.instance
+        val a11y = SolCubeA11y.instance
         val app = ctx.applicationContext
-        // A notice usually wakes Suite from vivo's freezer, and the accessibility service connects a
+        // A notice usually wakes SolCube from vivo's freezer, and the accessibility service connects a
         // moment after the app starts. Showing right away fell back to the app overlay, which sits
         // UNDER the status bar (the notification icons drew over the pill): wait for it, up to 2 s.
         if (a11y == null && waited < 20 && a11yEnabled(app)) {
@@ -126,14 +126,14 @@ object Island {
             alpha = 1f
             layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
             setFitInsetsTypes(0)
-            title = "SuiteIsland"
+            title = "SolCubeIsland"
         }
         try { wm.addView(view, lp); current = view } catch (e: Exception) { Log.w(TAG, "island", e) }
     }
 
     private fun a11yEnabled(ctx: Context): Boolean = runCatching {
         Settings.Secure.getString(ctx.contentResolver, "enabled_accessibility_services").orEmpty()
-            .split(':').any { it.equals("${ctx.packageName}/${SuiteA11y::class.java.name}", true) || it.equals("${ctx.packageName}/.SuiteA11y", true) }
+            .split(':').any { it.equals("${ctx.packageName}/${SolCubeA11y::class.java.name}", true) || it.equals("${ctx.packageName}/.SolCubeA11y", true) }
     }.getOrDefault(false)
 
     fun hide() = main.post { current?.close() }

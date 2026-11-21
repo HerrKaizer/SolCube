@@ -4,13 +4,13 @@ import java.net.InetSocketAddress;
 import java.net.Socket;
 
 /**
- * Keeps Suite's ripple overlay available while Suite itself is closed.
+ * Keeps SolCube's ripple overlay available while SolCube itself is closed.
  *
- * vivo's cleaner force-stops Suite when it is swiped away / cleaned, which takes the ripple
- * overlay (in Suite's own process) with it, while this listener (a Shizuku UserService) keeps
+ * vivo's cleaner force-stops SolCube when it is swiped away / cleaned, which takes the ripple
+ * overlay (in SolCube's own process) with it, while this listener (a Shizuku UserService) keeps
  * running. So the listener checks every few seconds that the ripple answers on its localhost
- * port and, if not, restarts Suite's service as the shell user
- * (`am start-foreground-service`). Suite has no notification permission, so nothing shows up
+ * port and, if not, restarts SolCube's service as the shell user
+ * (`am start-foreground-service`). SolCube has no notification permission, so nothing shows up
  * in the shade. A finger or power-button press also triggers an immediate check, so a hold
  * right after a clean can still get the animation.
  */
@@ -49,10 +49,15 @@ final class AppKeeper {
         }
     }
 
-    static final String A11Y = "dev.suite/dev.suite.SuiteA11y";
+    static final String A11Y = "dev.suite/dev.suite.SolCubeA11y";
+
+    /** The service's name before the rename (Suite, up to 3.6.7); still listed on updated phones. */
+    static boolean oldA11y(String s) {
+        return s.equalsIgnoreCase("dev.suite/dev.suite." + "Suite" + "A11y") || s.equalsIgnoreCase("dev.suite/." + "Suite" + "A11y");
+    }
 
     /**
-     * Keeps Suite's accessibility service (used only for the ripple's above-the-status-bar
+     * Keeps SolCube's accessibility service (used only for the ripple's above-the-status-bar
      * window) in the enabled list. Android drops it when the app is force-stopped.
      */
     static void ensureA11y() {
@@ -60,11 +65,19 @@ final class AppKeeper {
             String cur = SysSettings.get("secure", "enabled_accessibility_services");
             if (cur == null || "null".equals(cur)) cur = "";
             boolean listed = false;
+            StringBuilder keep = new StringBuilder();
             for (String s : cur.split(":")) {
-                if (s.equalsIgnoreCase(A11Y) || s.equalsIgnoreCase("dev.suite/.SuiteA11y")) listed = true;
+                if (s.isEmpty() || oldA11y(s)) continue;   // drop the pre-rename entry
+                if (s.equalsIgnoreCase(A11Y) || s.equalsIgnoreCase("dev.suite/.SolCubeA11y")) listed = true;
+                if (keep.length() > 0) keep.append(':');
+                keep.append(s);
             }
             if (!listed) {
-                SysSettings.put("secure", "enabled_accessibility_services", cur.isEmpty() ? A11Y : cur + ":" + A11Y);
+                if (keep.length() > 0) keep.append(':');
+                keep.append(A11Y);
+            }
+            if (!keep.toString().equals(cur)) {
+                SysSettings.put("secure", "enabled_accessibility_services", keep.toString());
                 L.i("accessibility service re-enabled");
             }
             if (!"1".equals(SysSettings.get("secure", "accessibility_enabled"))) {
@@ -82,7 +95,7 @@ final class AppKeeper {
             if (cur == null || "null".equals(cur)) return;
             StringBuilder keep = new StringBuilder();
             for (String s : cur.split(":")) {
-                if (s.isEmpty() || s.equalsIgnoreCase(A11Y) || s.equalsIgnoreCase("dev.suite/.SuiteA11y")) continue;
+                if (s.isEmpty() || s.equalsIgnoreCase(A11Y) || s.equalsIgnoreCase("dev.suite/.SolCubeA11y") || oldA11y(s)) continue;
                 if (keep.length() > 0) keep.append(':');
                 keep.append(s);
             }
@@ -101,8 +114,8 @@ final class AppKeeper {
             long now = CtsListener.now();
             if (now - lastRestart < MIN_RESTART_GAP_MS) return;
             lastRestart = now;
-            L.i("ripple not answering (" + why + "), restarting Suite's service");
-            Process p = new ProcessBuilder("am", "start-foreground-service", "-n", "dev.suite/.SuiteService")
+            L.i("ripple not answering (" + why + "), restarting SolCube's service");
+            Process p = new ProcessBuilder("am", "start-foreground-service", "-n", "dev.suite/.SolCubeService")
                     .redirectErrorStream(true).start();
             String out = new String(p.getInputStream().readAllBytes()).trim();
             p.waitFor();

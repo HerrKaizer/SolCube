@@ -10,7 +10,7 @@ import java.io.File;
 import javax.imageio.ImageIO;
 
 /**
- * Suite's launcher icon (light). The mark is an "S" built from three bars joined by rounded
+ * SolCube's launcher icon (light). The mark is an "S" built from three bars joined by rounded
  * turns, one bar per section of the app. It fills the tile so its two open ends sit right at
  * the top-right and bottom-left corners, and from there the ink bleeds into those corners like
  * light through a prism: near-black -> navy -> blue -> cyan -> a thin pink edge, dispersed per

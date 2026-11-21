@@ -1,6 +1,6 @@
 package dev.suite.shell;
 
-import dev.suite.ISuiteService;
+import dev.suite.ISolCubeService;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -13,8 +13,8 @@ import java.util.Map;
  * ActivityTaskManager, applies actions when a matched app enters the foreground, and restores
  * modified settings when leaving (or after 3 min locked for NFC).
  */
-public class ProfilesUserService extends ISuiteService.Stub {
-    public ProfilesUserService() { L.tag = "Suite.prof"; }
+public class ProfilesUserService extends ISolCubeService.Stub {
+    public ProfilesUserService() { L.tag = "SolCube.prof"; }
 
     private static final long POLL_ACTIVE_MS = 250;
     private static final long POLL_LOCKED_MS = 500;

@@ -169,7 +169,7 @@ class StreamOverlay(private val ctx: Context) {
         ).apply {
             gravity = Gravity.TOP or Gravity.START
             layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
-            title = "SuiteStream"
+            title = "SolCubeStream"
             screenBrightness = Components.dim(ctx) / 100f
             x = prefs.getInt("stream_x", dp(12f))
             y = prefs.getInt("stream_y", dp(12f))
@@ -209,7 +209,7 @@ class StreamOverlay(private val ctx: Context) {
         render()
     }
 
-    /** One launch button per app from Suite's "Apps on the bubble" list, two per row. */
+    /** One launch button per app from SolCube's "Apps on the bubble" list, two per row. */
     private fun buildApps() {
         apps.removeAllViews()
         val pm = ctx.packageManager

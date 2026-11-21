@@ -4,7 +4,7 @@ import android.content.ComponentName;
 import android.content.IntentFilter;
 import android.os.IBinder;
 
-import dev.suite.ISuiteService;
+import dev.suite.ISolCubeService;
 
 import java.lang.reflect.Method;
 
@@ -14,18 +14,18 @@ import java.lang.reflect.Method;
  *       makes <component> the "always" handler of vivo's double-power-press intent
  *       (vivo.intent.action.NFC_BUS_SWINGSPLASH), like picking it with "Always" in the chooser.
  */
-public class UtilUserService extends ISuiteService.Stub {
-    public UtilUserService() { L.tag = "Suite.util"; }
+public class UtilUserService extends ISolCubeService.Stub {
+    public UtilUserService() { L.tag = "SolCube.util"; }
 
     private static volatile Thread session;
 
     private static final String RESTART_SCRIPT =
             "sleep 0.3\n" +
             "HAD_A11Y=0\n" +
-            "A11Y='dev.suite/dev.suite.SuiteA11y'\n" +
+            "A11Y='dev.suite/dev.suite.SolCubeA11y'\n" +
             "CUR=$(settings get secure enabled_accessibility_services 2>/dev/null)\n" +
             "case \":$CUR:\" in\n" +
-            "  *\":$A11Y:\"*|*\":dev.suite/.SuiteA11y:\"*) HAD_A11Y=1 ;;\n" +
+            "  *\":$A11Y:\"*|*\":dev.suite/.SolCubeA11y:\"*) HAD_A11Y=1 ;;\n" +
             "esac\n" +
             "kill_suite() {\n" +
             "  ps -A -o PID=,NAME= 2>/dev/null | while read -r p n; do\n" +
@@ -45,7 +45,7 @@ public class UtilUserService extends ISuiteService.Stub {
             "  NOW=$(settings get secure enabled_accessibility_services 2>/dev/null)\n" +
             "  [ \"$NOW\" = \"null\" ] && NOW=''\n" +
             "  case \":$NOW:\" in\n" +
-            "    *\":$A11Y:\"*|*\":dev.suite/.SuiteA11y:\"*) ;;\n" +
+            "    *\":$A11Y:\"*|*\":dev.suite/.SolCubeA11y:\"*) ;;\n" +
             "    *)\n" +
             "      if [ -z \"$NOW\" ]; then NEXT=\"$A11Y\"; else NEXT=\"$NOW:$A11Y\"; fi\n" +
             "      ESC=$(printf '%s' \"$NEXT\" | sed 's/:/\\\\:/g')\n" +
@@ -54,7 +54,7 @@ public class UtilUserService extends ISuiteService.Stub {
             "  esac\n" +
             "  content insert --uri content://settings/secure --bind name:s:accessibility_enabled --bind value:s:1 >/dev/null 2>&1\n" +
             "fi\n" +
-            "am start-foreground-service -n dev.suite/.SuiteService >/dev/null 2>&1\n" +
+            "am start-foreground-service -n dev.suite/.SolCubeService >/dev/null 2>&1\n" +
             "sleep 0.4\n" +
             "am start -n dev.suite/.MainActivity -f 0x10008000 >/dev/null 2>&1\n";
 
@@ -90,7 +90,7 @@ public class UtilUserService extends ISuiteService.Stub {
                 return "ok";
             }
             if (cmd.equals("keep-alive")) {
-                // Android's own background exemptions for Suite. vivo's per-app "background high power
+                // Android's own background exemptions for SolCube. vivo's per-app "background high power
                 // usage" switch lives inside com.iqoo.powersaving with no shell interface, so it can't be set here.
                 SysSettings.exec("dumpsys", "deviceidle", "whitelist", "+dev.suite");
                 SysSettings.exec("cmd", "appops", "set", "dev.suite", "RUN_ANY_IN_BACKGROUND", "allow");
@@ -108,7 +108,7 @@ public class UtilUserService extends ISuiteService.Stub {
                 L.i("ringer " + m);
                 return "ok";
             }
-            if (cmd.startsWith("allow-dnd ")) {   // Do Not Disturb access for Suite (instant ring changes)
+            if (cmd.startsWith("allow-dnd ")) {   // Do Not Disturb access for SolCube (instant ring changes)
                 SysSettings.exec("cmd", "notification", "allow_dnd", cmd.substring(10).trim());
                 return "ok";
             }

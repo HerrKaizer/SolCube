@@ -14,9 +14,9 @@ import rikka.shizuku.Shizuku
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * The shell-user halves of the sections, run by Shizuku as UserServices straight from Suite's
- * APK (nothing is copied to the phone's storage). Daemon mode: they keep running if Suite's own
- * process is killed; Suite re-attaches to them when it comes back.
+ * The shell-user halves of the sections, run by Shizuku as UserServices straight from SolCube's
+ * APK (nothing is copied to the phone's storage). Daemon mode: they keep running if SolCube's own
+ * process is killed; SolCube re-attaches to them when it comes back.
  */
 object Shell {
     enum class State { NOT_RUNNING, NO_PERMISSION, READY }
@@ -34,9 +34,9 @@ object Shell {
         NFC("nfc_never_enabled", dev.suite.shell.UtilUserService::class.java, "nfc"),     // NFC while the double-press app is open; exits by itself
     }
 
-    private const val TAG = "Suite"
+    private const val TAG = "SolCube"
     private val main = Handler(Looper.getMainLooper())
-    private val binders = ConcurrentHashMap<Kind, ISuiteService>()
+    private val binders = ConcurrentHashMap<Kind, ISolCubeService>()
     private val conns = HashMap<Kind, ServiceConnection>()
     private val bindingSince = ConcurrentHashMap<Kind, Long>()
     private lateinit var app: Context
@@ -53,7 +53,7 @@ object Shell {
     }
 
     /** Live service, or null if it isn't running / not attached yet. */
-    fun service(k: Kind): ISuiteService? = binders[k]?.takeIf { it.asBinder().pingBinder() }
+    fun service(k: Kind): ISolCubeService? = binders[k]?.takeIf { it.asBinder().pingBinder() }
 
     // Changes on every install, so Shizuku replaces a service started from an older APK.
     private fun version(ctx: Context): Int =
@@ -72,7 +72,7 @@ object Shell {
             override fun onServiceConnected(name: ComponentName?, b: IBinder?) {
                 bindingSince.remove(k)
                 if (b == null || !b.pingBinder()) return
-                val s = ISuiteService.Stub.asInterface(b)
+                val s = ISolCubeService.Stub.asInterface(b)
                 binders[k] = s
                 Log.i(TAG, "$k attached")
                 if (k == Kind.FI) Thread { runCatching { s.configure(Components.gameConfig(app)) } }.start()

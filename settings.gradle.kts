@@ -12,5 +12,5 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
-rootProject.name = "Suite"
+rootProject.name = "SolCube"
 include(":app", ":stubs")

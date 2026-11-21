@@ -5,7 +5,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * Routines: stored as JSON in Suite's prefs, run by the shell-side engine (RoutinesUserService),
+ * Routines: stored as JSON in SolCube's prefs, run by the shell-side engine (RoutinesUserService),
  * which gets the whole list via configure(). The engine runs while at least one routine is on.
  */
 object Routines {
@@ -275,7 +275,7 @@ object Routines {
         val any = list.any { it.optBoolean("on", true) }
         Components.prefs(ctx).edit().putString(PREF, JSONArray(list).toString()).putBoolean(KEY, any).commit()
         if (!push) return
-        SuiteService.sync(ctx)
+        SolCubeService.sync(ctx)
         if (!any) { Shell.stop(ctx, Shell.Kind.ROUTINES); return }
         val s = Shell.service(Shell.Kind.ROUTINES)
         if (s == null) Shell.start(ctx, Shell.Kind.ROUTINES)   // configured once attached

@@ -129,7 +129,7 @@ object Components {
 
     /** Overlay + Circle to Search's two-finger hold (paused while the phone is the game pad). */
     private fun streamModeChanged(ctx: Context) {
-        SuiteService.sync(ctx)
+        SolCubeService.sync(ctx)
         runCatching { Shell.service(Shell.Kind.CTS)?.configure(ctsConfig(ctx)) }
         // Frame interpolation's extra frames are made after the screen is captured, so they never
         // reach the laptop, while FI holds Genshin at its 45 fps source rate. Pause it in stream mode.
@@ -197,7 +197,7 @@ object Components {
         }.commit()
         val any = ctsTouch(ctx) || ctsButton(ctx) || ctsNav(ctx) || holdAction(ctx)
         prefs(ctx).edit().putBoolean(KEY_CTS, any).commit()
-        SuiteService.sync(ctx)                    // the ripple overlay lives in the app
+        SolCubeService.sync(ctx)                    // the ripple overlay lives in the app
         if (!any) { Shell.stop(ctx, Shell.Kind.CTS); return }
         val s = Shell.service(Shell.Kind.CTS)
         if (s == null) Shell.start(ctx, Shell.Kind.CTS)
@@ -211,25 +211,25 @@ object Components {
 
     fun setGame(ctx: Context, on: Boolean) {
         prefs(ctx).edit().putBoolean(KEY_GAME, on).commit()
-        SuiteService.sync(ctx)                    // the service re-attaches after reboots
+        SolCubeService.sync(ctx)                    // the service re-attaches after reboots
         if (on) Shell.start(ctx, Shell.Kind.FI) else Shell.stop(ctx, Shell.Kind.FI)
     }
 
     fun setSr(ctx: Context, on: Boolean) {
         prefs(ctx).edit().putBoolean(KEY_SR, on).commit()
-        SuiteService.sync(ctx)
+        SolCubeService.sync(ctx)
         if (on) Shell.start(ctx, Shell.Kind.SR) else Shell.stop(ctx, Shell.Kind.SR)
     }
 
     fun setMix(ctx: Context, on: Boolean) {
         prefs(ctx).edit().putBoolean(KEY_MIX, on).commit()
-        SuiteService.sync(ctx)
+        SolCubeService.sync(ctx)
         if (on) Shell.start(ctx, Shell.Kind.MIX) else Shell.stop(ctx, Shell.Kind.MIX)
     }
 
     fun setTemp(ctx: Context, on: Boolean) {
         prefs(ctx).edit().putBoolean(KEY_TEMP, on).commit()
-        SuiteService.sync(ctx)
+        SolCubeService.sync(ctx)
         if (on) Shell.start(ctx, Shell.Kind.TEMP) else Shell.stop(ctx, Shell.Kind.TEMP)
     }
 

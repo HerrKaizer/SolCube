@@ -1,6 +1,6 @@
 package android.media;
 
-/** Stub of the framework's @SystemApi class (only the members Suite uses). */
+/** Stub of the framework's @SystemApi class (only the members SolCube uses). */
 public final class AudioFocusInfo {
     public int getClientUid() { throw new RuntimeException("stub"); }
     public String getClientId() { throw new RuntimeException("stub"); }

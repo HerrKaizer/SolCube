@@ -1,25 +1,25 @@
 package dev.suite.shell;
 
-import dev.suite.ISuiteService;
+import dev.suite.ISolCubeService;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
 /**
  * Circle to Search listener, run by Shizuku as a UserService in its own shell-user process
- * ("dev.suite:cts"). Two triggers, each switchable from Suite:
+ * ("dev.suite:cts"). Two triggers, each switchable from SolCube:
  *   touch  - two-finger hold on the touchscreen
  *   button - power-button hold (takes the power key exclusively while enabled)
  * Hold times can change live. Turning the button trigger OFF exits the process, which is the
- * only clean way to release the power-key grab; Suite restarts it with the new settings.
+ * only clean way to release the power-key grab; SolCube restarts it with the new settings.
  */
-public class CtsUserService extends ISuiteService.Stub {
+public class CtsUserService extends ISolCubeService.Stub {
     private static volatile boolean listening;
     private static volatile boolean configured;
     private static volatile boolean button;
 
     public CtsUserService() {
-        L.tag = "Suite.cts";
-        CtsListener.touchEnabled = false;   // until Suite sends the settings
+        L.tag = "SolCube.cts";
+        CtsListener.touchEnabled = false;   // until SolCube sends the settings
         Thread t = new Thread(() -> {
             try {
                 listening = true;
@@ -31,11 +31,11 @@ public class CtsUserService extends ISuiteService.Stub {
             }
         }, "cts-listener");
         t.start();
-        // if Suite never sends settings (shouldn't happen), fall back to both triggers on
+        // if SolCube never sends settings (shouldn't happen), fall back to both triggers on
         Thread fallback = new Thread(() -> {
             try { Thread.sleep(5000); } catch (InterruptedException ignored) {}
             if (!configured) {
-                L.i("no settings from Suite, using defaults");
+                L.i("no settings from SolCube, using defaults");
                 apply(true, true, CtsListener.holdMs, PowerKey.holdMs);
             }
         }, "cts-defaults");
@@ -73,7 +73,7 @@ public class CtsUserService extends ISuiteService.Stub {
             L.i("keys: power " + pwr + ", volume " + volUp + " + " + volDown);
             PowerKey.start(pwr, volUp, volDown);
         } else if (!btn && PowerKey.started) {
-            L.i("button trigger off: exiting to release the power key (Suite restarts the listener)");
+            L.i("button trigger off: exiting to release the power key (SolCube restarts the listener)");
             System.exit(0);
         }
         button = btn;

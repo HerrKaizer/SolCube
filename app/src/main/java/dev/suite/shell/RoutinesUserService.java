@@ -19,7 +19,7 @@ import java.io.BufferedReader;
 import java.io.FileReader;
 import java.lang.reflect.Method;
 
-import dev.suite.ISuiteService;
+import dev.suite.ISolCubeService;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -43,7 +43,7 @@ import java.util.regex.Pattern;
  * routines as JSON (configure); this process watches the triggers and runs the actions as the
  * shell user.
  */
-public class RoutinesUserService extends ISuiteService.Stub {
+public class RoutinesUserService extends ISolCubeService.Stub {
     private static final String STATE_KEY = "suite_routines_state";
     private static final long TICK = 30_000;
     private static final long DAY = 24 * 3600_000L;
@@ -67,7 +67,7 @@ public class RoutinesUserService extends ISuiteService.Stub {
     public RoutinesUserService() { this(null); }
 
     public RoutinesUserService(Context given) {
-        L.tag = "Suite.rt";
+        L.tag = "SolCube.rt";
         thread = new HandlerThread("routines");
         thread.start();
         h = new Handler(thread.getLooper());

@@ -8,7 +8,7 @@ import android.media.audiopolicy.AudioPolicy;
 import android.os.HandlerThread;
 import android.os.Looper;
 
-import dev.suite.ISuiteService;
+import dev.suite.ISolCubeService;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -28,7 +28,7 @@ import java.util.Set;
  * keep playing. Exception: a phone/VoIP call or ringtone pauses the others until it ends.
  * When this process exits, Android drops the policy and normal focus rules come back.
  */
-public class MixUserService extends ISuiteService.Stub {
+public class MixUserService extends ISolCubeService.Stub {
     private static final int GRANTED = 1;            // AudioManager.AUDIOFOCUS_REQUEST_GRANTED
     private static final int GAIN = 1;               // AudioManager.AUDIOFOCUS_GAIN
     private static final int LOSS_TRANSIENT = -2;    // AudioManager.AUDIOFOCUS_LOSS_TRANSIENT
@@ -49,7 +49,7 @@ public class MixUserService extends ISuiteService.Stub {
     public MixUserService() { this(null); }
 
     public MixUserService(Context given) {
-        L.tag = "Suite.mix";
+        L.tag = "SolCube.mix";
         try {
             ctx = shellContext(given);
             am = ctx.getSystemService(AudioManager.class);

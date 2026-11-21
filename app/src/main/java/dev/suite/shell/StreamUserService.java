@@ -1,6 +1,6 @@
 package dev.suite.shell;
 
-import dev.suite.ISuiteService;
+import dev.suite.ISolCubeService;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -25,9 +25,9 @@ import java.util.regex.Pattern;
  *  - Safety: if the laptop can't be reached for 15 s while wide (cable pulled, laptop asleep),
  *    the display is put back to normal. Stopping this service also puts it back.
  */
-public class StreamUserService extends ISuiteService.Stub {
+public class StreamUserService extends ISolCubeService.Stub {
     static final int PORT = 47420;
-    static volatile String token = "";   // from the laptop helper via Suite (see dev.suite.Ipc)
+    static volatile String token = "";   // from the laptop helper via SolCube (see dev.suite.Ipc)
     static final long CHECK = 3000, LOST = 15000;
     private volatile int longSide = 1920;   // from the helper's Resolution menu
     private volatile int appliedLong;
@@ -39,7 +39,7 @@ public class StreamUserService extends ISuiteService.Stub {
     private final Thread loop;
 
     public StreamUserService() {
-        L.tag = "Suite.stream";
+        L.tag = "SolCube.stream";
         wide = readWide();
         loop = new Thread(this::run, "stream-loop");
         loop.start();
@@ -137,7 +137,7 @@ public class StreamUserService extends ISuiteService.Stub {
         }
     }
 
-    // ------------------------------------------------------------------ ISuiteService
+    // ------------------------------------------------------------------ ISolCubeService
 
     /** "wide on|off", "stream on|off", "exit" (stream off + normal screen). */
     @Override public synchronized String command(String cmd) {

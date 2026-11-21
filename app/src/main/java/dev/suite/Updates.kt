@@ -60,7 +60,7 @@ object Updates {
             c.setRequestProperty("Accept", "application/vnd.github+json")
             c.setRequestProperty("User-Agent", "SolCube-app")
             val code = c.responseCode
-            if (code != 200) { Log.w("Suite", "update check: HTTP $code"); return available(ctx) }
+            if (code != 200) { Log.w("SolCube", "update check: HTTP $code"); return available(ctx) }
             val j = JSONObject(c.inputStream.bufferedReader().use { it.readText() })
             p.edit()
                 .putLong("checked", now)
@@ -70,7 +70,7 @@ object Updates {
                 .putString("url", j.optString("html_url", RELEASES))
                 .apply()
         } catch (e: Exception) {
-            Log.w("Suite", "update check failed: $e")
+            Log.w("SolCube", "update check failed: $e")
         }
         return available(ctx)
     }
@@ -93,7 +93,7 @@ object Updates {
 
     fun dialog(act: Activity, r: Release, onDone: () -> Unit = {}) {
         val notes = plain(r.notes).ifEmpty { "No release notes." }
-        SuiteDialog.Builder(act)
+        SolCubeDialog.Builder(act)
             .setTitle("Update available: ${r.version}")
             .setMessage("You have ${current(act)}.\n\n$notes\n\nInstall the new APK over this one — your settings stay.")
             .setPositiveButton("Open GitHub") { _, _ ->
@@ -105,7 +105,7 @@ object Updates {
     }
 }
 
-/** Shows the update pop-up over whatever is on screen (started by SuiteService's daily check). */
+/** Shows the update pop-up over whatever is on screen (started by SolCubeService's daily check). */
 class UpdateActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)

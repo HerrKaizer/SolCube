@@ -26,11 +26,11 @@ public class CtsListener {
     static final int[] sx = new int[SLOTS], sy = new int[SLOTS];
     static int slot = 0;
 
-    static volatile long holdMs = 400;            // two-finger hold (set from Suite)
+    static volatile long holdMs = 400;            // two-finger hold (set from SolCube)
     static final long maxGapMs = 300;
-    static volatile boolean touchEnabled = true;  // two-finger trigger on/off (set from Suite)
-    static volatile long freezeMs = 0;            // overlay freeze after the CTS call (set from Suite)
-    static volatile String secret;                // shared with Suite for the ripple-port handshake (set from Suite)
+    static volatile boolean touchEnabled = true;  // two-finger trigger on/off (set from SolCube)
+    static volatile long freezeMs = 0;            // overlay freeze after the CTS call (set from SolCube)
+    static volatile String secret;                // shared with SolCube for the ripple-port handshake (set from SolCube)
     // Navigation-bar hold: one finger that lands on the gesture bar (bottom strip, middle of the
     // width) and stays still. Moving it (swipe up = home/recents, sideways = switch apps) cancels.
     static volatile boolean navEnabled = false;
@@ -90,7 +90,7 @@ public class CtsListener {
     }
 
     public static void main(String[] args) throws Exception {
-        L.tag = "Suite.cts";
+        L.tag = "SolCube.cts";
         String dev = args.length > 0 ? args[0] : "/dev/input/event7";
         if (args.length > 1) holdMs = Long.parseLong(args[1]);
         if (args.length > 2) tol = Integer.parseInt(args[2]);
@@ -312,13 +312,13 @@ public class CtsListener {
             s.setTcpNoDelay(true);
             s.setSendBufferSize(1 << 22);
             String key = secret;
-            if (key == null || key.isEmpty()) { L.i("ripple skipped: no secret from Suite yet"); return false; }
+            if (key == null || key.isEmpty()) { L.i("ripple skipped: no secret from SolCube yet"); return false; }
             s.connect(new java.net.InetSocketAddress("127.0.0.1", 47321), 80);
             s.setSoTimeout(150);
             OutputStream out = s.getOutputStream();
             InputStream in0 = s.getInputStream();
-            // Make sure the other end is Suite before the screenshot leaves this process: another app
-            // could be holding the port while vivo has Suite stopped (see RippleHost / dev.suite.Ipc).
+            // Make sure the other end is SolCube before the screenshot leaves this process: another app
+            // could be holding the port while vivo has SolCube stopped (see RippleHost / dev.suite.Ipc).
             String hello = readLine(in0);
             if (hello == null || !hello.startsWith("hello ")) return false;
             String ns = hello.substring(6).trim(), nc = IpcAuth.nonce();
@@ -327,7 +327,7 @@ public class CtsListener {
             String resp = readLine(in0);
             if (resp == null || !resp.startsWith("auth ")
                     || !IpcAuth.same(resp.substring(5).trim(), IpcAuth.mac(key, "server|" + nc + "|" + ns))) {
-                L.i("ripple port is held by something that isn't Suite: no screenshot sent");
+                L.i("ripple port is held by something that isn't SolCube: no screenshot sent");
                 return false;
             }
             // 9th field: how long the overlay stays frozen after Circle to Search is called,
@@ -374,7 +374,7 @@ public class CtsListener {
      */
     static void pop() {
         vibrated = true;
-        run(java.util.Arrays.asList("cmd", "vibrator_manager", "synced", "-f", "-d", "Suite",
+        run(java.util.Arrays.asList("cmd", "vibrator_manager", "synced", "-f", "-d", "SolCube",
                 "waveform", "-a", "30", "255"));
     }
 

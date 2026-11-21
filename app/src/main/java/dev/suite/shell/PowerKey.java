@@ -28,7 +28,7 @@ final class PowerKey {
 
     // where the ripple starts: power button on the right edge (natural portrait, 0..1)
     static float fx = 1.0f, fy = 0.37f;
-    static volatile long holdMs = 350;   // set from Suite
+    static volatile long holdMs = 350;   // set from SolCube
     static volatile boolean cts = true;  // hold = Circle to Search; false = the "Power button hold" card's action
     static volatile boolean started;
 
@@ -189,10 +189,10 @@ final class PowerKey {
                 }
             }
             if (fire) {
-                L.i("power hold" + (cts ? "" : " → Suite action"));
+                L.i("power hold" + (cts ? "" : " → SolCube action"));
                 if (cts) CtsListener.fire(fx, fy, new float[]{fx, fy, fx, fy}, c);
                 else {
-                    // the "Power button hold" card: Suite's invisible activity opens the app / switches the sound mode
+                    // the "Power button hold" card: SolCube's invisible activity opens the app / switches the sound mode
                     CtsListener.pop();
                     SysSettings.exec("am", "start", "-n", "dev.suite/.HoldActivity",
                             "-f", "0x10800000");   // NEW_TASK | NO_ANIMATION

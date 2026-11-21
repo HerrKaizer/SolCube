@@ -6,10 +6,10 @@ import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 
 /**
- * Secrets for Suite's local connections.
+ * Secrets for SolCube's local connections.
  *  - [secret]: shared by the app and its shell-side listener (handed over through the Shizuku
  *    binder in ctsConfig), so the ripple port 127.0.0.1:47321 only talks to the real other side:
- *    no other app can receive the screenshot or make Suite draw a picture.
+ *    no other app can receive the screenshot or make SolCube draw a picture.
  *  - [helperToken]: set by the laptop helper over adb (shell-only receiver); the stream service
  *    sends it with every request so other apps can't drive the helper.
  * Both are in private prefs ("ipc"), left out of backups.

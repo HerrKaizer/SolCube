@@ -11,14 +11,14 @@ android {
         applicationId = "dev.suite"
         minSdk = 33
         targetSdk = 34
-        versionCode = 100
-        versionName = "3.6.7"  // update check uses github.com/HerrKaizer/SolCube; Gestures card same height as the groups; Gestures card styled like the group cards; flat gold on switches + theme picker, greener "running"; glow on every gold control, halo no longer clipped square; glowing gold matched to the icon; 2026-11-21: renamed to SolCube (visible name only), palette matched to the new icon (amber gold on black)
+        versionCode = 101
+        versionName = "3.6.8"  // code renamed Suite→SolCube (classes, tags, comments), old a11y entry cleaned up; update check uses github.com/HerrKaizer/SolCube; Gestures card same height as the groups; Gestures card styled like the group cards; flat gold on switches + theme picker, greener "running"; glow on every gold control, halo no longer clipped square; glowing gold matched to the icon; 2026-11-21: renamed to SolCube (visible name only), palette matched to the new icon (amber gold on black)
     }
 
     buildTypes {
         // The published APK is this build, signed with the same (debug) key as every release so
         // updates install over older versions. Not debuggable: no `run-as` or debugger access to
-        // Suite's settings / Shizuku binder for anyone with adb.
+        // SolCube's settings / Shizuku binder for anyone with adb.
         getByName("debug") { isDebuggable = false }
     }
 

@@ -147,7 +147,7 @@ final class Haptics {
             int ints = 0, strings = 0;
             for (int i = 0; i < ps.length; i++) {
                 if (ps[i] == int.class) args[i] = ints++ == 0 ? android.os.Process.myUid() : 0;   // uid, then deviceId
-                else if (ps[i] == String.class) args[i] = strings++ == 0 ? "com.android.shell" : "Suite trigger";
+                else if (ps[i] == String.class) args[i] = strings++ == 0 ? "com.android.shell" : "SolCube trigger";
                 else if (ps[i] == IBinder.class) args[i] = new Binder();
                 else if (ps[i].isInstance(vibration)) args[i] = vibration;
                 else args[i] = useAttrs != null ? useAttrs : attrs;

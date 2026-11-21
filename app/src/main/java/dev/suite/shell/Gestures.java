@@ -4,7 +4,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Drawn-gesture recognizer shared by Suite (test pad, recorder) and the routines engine (live
+ * Drawn-gesture recognizer shared by SolCube (test pad, recorder) and the routines engine (live
  * two-finger drawing). Plain Java, no Android classes.
  *
  * Shapes use the $P point-cloud method (Vatavu, Anthony, Wobbrock 2012): the drawing is resampled
@@ -40,7 +40,7 @@ public final class Gestures {
     public static boolean isSwipe(String id) { return id != null && id.startsWith("swipe_"); }
 
     /**
-     * One-finger drawing happens on top of normal use (Suite can't hold the touch back), so only
+     * One-finger drawing happens on top of normal use (SolCube can't hold the touch back), so only
      * closed shapes are allowed: a scroll, fling or drag never ends where it began.
      */
     public static final java.util.Set<String> ONE_FINGER_OK =

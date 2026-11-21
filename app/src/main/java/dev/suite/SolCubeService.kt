@@ -18,7 +18,7 @@ import rikka.shizuku.Shizuku
  * programs are running while their section is enabled (they die on reboot).
  * Runs while any section is enabled.
  */
-class SuiteService : Service() {
+class SolCubeService : Service() {
 
     companion object {
         private const val CHANNEL = "suite_bg"
@@ -30,7 +30,7 @@ class SuiteService : Service() {
 
         /** Starts/updates or stops the service to match the switches. */
         fun sync(ctx: Context) {
-            val i = Intent(ctx, SuiteService::class.java)
+            val i = Intent(ctx, SolCubeService::class.java)
             if (anyEnabled(ctx)) ctx.startForegroundService(i) else ctx.stopService(i)
         }
     }
@@ -43,13 +43,13 @@ class SuiteService : Service() {
 
     private val watchdog = object : Runnable {
         override fun run() {
-            Components.reconcile(this@SuiteService)
+            Components.reconcile(this@SolCubeService)
             // daily GitHub release check (Updates.check returns at once until a day has passed);
-            // a new version opens its pop-up once (allowed from the background: Suite can draw over apps)
+            // a new version opens its pop-up once (allowed from the background: SolCube can draw over apps)
             runCatching {
-                Updates.check(this@SuiteService)?.let { r ->
-                    if (Updates.firstShow(this@SuiteService, r))
-                        startActivity(Intent(this@SuiteService, UpdateActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                Updates.check(this@SolCubeService)?.let { r ->
+                    if (Updates.firstShow(this@SolCubeService, r))
+                        startActivity(Intent(this@SolCubeService, UpdateActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                 }
             }
             bg.postDelayed(this, WATCHDOG_MS)
@@ -65,7 +65,7 @@ class SuiteService : Service() {
     override fun onCreate() {
         super.onCreate()
         val nm = getSystemService(NotificationManager::class.java)
-        // Suite may post notifications now (island events), so the service's own channel is
+        // SolCube may post notifications now (island events), so the service's own channel is
         // created blocked: the foreground service keeps running, its notification never shows.
         nm.deleteNotificationChannel("suite")   // the old IMPORTANCE_MIN channel
         nm.createNotificationChannel(NotificationChannel(CHANNEL, "Background service", NotificationManager.IMPORTANCE_NONE))
@@ -77,7 +77,7 @@ class SuiteService : Service() {
         startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
         Shizuku.addBinderReceivedListenerSticky(binderListener)
         Shizuku.addBinderDeadListener(deadListener)
-        bg.postDelayed({ Components.reconcile(this@SuiteService) }, 2000)
+        bg.postDelayed({ Components.reconcile(this@SolCubeService) }, 2000)
         bg.postDelayed(watchdog, WATCHDOG_MS)
     }
 

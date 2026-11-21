@@ -1,7 +1,7 @@
 package dev.suite;
 
-// Shell-side half of a Suite section, run by Shizuku as a UserService (adb shell user).
-interface ISuiteService {
+// Shell-side half of a SolCube section, run by Shizuku as a UserService (adb shell user).
+interface ISolCubeService {
     // Shizuku's reserved destroy transaction: clean up and exit the process.
     void destroy() = 16777114;
 

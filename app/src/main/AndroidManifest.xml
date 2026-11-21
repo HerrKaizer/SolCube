@@ -111,9 +111,9 @@
         </receiver>
 
         <!-- Exported only so the shell-side listener can restart it after vivo's cleaner
-             force-stops Suite; the permission limits callers to shell/system. -->
+             force-stops SolCube; the permission limits callers to shell/system. -->
         <service
-            android:name=".SuiteService"
+            android:name=".SolCubeService"
             android:exported="true"
             android:permission="android.permission.INTERACT_ACROSS_USERS_FULL"
             android:foregroundServiceType="specialUse">
@@ -123,7 +123,7 @@
         </service>
 
         <service
-            android:name=".SuiteA11y"
+            android:name=".SolCubeA11y"
             android:label="@string/a11y_label"
             android:exported="true"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">

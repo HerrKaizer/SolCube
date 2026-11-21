@@ -16,7 +16,7 @@ import org.json.JSONArray
 /**
  * Invisible activity that runs a power-button action and finishes:
  *  - double press: vivo fires vivo.intent.action.NFC_BUS_SWINGSPLASH and opens the preferred
- *    handler; Suite makes itself that handler (DoublePress.makeDefault).
+ *    handler; SolCube makes itself that handler (DoublePress.makeDefault).
  *  - (the power-button hold has its own HoldActivity below, which only shell/system may start)
  */
 class DoublePressActivity : Activity() {
@@ -53,7 +53,7 @@ class PressAction(slot: String, private val allowCts: Boolean) {
         const val RING_SILENT = "ring:silent"   // silent on / off
         const val RING_VIBRATE = "ring:vibrate" // vibrate on / off
         const val CTS = "cts"
-        private const val TAG = "Suite"
+        private const val TAG = "SolCube"
     }
 
     private fun raw(ctx: Context) = Components.prefs(ctx).getString(kTarget, null)
@@ -158,11 +158,11 @@ object DoublePress {
         return pkg?.takeIf { p -> pm.queryIntentActivities(intent(), 0).any { it.activityInfo.packageName == p } }
     }
 
-    /** Ready = vivo's switch on and Suite the handler. */
+    /** Ready = vivo's switch on and SolCube the handler. */
     fun ready(ctx: Context) = handler(ctx) == ctx.packageName && walletSwitchOn(ctx)
 
     /**
-     * Turns vivo's double-press switch on and makes Suite the "always" handler, as the shell user
+     * Turns vivo's double-press switch on and makes SolCube the "always" handler, as the shell user
      * (needs Shizuku). Off the main thread.
      */
     fun makeDefault(ctx: Context): Boolean {
@@ -212,13 +212,13 @@ object Ringer {
             AudioManager.RINGER_MODE_VIBRATE -> "Vibrate"
             else -> "Ring"
         })
-        // directly when Suite has Do Not Disturb access (silent needs it), otherwise as the shell user
+        // directly when SolCube has Do Not Disturb access (silent needs it), otherwise as the shell user
         val direct = ctx.getSystemService(NotificationManager::class.java).isNotificationPolicyAccessGranted &&
             runCatching { am.ringerMode = next; true }.getOrDefault(false)
         if (!direct) Thread { Shell.oneShot(ctx, "ringer ${name(next)}") }.start()
     }
 
-    /** Gives Suite Do Not Disturb access through Shizuku so ring changes are instant. Off the main thread. */
+    /** Gives SolCube Do Not Disturb access through Shizuku so ring changes are instant. Off the main thread. */
     fun ensureAccess(ctx: Context) {
         if (ctx.getSystemService(NotificationManager::class.java).isNotificationPolicyAccessGranted) return
         Shell.oneShot(ctx, "allow-dnd ${ctx.packageName}")

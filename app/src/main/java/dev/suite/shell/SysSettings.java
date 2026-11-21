@@ -82,10 +82,10 @@ final class SysSettings {
                 "--bind", "name:s:" + key, "--bind", "value:s:" + value.replace(":", "\\:"));
     }
 
-    /** Shows Suite's island pill with this text (Suite's IslandReceiver draws it). Doesn't block. */
+    /** Shows SolCube's island pill with this text (SolCube's IslandReceiver draws it). Doesn't block. */
     static void notice(String text, boolean ok) {
         new Thread(() -> {
-            // the pill draws in Suite's accessibility overlay (above the status bar): make sure that's on
+            // the pill draws in SolCube's accessibility overlay (above the status bar): make sure that's on
             AppKeeper.ensureA11y();
             exec("am", "broadcast", "-n", "dev.suite/.IslandReceiver",
                 "--es", "text", text, "--ez", "ok", String.valueOf(ok));

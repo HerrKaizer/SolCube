@@ -20,7 +20,7 @@ import java.util.WeakHashMap
 import kotlin.concurrent.thread
 
 /**
- * Wallpaper behind every Suite screen: a photo (feather + satin form, one for light and one for
+ * Wallpaper behind every SolCube screen: a photo (feather + satin form, one for light and one for
  * dark mode) spanning the screen width, moving at 30 % of the scroll speed, with a slow sweep of
  * light across it and a soft fade behind the title. Glass panes evaluate the same function
  * (see LiquidGlass) on pre-blurred copies: the deeper the pane, the more it blurs.

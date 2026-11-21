@@ -17,7 +17,7 @@ import android.view.ViewTreeObserver
 import java.util.WeakHashMap
 
 /**
- * Liquid glass for every surface in Suite (AGSL, API 33+).
+ * Liquid glass for every surface in SolCube (AGSL, API 33+).
  *
  * Each pane is a slab of glass with a rounded bevel along its edge:
  *  - it shows the GlassBackdrop wallpaper behind it, blurred more the deeper it is nested

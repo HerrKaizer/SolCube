@@ -11,7 +11,7 @@ import android.widget.FrameLayout
  *
  * Before, the header blur was a RenderEffect on this whole view: three blur passes over the full
  * screen-sized layer every frame the page changed, although only the strip under the title is
- * ever blurred (measured: the biggest single part of Suite's GPU load while scrolling).
+ * ever blurred (measured: the biggest single part of SolCube's GPU load while scrolling).
  *
  * Now the page draws itself normally below [stripBottom], and the strip above it is drawn from a
  * strip-sized copy with [effect] on it. The copy only references the children's own drawings, so

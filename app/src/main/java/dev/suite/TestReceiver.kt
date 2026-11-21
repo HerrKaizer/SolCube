@@ -27,13 +27,13 @@ class TestReceiver : BroadcastReceiver() {
             try {
                 when (intent.action) {
                     "dev.suite.TEST_CTS" -> Shell.service(Shell.Kind.CTS)?.command("test $ms")
-                    // am broadcast -n dev.suite/.TestReceiver -a dev.suite.RT_STATUS  → logcat tag Suite
+                    // am broadcast -n dev.suite/.TestReceiver -a dev.suite.RT_STATUS  → logcat tag SolCube
                     // am broadcast -n dev.suite/.TestReceiver -a dev.suite.RT_RUN --es id work
                     "dev.suite.RT_CLOSE" -> Shell.service(Shell.Kind.ROUTINES)?.command("close_apps")
                     // --es apps pkg1,pkg2
                     "dev.suite.RT_REVIVE" -> Shell.service(Shell.Kind.ROUTINES)?.command("revive " + intent.getStringExtra("apps"))
                     "dev.suite.RT_RUN" -> Shell.command(ctx, Shell.Kind.ROUTINES, "run " + intent.getStringExtra("id"))
-                    "dev.suite.RT_STATUS" -> android.util.Log.i("Suite", "routines: " + Shell.service(Shell.Kind.ROUTINES)?.status())
+                    "dev.suite.RT_STATUS" -> android.util.Log.i("SolCube", "routines: " + Shell.service(Shell.Kind.ROUTINES)?.status())
                     "dev.suite.SET_FEATURE" -> {
                         val on = intent.getBooleanExtra("on", false)
                         when (intent.getStringExtra("feature")) {
@@ -60,7 +60,7 @@ class TestReceiver : BroadcastReceiver() {
                             .putBoolean(GlassBackdrop.KEY_HALF, intent.getBooleanExtra("half", false)).commit()
                         RenderTest.rebuild?.invoke()
                     }
-                    // logs what the temperature pill shows, once a second for --ei sec N (tag SuiteLoad):
+                    // logs what the temperature pill shows, once a second for --ei sec N (tag SolCubeLoad):
                     // "cpuTemp gpuTemp cpuLoad% gpuLoad%". Reads the pill's last values when it's running
                     // (a second reader would reset the GPU busy counter under it).
                     "dev.suite.LOAD_LOG" -> {
@@ -82,7 +82,7 @@ class TestReceiver : BroadcastReceiver() {
                                         .getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CURRENT_NOW)
                                 }.getOrDefault(Int.MIN_VALUE)
                                 val ma = if (ua == Int.MIN_VALUE) "?" else (if (kotlin.math.abs(ua) > 20000) ua / 1000 else ua).toString()
-                                android.util.Log.i("SuiteLoad", (line ?: "n/a") + " " + ma)
+                                android.util.Log.i("SolCubeLoad", (line ?: "n/a") + " " + ma)
                             }
                         }.start()
                     }

@@ -1,6 +1,6 @@
 package dev.suite.shell;
 
-import dev.suite.ISuiteService;
+import dev.suite.ISolCubeService;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
@@ -13,7 +13,7 @@ import java.util.regex.Pattern;
  * /proc/stat and /sys/class/thermal are blocked by SELinux for regular apps, while shell can
  * read /proc/stat, /sys/class/kgsl/kgsl-3d0/gpubusy, and `dumpsys thermalservice`.
  */
-public class TempUserService extends ISuiteService.Stub {
+public class TempUserService extends ISolCubeService.Stub {
     private static final Pattern HAL_TEMP = Pattern.compile("mValue=([0-9.]+),\\s*mType=(\\d+)");
 
     private long prevTotal = -1, prevIdle = -1;
@@ -22,7 +22,7 @@ public class TempUserService extends ISuiteService.Stub {
     private int lastCpuTemp = -1, lastGpuTemp = -1;
 
     public TempUserService() {
-        L.tag = "Suite.temp";
+        L.tag = "SolCube.temp";
         readCpu();   // seed baseline jiffies for the first delta
     }
 
