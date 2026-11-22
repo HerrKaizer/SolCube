@@ -101,13 +101,9 @@ object Island {
                 val srcLeft = if (hasPath) pathBounds.left else topRect.left.toFloat()
                 val srcWidth = if (hasPath) pathBounds.width() else topRect.width().toFloat()
                 val holeX = if (srcWidth > holeR * 2.2f) srcLeft + holeR else srcLeft + srcWidth / 2f
-                val rawY = when {
-                    floatingHole -> pathBounds.centerY()
-                    topRect.bottom <= statusBarH * 0.92f -> topRect.bottom - holeR
-                    else -> statusBarH * 0.5f
-                }
+                val rawY = if (floatingHole) pathBounds.centerY() else topRect.bottom - holeR
                 val minY = holeR + 2f * dens
-                val maxY = (statusBarH - holeR).coerceAtLeast(minY)
+                val maxY = (maxOf(statusBarH, topRect.bottom.toFloat()) - holeR).coerceAtLeast(minY)
                 val holeY = rawY.coerceIn(minY, maxY)
                 val minPillH = minOf(22f * dens, statusBarH * 0.72f)
                 val maxPillH = maxOf(minPillH, minOf(statusBarH * 0.85f, 29f * dens))
