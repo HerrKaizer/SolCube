@@ -51,10 +51,21 @@ object Actions {
             "go_home" to "Go to Home screen",
             "open_url" to "Open link / URL",
         ),
-        "SolCube & Utilities" to listOf(
-            "play_together" to "Play together",
+        "SolCube" to listOf(
+            "temp_pill" to "Temperature pill",
+            "fps_counter" to "FPS counter",
             "frame_interp" to "Frame interpolation",
             "super_res" to "Super resolution",
+            "play_together" to "Play together",
+            "stream_laptop" to "Stream to laptop",
+            "gestures" to "Gestures",
+            "circle_to_search" to "Circle to Search",
+            "cts_touch" to "CTS: two-finger hold",
+            "cts_button" to "CTS: power-button hold",
+            "cts_nav" to "CTS: nav bar hold",
+            "power_hold" to "Power button hold",
+        ),
+        "Utilities" to listOf(
             "notice" to "Show status pill",
             "vibrate" to "Vibrate (done)",
             "screenshot" to "Take screenshot",
@@ -74,7 +85,9 @@ object Actions {
         "wifi", "data", "bluetooth", "nfc", "airplane", "location", "auto_sync",
         "ringer", "dnd", "media", "ring_vol", "notif_vol", "alarm_vol",
         "brightness", "auto_brightness", "dark_mode", "rotation", "screen_timeout",
-        "keep_awake", "extra_dim", "grayscale", "saver", "boost", "play_together", "frame_interp", "super_res",
+        "keep_awake", "extra_dim", "grayscale", "saver", "boost",
+        "temp_pill", "fps_counter", "frame_interp", "super_res", "play_together",
+        "stream_laptop", "gestures", "cts_touch", "cts_button", "cts_nav", "power_hold",
     )
 
     fun values(type: String, allowRestore: Boolean): List<String> {
@@ -85,10 +98,11 @@ object Actions {
             "media", "ring_vol", "notif_vol", "alarm_vol" -> listOf("0", "25", "50", "75", "100")
             "brightness" -> listOf("10", "25", "50", "75", "100")
             "screen_timeout" -> listOf("15000", "30000", "60000", "120000", "300000", "600000", "1800000")
+            "stream_laptop" -> listOf("on", "wide", "off")
             "media_control" -> return listOf("play_pause", "play", "pause", "next", "prev", "stop")
             "wait" -> return listOf("1", "3", "5", "10", "30")
             "open_app", "launch_bg", "close_app", "close_apps", "revive",
-            "lock", "wake_screen", "go_home", "open_url", "notice",
+            "lock", "wake_screen", "go_home", "open_url", "circle_to_search", "notice",
             "vibrate", "screenshot", "run_routine", "shell_cmd" -> return emptyList()
             "data", "wifi", "airplane", "saver", "dnd" -> listOf("off", "on")
             else -> listOf("on", "off")
@@ -98,6 +112,7 @@ object Actions {
 
     fun valueText(type: String, v: String): String = when {
         v == "restore" -> "Back to before"
+        type == "stream_laptop" && v == "wide" -> "16:10 screen"
         type == "rotation" && v == "portrait" -> "Portrait lock"
         type == "rotation" && v == "auto" -> "Auto-rotate"
         type == "rotation" && v == "landscape" -> "Landscape"
@@ -190,6 +205,12 @@ object Actions {
                 if (id.isEmpty()) "Run routine" else "Run ${routineName(id)}"
             }
             type == "media_control" -> "Media: ${valueText(type, o.optString("value", "play_pause"))}"
+            type == "stream_laptop" -> when (o.optString("value")) {
+                "wide" -> "Laptop 16:10 screen"
+                "on" -> "Stream to laptop on"
+                "off" -> "Stream to laptop off"
+                else -> "Stream to laptop back to before"
+            }
             type == "rotation" && o.optString("value") != "restore" -> valueText(type, o.optString("value"))
             type == "keep_awake" -> when (o.optString("value")) {
                 "on" -> "Keep screen on"

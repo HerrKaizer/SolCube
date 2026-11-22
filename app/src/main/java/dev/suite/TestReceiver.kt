@@ -34,13 +34,64 @@ class TestReceiver : BroadcastReceiver() {
                     "dev.suite.RT_REVIVE" -> Shell.service(Shell.Kind.ROUTINES)?.command("revive " + intent.getStringExtra("apps"))
                     "dev.suite.RT_RUN" -> Shell.command(ctx, Shell.Kind.ROUTINES, "run " + intent.getStringExtra("id"))
                     "dev.suite.RT_STATUS" -> android.util.Log.i("SolCube", "routines: " + Shell.service(Shell.Kind.ROUTINES)?.status())
+                    "dev.suite.GET_FEATURE" -> {
+                        val feature = intent.getStringExtra("feature")
+                        pending.resultData = when (feature) {
+                            "mix" -> if (Components.enabled(ctx, Components.KEY_MIX)) "on" else "off"
+                            "sr" -> if (Components.enabled(ctx, Components.KEY_SR)) "on" else "off"
+                            "fi" -> if (Components.enabled(ctx, Components.KEY_GAME)) "on" else "off"
+                            "temp" -> if (Components.enabled(ctx, Components.KEY_TEMP)) "on" else "off"
+                            "fps" -> if (Components.enabled(ctx, Components.KEY_FPS)) "on" else "off"
+                            "gestures" -> if (GestureStore.on(ctx)) "on" else "off"
+                            "cts_touch" -> if (Components.ctsTouch(ctx)) "on" else "off"
+                            "cts_button" -> if (Components.ctsButton(ctx)) "on" else "off"
+                            "cts_nav" -> if (Components.ctsNav(ctx)) "on" else "off"
+                            "power_hold" -> if (Components.holdAction(ctx)) "on" else "off"
+                            "stream" -> when {
+                                Components.read(Shell.Kind.STREAM)?.optBoolean("streaming") == true -> "on"
+                                Components.enabled(ctx, Components.KEY_STREAM) -> "wide"
+                                else -> "off"
+                            }
+                            else -> ""
+                        }
+                    }
+                    "dev.suite.TRIGGER_CTS" -> {
+                        val ok = Components.enabled(ctx, Components.KEY_CTS) &&
+                            RippleHost.running &&
+                            Shell.service(Shell.Kind.CTS)?.command("test ${Components.freeze(ctx)}") == "ok"
+                        pending.resultData = if (ok) "ok" else "direct"
+                    }
                     "dev.suite.SET_FEATURE" -> {
-                        val on = intent.getBooleanExtra("on", false)
+                        val value = intent.getStringExtra("value")
+                        val on = if (value != null) value == "on" else intent.getBooleanExtra("on", false)
                         when (intent.getStringExtra("feature")) {
                             "mix" -> Components.setMix(ctx, on)
                             "sr" -> Components.setSr(ctx, on)
                             "fi" -> Components.setGame(ctx, on)
                             "temp" -> Components.setTemp(ctx, on)
+                            "fps" -> Components.setFps(ctx, on)
+                            "gestures" -> GestureStore.setOn(ctx, on)
+                            "cts_touch" -> Components.setCtsTrigger(ctx, Components.KEY_CTS_TOUCH, on)
+                            "cts_button" -> Components.setCtsTrigger(ctx, Components.KEY_CTS_BUTTON, on)
+                            "cts_nav" -> Components.setCtsTrigger(ctx, Components.KEY_CTS_NAV, on)
+                            "power_hold" -> Components.setCtsTrigger(ctx, Components.KEY_HOLD_ACT, on)
+                            "stream" -> when (value ?: if (on) "on" else "off") {
+                                "on" -> {
+                                    val wideOk = if (!Components.enabled(ctx, Components.KEY_STREAM)) {
+                                        Components.setStreamMode(ctx, true) == "ok"
+                                    } else true
+                                    if (wideOk) Components.streamCmd(ctx, "stream on")
+                                }
+                                "wide" -> {
+                                    if (Components.read(Shell.Kind.STREAM)?.optBoolean("streaming") == true) {
+                                        Components.streamCmd(ctx, "stream off")
+                                    }
+                                    if (!Components.enabled(ctx, Components.KEY_STREAM)) {
+                                        Components.setStreamMode(ctx, true)
+                                    }
+                                }
+                                else -> Components.setStreamMode(ctx, false)
+                            }
                         }
                     }
                     // the laptop helper hands over its per-run token (it can only reach us via adb)

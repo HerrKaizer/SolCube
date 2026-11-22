@@ -117,6 +117,9 @@ public final class ShellActions {
             case "launch_bg":
                 launchBackground(a.optJSONArray("apps"), frontHit != null ? frontHit : frontTask());
                 return true;
+            case "circle_to_search":
+                triggerCircleToSearch();
+                return true;
             default:
                 return false;
         }
@@ -278,6 +281,22 @@ public final class ShellActions {
                 return (pidof("dev.suite:sr") > 0 || SrUserService.isOn()) ? "on" : "off";
             case "frame_interp":
                 return running("dev.suite:fi") ? "on" : "off";
+            case "temp_pill":
+                return getFeature("temp");
+            case "fps_counter":
+                return getFeature("fps");
+            case "stream_laptop":
+                return getFeature("stream");
+            case "gestures":
+                return getFeature("gestures");
+            case "cts_touch":
+                return getFeature("cts_touch");
+            case "cts_button":
+                return getFeature("cts_button");
+            case "cts_nav":
+                return getFeature("cts_nav");
+            case "power_hold":
+                return getFeature("power_hold");
         }
         return null;
     }
@@ -367,18 +386,68 @@ public final class ShellActions {
                 SysSettings.exec("cmd", "audio", "set-volume", "5", v);
                 break;
             case "play_together":
-                SysSettings.exec("am", "broadcast", "-n", "dev.suite/.TestReceiver",
-                        "-a", "dev.suite.SET_FEATURE", "--es", "feature", "mix", "--ez", "on", String.valueOf(on));
+                setFeature("mix", on ? "on" : "off");
                 break;
             case "super_res":
-                SysSettings.exec("am", "broadcast", "-n", "dev.suite/.TestReceiver",
-                        "-a", "dev.suite.SET_FEATURE", "--es", "feature", "sr", "--ez", "on", String.valueOf(on));
+                setFeature("sr", on ? "on" : "off");
                 break;
             case "frame_interp":
-                SysSettings.exec("am", "broadcast", "-n", "dev.suite/.TestReceiver",
-                        "-a", "dev.suite.SET_FEATURE", "--es", "feature", "fi", "--ez", "on", String.valueOf(on));
+                setFeature("fi", on ? "on" : "off");
+                break;
+            case "temp_pill":
+                setFeature("temp", on ? "on" : "off");
+                break;
+            case "fps_counter":
+                setFeature("fps", on ? "on" : "off");
+                break;
+            case "stream_laptop":
+                setFeature("stream", v);
+                break;
+            case "gestures":
+                setFeature("gestures", on ? "on" : "off");
+                break;
+            case "cts_touch":
+                setFeature("cts_touch", on ? "on" : "off");
+                break;
+            case "cts_button":
+                setFeature("cts_button", on ? "on" : "off");
+                break;
+            case "cts_nav":
+                setFeature("cts_nav", on ? "on" : "off");
+                break;
+            case "power_hold":
+                setFeature("power_hold", on ? "on" : "off");
                 break;
         }
+    }
+
+    private static String getFeature(String feature) {
+        String out = SysSettings.exec("am", "broadcast", "-f", "0x11000020",
+                "-n", "dev.suite/.TestReceiver", "-a", "dev.suite.GET_FEATURE",
+                "--es", "feature", feature);
+        Matcher m = Pattern.compile("data=\"([^\"]*)\"").matcher(out);
+        if (m.find()) {
+            String val = m.group(1);
+            return val.isEmpty() ? null : val;
+        }
+        return null;
+    }
+
+    private static void setFeature(String feature, String value) {
+        SysSettings.exec("am", "broadcast", "-f", "0x11000020",
+                "-n", "dev.suite/.TestReceiver", "-a", "dev.suite.SET_FEATURE",
+                "--es", "feature", feature, "--es", "value", value,
+                "--ez", "on", String.valueOf("on".equals(value)));
+    }
+
+    private static void triggerCircleToSearch() {
+        String out = SysSettings.exec("am", "broadcast", "-f", "0x11000020",
+                "-n", "dev.suite/.TestReceiver", "-a", "dev.suite.TRIGGER_CTS");
+        if (out.contains("data=\"ok\"")) {
+            L.i("circle_to_search: triggered with ripple");
+            return;
+        }
+        CtsListener.launch();
     }
 
     private static void mediaControl(String action) {

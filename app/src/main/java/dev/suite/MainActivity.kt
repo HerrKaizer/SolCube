@@ -2107,14 +2107,32 @@ class MainActivity : Activity() {
         }
         for (fingers in listOf(1, 2)) {
             val box = innerCard()
-            box.addView(label(if (fingers == 1) "One finger" else "Two fingers", 16f, p.fg, bold = true))
-            box.addView(label(if (fingers == 1)
+            val header = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                clipChildren = false
+                clipToPadding = false
+            }
+            header.addView(
+                label(if (fingers == 1) "One finger" else "Two fingers", 16f, p.fg, bold = true),
+                LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f),
+            )
+            val chevron = chevronBadge(false)
+            header.addView(chevron, LinearLayout.LayoutParams(30.dp, 30.dp).apply { leftMargin = 8.dp })
+            box.addView(header)
+
+            val body = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                clipChildren = false
+                clipToPadding = false
+            }
+            body.addView(label(if (fingers == 1)
                 "Draw anywhere with one finger. Only closed shapes, which ordinary scrolling can't draw. The rest are grayed out: tap one to see why."
             else "Two fingers down at once, a little apart. Swipes, shapes and digits.",
-                12f, p.sub).apply { setPadding(0, 4.dp, 0, 0) })
+                12f, p.sub).apply { setPadding(0, 6.dp, 0, 0) })
             for ((hdr, items) in GestureStore.groups(this, fingers)) {
-                box.addView(label(hdr, 13f, p.fg, bold = true).apply { setPadding(0, 12.dp, 0, 0) })
-                box.addView(hScroll(*items.map { (id, name) ->
+                body.addView(label(hdr, 13f, p.fg, bold = true).apply { setPadding(0, 12.dp, 0, 0) })
+                body.addView(hScroll(*items.map { (id, name) ->
                     val block = gestureBlock(id, fingers)
                     val mine = GestureStore.sampleCount(this, id)
                     val text = if (mine > 0 && Gestures.builtinName(id) != null) "$name  ·  yours" else name
@@ -2123,6 +2141,8 @@ class MainActivity : Activity() {
                     }.apply { if (block != null) alpha = 0.35f }
                 }.toTypedArray()), LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 6.dp })
             }
+            box.addView(body)
+            makeCollapsible("gestures_f$fingers", box, listOf(header), chevron, body, defaultOpen = false)
             gestList.addView(box, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 14.dp })
         }
         gestList.addView(label("Highlighted = has action(s). Tap a gesture to change them or teach SolCube your way of drawing it.",

@@ -12,11 +12,14 @@ import android.graphics.PixelFormat
 import android.graphics.PointF
 import android.graphics.RectF
 import android.graphics.Typeface
+import android.hardware.display.DisplayManager
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
 import android.util.Log
+import android.view.Display
 import android.view.View
+import android.view.WindowInsets
 import android.view.WindowManager
 import android.view.animation.PathInterpolator
 import kotlin.math.PI
@@ -38,50 +41,124 @@ import kotlin.math.sin
  */
 object Island {
     private const val TAG = "SolCube"
-    /** Window width for the app-overlay fallback in landscape (centred, only as wide as the pill can get). */
-    private const val LAND_OVERLAY_W = 1300
     private val main = Handler(Looper.getMainLooper())
     private var current: PillView? = null
     private val pending = ArrayList<Triple<String, Boolean, Boolean>>()   // wait for the current pill to go back in
     private var pendingCtx: Context? = null
 
-    /** Geometry in screen pixels (set once with the temporary editor). */
-    // defaults = what the user set with the editor on 2026-11-16 (vivo X300 Ultra, 1440x3168)
-    data class Geo(
-        var holeX: Float = 720f, var holeY: Float = 80f, var holeR: Float = 42f,   // the punch hole
-        var gap: Float = 21f,          // from the hole's edge to the pill's right end
-        var pillY: Float = 80f,        // pill centre line
-        var pillH: Float = 99f,        // pill height
-        var textSp: Float = 15f,
-        var leftLimit: Float = 190f,   // never grow past this (the clock)
+    /** Live geometry in screen pixels, derived per display from WindowMetrics + DisplayCutout. */
+    private data class Geo(
+        val holeX: Float, val holeY: Float, val holeR: Float,
+        val gap: Float,          // from the hole's edge to the pill's right end
+        val pillY: Float,        // pill centre line
+        val pillH: Float,        // pill height
+        val textPx: Float,       // text size in px (proportional to pillH)
+        val leftLimit: Float,    // never grow past this (the clock)
+        val dropIn: Boolean,     // true = landscape or no usable top-center cutout
+        val screenW: Int,
+        val winH: Int,
     )
 
-    var geo = Geo()
-    private var loaded = false
+    private fun computeGeo(ctx: Context, wm: WindowManager): Geo {
+        val metrics = wm.currentWindowMetrics
+        val bounds = metrics.bounds
+        val screenW = bounds.width().coerceAtLeast(1)
+        val screenH = bounds.height().coerceAtLeast(1)
+        val dens = ctx.resources.displayMetrics.density.coerceAtLeast(1f)
+        val land = screenW > screenH
 
-    fun load(ctx: Context) {
-        if (loaded) return
-        loaded = true
-        val p = Components.prefs(ctx)
-        if (!p.contains("pill_holeX")) return
-        geo = Geo(p.getFloat("pill_holeX", geo.holeX), p.getFloat("pill_holeY", geo.holeY), p.getFloat("pill_holeR", geo.holeR),
-            p.getFloat("pill_gap", geo.gap), p.getFloat("pill_pillY", geo.pillY), p.getFloat("pill_pillH", geo.pillH),
-            p.getFloat("pill_textSp", geo.textSp), p.getFloat("pill_left", geo.leftLimit))
-    }
+        val insetsTop = metrics.windowInsets.getInsetsIgnoringVisibility(WindowInsets.Type.statusBars()).top
+        val resId = ctx.resources.getIdentifier("status_bar_height", "dimen", "android")
+        val fallbackBarH = if (resId > 0) ctx.resources.getDimensionPixelSize(resId) else (36f * dens).toInt()
+        val statusBarH = (if (insetsTop > 0) insetsTop else fallbackBarH).toFloat().coerceAtLeast(24f * dens)
 
-    fun save(ctx: Context) {
-        Components.prefs(ctx).edit()
-            .putFloat("pill_holeX", geo.holeX).putFloat("pill_holeY", geo.holeY).putFloat("pill_holeR", geo.holeR)
-            .putFloat("pill_gap", geo.gap).putFloat("pill_pillY", geo.pillY).putFloat("pill_pillH", geo.pillH)
-            .putFloat("pill_textSp", geo.textSp).putFloat("pill_left", geo.leftLimit).apply()
-        current?.invalidate()
+        val cutout = metrics.windowInsets.displayCutout
+            ?: ctx.getSystemService(DisplayManager::class.java)?.getDisplay(Display.DEFAULT_DISPLAY)?.cutout
+
+        if (!land && cutout != null) {
+            val topRect = cutout.boundingRectTop
+            if (!topRect.isEmpty && topRect.width() > 0 && topRect.width() < screenW * 0.55f) {
+                val pathBounds = RectF()
+                val cp = cutout.cutoutPath
+                @Suppress("DEPRECATION")
+                val hasPath = cp != null && run {
+                    cp.computeBounds(pathBounds, true)
+                    !pathBounds.isEmpty &&
+                        pathBounds.left >= topRect.left - 4f &&
+                        pathBounds.right <= topRect.right + 4f &&
+                        pathBounds.bottom <= topRect.bottom + 4f &&
+                        pathBounds.height() <= maxOf(statusBarH * 1.5f, 60f * dens)
+                }
+                val floatingHole = hasPath && pathBounds.top > 2f
+                val maxHoleR = minOf(statusBarH * 0.36f, 13f * dens)
+                val minHoleR = (6f * dens).coerceAtMost(maxHoleR)
+                val rawR = if (floatingHole) {
+                    minOf(pathBounds.width(), pathBounds.height()) / 2f
+                } else {
+                    (if (hasPath) pathBounds.width() else topRect.width().toFloat()) / 2f
+                }
+                val holeR = rawR.coerceIn(minHoleR, maxHoleR)
+                val srcLeft = if (hasPath) pathBounds.left else topRect.left.toFloat()
+                val srcWidth = if (hasPath) pathBounds.width() else topRect.width().toFloat()
+                val holeX = if (srcWidth > holeR * 2.2f) srcLeft + holeR else srcLeft + srcWidth / 2f
+                val rawY = when {
+                    floatingHole -> pathBounds.centerY()
+                    topRect.bottom <= statusBarH * 0.92f -> topRect.bottom - holeR
+                    else -> statusBarH * 0.5f
+                }
+                val minY = holeR + 2f * dens
+                val maxY = (statusBarH - holeR).coerceAtLeast(minY)
+                val holeY = rawY.coerceIn(minY, maxY)
+                val minPillH = minOf(22f * dens, statusBarH * 0.72f)
+                val maxPillH = maxOf(minPillH, minOf(statusBarH * 0.85f, 29f * dens))
+                val pillH = maxOf(holeR * 2f * 1.18f, minPillH).coerceAtMost(maxPillH)
+                val pillY = maxOf(holeY, pillH / 2f + 2f * dens)
+                val gap = maxOf(holeR * 0.50f, 4f * dens)
+                val leftLimit = maxOf(54f * dens, screenW * 0.132f)
+                val right = holeX - holeR - gap
+                if (right - leftLimit >= pillH * 2.2f) {
+                    val winH = maxOf((pillY + pillH * 1.1f).toInt(), (statusBarH * 1.6f).toInt(), (64f * dens).toInt())
+                    return Geo(
+                        holeX = holeX,
+                        holeY = holeY,
+                        holeR = holeR,
+                        gap = gap,
+                        pillY = pillY,
+                        pillH = pillH,
+                        textPx = pillH * 0.55f,
+                        leftLimit = leftLimit,
+                        dropIn = false,
+                        screenW = screenW,
+                        winH = winH,
+                    )
+                }
+            }
+        }
+
+        val minPillH = 22f * dens
+        val maxPillH = maxOf(minPillH, minOf(statusBarH * 0.85f, 28f * dens))
+        val pillH = (26f * dens).coerceIn(minPillH, maxPillH)
+        val pillY = maxOf(statusBarH * 0.5f, pillH * 0.5f + 8f * dens)
+        val winH = maxOf((pillY * 1.35f + pillH * 0.9f).toInt(), (statusBarH * 1.8f).toInt(), (72f * dens).toInt())
+        return Geo(
+            holeX = screenW / 2f,
+            holeY = pillY,
+            holeR = pillH * 0.42f,
+            gap = 0f,
+            pillY = pillY,
+            pillH = pillH,
+            textPx = pillH * 0.55f,
+            leftLimit = 0f,
+            dropIn = true,
+            screenW = screenW,
+            winH = winH,
+        )
     }
 
     /** [still] keeps it out until hide() (for the editor). */
     /** [onTap]: the pill takes a tap (its window is then only as wide as the pill area) and stays out 6 s. */
     fun show(ctx: Context, text: String, ok: Boolean = true, still: Boolean = false, waited: Int = 0, onTap: (() -> Unit)? = null) {
         if (Looper.myLooper() != Looper.getMainLooper()) { main.post { show(ctx, text, ok, still, waited, onTap) }; return }
-        load(ctx)
         current?.let {
             if (it.isAttachedToWindow) {
                 // going back in: let it finish, then come out fresh (starting mid-way looked broken)
@@ -108,10 +185,10 @@ object Island {
         // that window takes touches instead, and is only as wide as the pill's area.
         val overlay = a11y == null
         val narrow = overlay || onTap != null   // a window that takes touches is kept to the pill area
-        // landscape: no punch hole to come out of, the pill drops in at the top centre instead
-        val land = vctx.resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
-        val offX = if (narrow && !land) (geo.leftLimit - 80f).coerceAtLeast(0f) else 0f
-        val view = PillView(vctx, text, ok, still, offX, onTap) { v ->
+        val g = computeGeo(vctx, wm)
+        val dens = vctx.resources.displayMetrics.density.coerceAtLeast(1f)
+        val offX = if (narrow && !g.dropIn) (g.leftLimit - 20f * dens).coerceAtLeast(0f) else 0f
+        val view = PillView(vctx, g, text, ok, still, offX, onTap) { v ->
             runCatching { wm.removeView(v) }
             if (current === v) current = null
             val ps = pending.toList(); val pc = pendingCtx
@@ -122,9 +199,9 @@ object Island {
         val lp = WindowManager.LayoutParams(
             when {
                 !narrow -> WindowManager.LayoutParams.MATCH_PARENT
-                land -> LAND_OVERLAY_W
-                else -> (geo.holeX + geo.holeR + 12f - offX).toInt()
-            }, 260, type,
+                g.dropIn -> minOf((g.screenW * 0.85f).toInt(), (360f * dens).toInt())
+                else -> (g.holeX + g.holeR + 4f * dens - offX).toInt().coerceAtLeast(1)
+            }, g.winH, type,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 (if (narrow) WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL else WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
@@ -132,7 +209,7 @@ object Island {
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = android.view.Gravity.TOP or
-                (if (land) android.view.Gravity.CENTER_HORIZONTAL else android.view.Gravity.START)
+                (if (g.dropIn) android.view.Gravity.CENTER_HORIZONTAL else android.view.Gravity.START)
             x = offX.toInt()
             alpha = 1f
             layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
@@ -150,7 +227,7 @@ object Island {
     fun hide() = main.post { current?.close() }
 
     private class PillView(
-        ctx: Context, private var text: String, private var ok: Boolean, private var still: Boolean,
+        ctx: Context, private val g: Geo, private var text: String, private var ok: Boolean, private var still: Boolean,
         private val offX: Float,   // the window's left edge in screen pixels (geometry is in screen pixels)
         private val onTap: (() -> Unit)?,
         private val onGone: (View) -> Unit,
@@ -165,7 +242,7 @@ object Island {
         }
         private val mark = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
-            strokeWidth = 2.2f * dens
+            strokeWidth = (g.pillH * 0.085f).coerceAtLeast(1.5f * dens)
             strokeCap = Paint.Cap.ROUND
             strokeJoin = Paint.Join.ROUND
         }
@@ -196,23 +273,22 @@ object Island {
 
         init { open() }
 
-        private val g get() = Island.geo
         private val pad get() = g.pillH * 0.42f
         private val icon get() = g.pillH * 0.46f
+        private val iconGap get() = g.pillH * 0.20f
         private val right get() = g.holeX - g.holeR - g.gap
-        private val land get() = resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
         /** The widest the pill may get: up to the clock in portrait, under half the screen in landscape. */
-        private val maxW get() = if (land) minOf(width.toFloat(), 1300f) * 0.9f else right - g.leftLimit
+        private val maxW get() = if (g.dropIn) minOf(width.toFloat(), 360f * dens) * 0.9f else (right - g.leftLimit).coerceAtLeast(g.pillH)
 
         private fun shown(t: String = text): String {
-            txt.textSize = g.textSp * dens
-            val room = maxW - pad * 2 - icon - 6 * dens
+            txt.textSize = g.textPx
+            val room = maxW - pad * 2 - icon - iconGap
             return android.text.TextUtils.ellipsize(t, android.text.TextPaint(txt), maxOf(0f, room), android.text.TextUtils.TruncateAt.END).toString()
         }
 
         private fun fullWidth(t: String = text): Float {
-            txt.textSize = g.textSp * dens
-            return min(maxW, maxOf(g.pillH, pad + icon + 6 * dens + txt.measureText(shown(t)) + pad))
+            txt.textSize = g.textPx
+            return min(maxW, maxOf(g.pillH, pad + icon + iconGap + txt.measureText(shown(t)) + pad))
         }
 
         /** Width now: between the old and the new text's while they swap. */
@@ -322,7 +398,7 @@ object Island {
 
         override fun onDraw(c: Canvas) {
             if (s <= 0.001f) return
-            if (land) { drawLand(c); return }
+            if (g.dropIn) { drawLand(c); return }
             c.translate(-offX, 0f)
             val p = s.coerceAtLeast(0f)
             // it is a pill from the first frame: it starts as the hole itself and, while its right
@@ -412,10 +488,10 @@ object Island {
                 m.moveTo(left + ic * 0.85f, by - ic * 0.35f); m.lineTo(left + ic * 0.15f, by + ic * 0.35f)
             }
             c.drawPath(m, mark)
-            txt.textSize = g.textSp * dens
+            txt.textSize = g.textPx
             txt.alpha = a
             val fm = txt.fontMetrics
-            c.drawText(shown(t), left + ic + 6 * dens, by - (fm.ascent + fm.descent) / 2, txt)
+            c.drawText(shown(t), left + ic + iconGap, by - (fm.ascent + fm.descent) / 2, txt)
         }
 
         /**

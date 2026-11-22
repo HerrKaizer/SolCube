@@ -170,5 +170,9 @@ object GestureStore {
         .put("samples", samples(ctx))
 
     /** Re-sends the routines config (which carries the gesture settings). Off the main thread. */
-    fun push(ctx: Context) = Routines.save(ctx, Routines.load(ctx))
+    fun push(ctx: Context) {
+        val s = Shell.service(Shell.Kind.ROUTINES)
+        if (s != null && runCatching { s.command("gestures " + config(ctx)) }.getOrNull() == "ok") return
+        Routines.save(ctx, Routines.load(ctx))
+    }
 }

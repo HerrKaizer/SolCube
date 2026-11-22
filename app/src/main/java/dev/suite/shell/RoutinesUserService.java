@@ -51,7 +51,7 @@ public class RoutinesUserService extends ISolCubeService.Stub {
     private Context ctx;
     private HandlerThread thread;
     private Handler h;
-    private JSONArray routines = new JSONArray();
+    private volatile JSONArray routines = new JSONArray();
     private JSONObject state = new JSONObject();      // {lastRun:{id:ms}, saved:{type:{v,t}}}
     private final Map<String, Boolean> prevCond = new HashMap<>();
     private final Map<String, Boolean> prevRaw = new HashMap<>();
@@ -936,7 +936,8 @@ public class RoutinesUserService extends ISolCubeService.Stub {
         saveState();
         if (depth == 0) prevCond.clear();   // re-baseline at end of top-level run
         L.i("✓ " + r.optString("name") + " done");
-        if (depth == 0 && !hasAction(actions, "lock") && !hasAction(actions, "notice"))
+        if (depth == 0 && !hasAction(actions, "lock") && !hasAction(actions, "notice")
+                && (failed > 0 || !hasAction(actions, "circle_to_search")))
             SysSettings.notice(failed == 0 ? r.optString("name") : r.optString("name") + ": " + failed + " failed", failed == 0);
         if (depth == 0) h.post(() -> evaluate("post_run"));
     }
@@ -1078,6 +1079,16 @@ public class RoutinesUserService extends ISolCubeService.Stub {
             return "ok";
         }
         if (cmd.equals("close_apps")) { h.post(() -> ShellActions.closeApps(null, null)); return "ok"; }
+        if (cmd.startsWith("gestures ")) {
+            try {
+                GestureListener.configure(new JSONObject(cmd.substring(9)), routines,
+                        (gid, fingers, res) -> evaluate("gesture:" + fingers + ":" + gid));
+                return "ok";
+            } catch (Exception e) {
+                L.e("gestures config", e);
+                return "err";
+            }
+        }
         if (cmd.startsWith("revive ")) {
             JSONArray apps = new JSONArray();
             for (String s : cmd.substring(7).split(",")) if (!s.trim().isEmpty()) apps.put(s.trim());

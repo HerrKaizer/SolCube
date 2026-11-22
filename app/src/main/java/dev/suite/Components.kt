@@ -100,10 +100,15 @@ object Components {
     fun streamConfig(ctx: Context): String = JSONObject().put("token", Ipc.helperToken(ctx)).toString()
 
     fun streamCmd(ctx: Context, cmd: String): String {
+        val readyUntil = System.currentTimeMillis() + 1500
+        while (Shell.state() != Shell.State.READY && System.currentTimeMillis() < readyUntil) {
+            Thread.sleep(100)
+        }
+        if (Shell.state() != Shell.State.READY) return "no-shell"
         var s = Shell.service(Shell.Kind.STREAM)
         if (s == null) {
             Shell.start(ctx, Shell.Kind.STREAM)
-            val until = System.currentTimeMillis() + 8000
+            val until = System.currentTimeMillis() + 5000
             while (s == null && System.currentTimeMillis() < until) {
                 Thread.sleep(150)
                 s = Shell.service(Shell.Kind.STREAM)
