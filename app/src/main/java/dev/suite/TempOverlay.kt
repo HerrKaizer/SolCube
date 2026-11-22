@@ -55,6 +55,9 @@ class TempOverlay(private val ctx: Context) {
     private var root: LinearLayout? = null
     private var tempView: PillView? = null
     private var loadView: PillView? = null
+    private var fpsView: PillView? = null
+    private var fps: Int? = null
+    private var fpsOn = false
     private lateinit var params: WindowManager.LayoutParams
     private val main = Handler(Looper.getMainLooper())
 
@@ -69,7 +72,7 @@ class TempOverlay(private val ctx: Context) {
 
     private val socTick = object : Runnable {
         override fun run() {
-            if (pm.isInteractive) {
+            if (pm.isInteractive && Components.enabled(ctx, Components.KEY_TEMP)) {
                 cpu = Thermal.cpu()
                 gpu = Thermal.gpu()
                 val wantLoad = Style.showLoad(ctx)
@@ -101,6 +104,21 @@ class TempOverlay(private val ctx: Context) {
             bg?.postDelayed(this, SOC_INTERVAL_MS)
         }
     }
+    // frames per second of the app in front, once a second while the FPS pill is on
+    private val fpsTick = object : Runnable {
+        override fun run() {
+            val want = Style.showFps(ctx) && pm.isInteractive
+            if (!want && fpsOn) { fpsOn = false; runCatching { Shell.service(Shell.Kind.TEMP)?.command("fps_stop") } }
+            if (want) {
+                fpsOn = true
+                val raw = runCatching { Shell.service(Shell.Kind.TEMP)?.command("fps") }.getOrNull()
+                fps = raw?.trim()?.toIntOrNull()?.takeIf { it >= 0 }
+                if (raw == null && Shell.state() == Shell.State.READY) Shell.start(ctx, Shell.Kind.TEMP)
+                main.post(::render)
+            }
+            bg?.postDelayed(this, 1000L)
+        }
+    }
     private val batteryTick = object : Runnable {
         override fun run() {
             bat = Thermal.battery(ctx)
@@ -117,11 +135,12 @@ class TempOverlay(private val ctx: Context) {
         running = true
         val w = HandlerThread("temps").apply { start() }
         worker = w
-        bg = Handler(w.looper).apply { post(socTick); post(batteryTick) }
+        bg = Handler(w.looper).apply { post(socTick); post(batteryTick); post(fpsTick) }
     }
 
     fun stop() {
         running = false
+        if (fpsOn) { fpsOn = false; Thread { runCatching { Shell.service(Shell.Kind.TEMP)?.command("fps_stop") } }.start() }
         Style.prefs(ctx).unregisterOnSharedPreferenceChangeListener(styleListener)
         bg?.removeCallbacksAndMessages(null)
         worker?.quitSafely()
@@ -130,6 +149,7 @@ class TempOverlay(private val ctx: Context) {
         root = null
         tempView = null
         loadView = null
+        fpsView = null
     }
 
     private fun render() {
@@ -150,6 +170,7 @@ class TempOverlay(private val ctx: Context) {
         tempView?.text = sb
 
         fun fmt(v: Int?) = v?.toString() ?: "--"
+        fpsView?.text = fmt(fps)
         loadView?.let { lv ->
             lv.barCpu = cpuLoad
             lv.barGpu = gpuLoad
@@ -362,7 +383,13 @@ class TempOverlay(private val ctx: Context) {
         }
         val tv = makePill("-- -- --")
         val lv = makePill("-- --")
+        val fv = makePill("--")
         val box = LinearLayout(ctx).apply {
+            // FPS first: left of the temperatures in landscape, above them in portrait
+            addView(fv, LinearLayout.LayoutParams(
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.WRAP_CONTENT,
+            ))
             addView(tv, LinearLayout.LayoutParams(
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.WRAP_CONTENT,
@@ -374,7 +401,11 @@ class TempOverlay(private val ctx: Context) {
         }
         root = box
         tempView = tv
+        tv.addOnLayoutChangeListener { _, l, t, r, b, ol, ot, orr, ob ->
+            if (r - l != orr - ol || b - t != ob - ot) tv.post { matchTempPill() }
+        }
         loadView = lv
+        fpsView = fv
         applyStyle()
         render()
         Style.prefs(ctx).registerOnSharedPreferenceChangeListener(styleListener)
@@ -399,8 +430,8 @@ class TempOverlay(private val ctx: Context) {
         val longPress = Runnable {
             held = true
             box.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
-            Island.show(ctx, "Temp pill off")
-            Thread { Components.setTemp(ctx, false) }.start()
+            Island.show(ctx, "Overlay off")
+            Thread { Components.setTemp(ctx, false); Components.setFps(ctx, false) }.start()
         }
         box.setOnTouchListener { _, e ->
             when (e.actionMasked) {
@@ -443,6 +474,26 @@ class TempOverlay(private val ctx: Context) {
         box.addOnLayoutChangeListener { v, l, t, r, b, ol, ot, orr, ob ->
             if (r - l != orr - ol || b - t != ob - ot) v.post { keepOnScreen() }
         }
+    }
+
+    /**
+     * The load pill copies the temperature pill: its width in portrait (fixed, not stretched by a
+     * three-digit FPS pill in the same column), its height in landscape. The FPS pill is at least
+     * as wide as the temperatures in portrait. Runs again whenever the temperature pill resizes.
+     */
+    private fun matchTempPill() {
+        val tv = tempView ?: return
+        val lv = loadView ?: return
+        val fv = fpsView ?: return
+        val portrait = isPortrait()
+        val tw = tv.width; val th = tv.height
+        val lp = lv.layoutParams as LinearLayout.LayoutParams
+        val w = if (portrait && tw > 0) tw else LinearLayout.LayoutParams.WRAP_CONTENT
+        val h = if (!portrait && th > 0) th else LinearLayout.LayoutParams.WRAP_CONTENT
+        if (lp.width != w || lp.height != h) { lp.width = w; lp.height = h; lv.layoutParams = lp }
+        val minW = if (portrait && tv.visibility == View.VISIBLE) tw else 0
+        if (fv.minWidth != minW) fv.minWidth = minW
+        lv.requestLayout(); fv.requestLayout()
     }
 
     /** Moves the pill back inside the screen if its current size pokes past an edge. */
@@ -495,6 +546,15 @@ class TempOverlay(private val ctx: Context) {
         params.y = Math.round(fy * maxY)
     }
 
+    /** The switches changed (temperatures / FPS on or off): show the right pills. */
+    fun refresh() {
+        main.post {
+            applyStyle()
+            render()
+            root?.post { keepOnScreen() }
+        }
+    }
+
     fun onConfigurationChanged() {
         val v = root ?: return
         applyStyle()
@@ -520,6 +580,7 @@ class TempOverlay(private val ctx: Context) {
         val box = root ?: return
         val tv = tempView ?: return
         val lv = loadView ?: return
+        val fv = fpsView ?: return
         val p = Style.prefs(ctx)
         val scale = p.getInt(Style.KEY_SIZE, Style.DEFAULT_SIZE) / 100f
         val opacity = p.getInt(Style.KEY_BG_OPACITY, Style.DEFAULT_BG_OPACITY)
@@ -533,7 +594,7 @@ class TempOverlay(private val ctx: Context) {
         val radius = dp(100f)
         val stroke = dp(1f * scale).coerceAtLeast(dp(0.8f))
 
-        for (pill in listOf(tv, lv)) {
+        for (pill in listOf(fv, tv, lv)) {
             pill.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f * scale)
             pill.setTextColor(baseColor)
             pill.setPadding(h, v, h, v)
@@ -576,15 +637,25 @@ class TempOverlay(private val ctx: Context) {
 
         box.orientation = if (portrait) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
         box.gravity = if (portrait) Gravity.CENTER_HORIZONTAL else Gravity.CENTER_VERTICAL
-        lv.visibility = if (Style.showLoad(ctx)) View.VISIBLE else View.GONE
+        val tempOn = Components.enabled(ctx, Components.KEY_TEMP)
+        tv.visibility = if (tempOn) View.VISIBLE else View.GONE
+        lv.visibility = if (tempOn && Style.showLoad(ctx)) View.VISIBLE else View.GONE
 
         val lp = lv.layoutParams as LinearLayout.LayoutParams
         val gap = dp(4f * scale).toInt()
         lp.leftMargin = if (portrait) 0 else gap
         lp.topMargin = if (portrait) gap else 0
-        // portrait: as wide as the temperature pill above it (the column takes its width)
-        lp.width = if (portrait) LinearLayout.LayoutParams.MATCH_PARENT else LinearLayout.LayoutParams.WRAP_CONTENT
         lv.layoutParams = lp
-        lv.requestLayout()
+
+        fv.visibility = if (Style.showFps(ctx)) View.VISIBLE else View.GONE
+        val fp = fv.layoutParams as LinearLayout.LayoutParams
+        fp.rightMargin = if (portrait) 0 else gap
+        fp.bottomMargin = if (portrait) gap else 0
+        // its own width (three digits must fit: as wide as the temperatures it was cut to "10" for 102),
+        // at least as wide as the temperature pill under it in portrait
+        fp.width = LinearLayout.LayoutParams.WRAP_CONTENT
+        fv.maxLines = 1   // (not isSingleLine: that scrolls the text to centre it and shifted the drawn pill and its border)
+        fv.layoutParams = fp
+        matchTempPill()
     }
 }

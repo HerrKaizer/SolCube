@@ -150,7 +150,50 @@ public class TempUserService extends ISolCubeService.Stub {
         return c + " " + g;
     }
 
+    // ---- FPS: SurfaceFlinger's timestats count the frames each layer presents. Every read takes the
+    // counts since the last one and clears them; the busiest layer of the app in front wins (a game
+    // draws into a SurfaceView layer named after it). No match: every frame on screen.
+    // (The flip counter, transaction 1013, and `--latency` give nothing to shell on OriginOS 7.)
+    private long fpsSince = 0;
+
+    private int readFps() {
+        long now = System.nanoTime();
+        if (fpsSince == 0) {
+            SysSettings.exec("dumpsys", "SurfaceFlinger", "--timestats", "-enable");
+            SysSettings.exec("dumpsys", "SurfaceFlinger", "--timestats", "-clear");
+            fpsSince = now;
+            return -1;
+        }
+        String out = SysSettings.exec("dumpsys", "SurfaceFlinger", "--timestats", "-dump");
+        SysSettings.exec("dumpsys", "SurfaceFlinger", "--timestats", "-clear");
+        double sec = (now - fpsSince) / 1e9;
+        fpsSince = now;
+        if (sec < 0.3) return -1;
+        String pkg = ShellActions.frontTask().pkg;
+        int global = -1, best = -1;
+        String layer = null;
+        for (String l : out.split("\n")) {
+            String t = l.trim();
+            if (t.startsWith("layerName = ")) { layer = t.substring(12); continue; }
+            if (!t.startsWith("totalFrames = ")) continue;
+            int n;
+            try { n = Integer.parseInt(t.substring(14).trim()); } catch (NumberFormatException e) { continue; }
+            if (layer == null) { if (global < 0) global = n; continue; }   // the summary before the layers
+            if (pkg != null && !pkg.isEmpty() && layer.contains(pkg)) best = Math.max(best, n);
+        }
+        int frames = best >= 0 ? best : global;
+        return frames < 0 ? -1 : (int) Math.round(frames / sec);
+    }
+
+    private void stopFps() {
+        if (fpsSince == 0) return;
+        fpsSince = 0;
+        SysSettings.exec("dumpsys", "SurfaceFlinger", "--timestats", "-disable");
+    }
+
     @Override public synchronized String command(String cmd) {
+        if ("fps".equals(cmd)) return String.valueOf(readFps());
+        if ("fps_stop".equals(cmd)) { stopFps(); return ""; }
         if ("load".equals(cmd)) return sample();
         if ("temps".equals(cmd)) {
             int[] t = readTemps();
@@ -180,6 +223,7 @@ public class TempUserService extends ISolCubeService.Stub {
     @Override public void configure(String json) {}
 
     @Override public void destroy() {
+        try { stopFps(); } catch (Throwable ignored) {}
         System.exit(0);
     }
 }

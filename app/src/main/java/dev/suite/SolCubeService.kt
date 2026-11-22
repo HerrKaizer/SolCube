@@ -25,7 +25,7 @@ class SolCubeService : Service() {
         private const val WATCHDOG_MS = 60_000L
 
         fun anyEnabled(ctx: Context): Boolean =
-            listOf(Components.KEY_CTS, Components.KEY_GAME, Components.KEY_SR, Components.KEY_TEMP, Components.KEY_STREAM, Components.KEY_MIX, Routines.KEY, Profiles.KEY)
+            listOf(Components.KEY_CTS, Components.KEY_GAME, Components.KEY_SR, Components.KEY_TEMP, Components.KEY_FPS, Components.KEY_STREAM, Components.KEY_MIX, Routines.KEY, Profiles.KEY)
                 .any { Components.enabled(ctx, it) }
 
         /** Starts/updates or stops the service to match the switches. */
@@ -132,8 +132,9 @@ class SolCubeService : Service() {
         } else {
             stream?.stop(); stream = null
         }
-        if (Components.enabled(this, Components.KEY_TEMP)) {
+        if (Components.enabled(this, Components.KEY_TEMP) || Components.enabled(this, Components.KEY_FPS)) {
             if (temp == null) temp = TempOverlay(this).also { it.start() }
+            temp?.refresh()   // which pills show (temperatures, load, FPS)
             if (!TempOverlay.running) { temp?.stop(); temp = TempOverlay(this).also { it.start() } }
         } else {
             temp?.stop(); temp = null

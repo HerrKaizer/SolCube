@@ -22,4 +22,6 @@ object Style {
     fun showLoad(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_SHOW_LOAD, true)
     fun loadBars(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_LOAD_BARS, false)
     fun blur(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_BLUR, true)
+    const val KEY_SHOW_FPS = "showFps"
+    fun showFps(ctx: Context): Boolean = Components.enabled(ctx, Components.KEY_FPS)
 }

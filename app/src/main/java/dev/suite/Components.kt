@@ -11,6 +11,7 @@ object Components {
     const val KEY_GAME = "game"   // frame interpolation
     const val KEY_SR = "sr"       // super resolution
     const val KEY_TEMP = "temp"
+    const val KEY_FPS = "fps_counter"
     const val KEY_MIX = "mix"     // play together (audio focus policy)
 
     fun prefs(ctx: Context): SharedPreferences = ctx.getSharedPreferences("suite", Context.MODE_PRIVATE)
@@ -233,7 +234,14 @@ object Components {
     fun setTemp(ctx: Context, on: Boolean) {
         prefs(ctx).edit().putBoolean(KEY_TEMP, on).commit()
         SolCubeService.sync(ctx)
-        if (on) Shell.start(ctx, Shell.Kind.TEMP) else Shell.stop(ctx, Shell.Kind.TEMP)
+        if (on || enabled(ctx, KEY_FPS)) Shell.start(ctx, Shell.Kind.TEMP) else Shell.stop(ctx, Shell.Kind.TEMP)
+    }
+
+    /** The FPS counter: its own pill on the temperature overlay (the overlay runs for either). */
+    fun setFps(ctx: Context, on: Boolean) {
+        prefs(ctx).edit().putBoolean(KEY_FPS, on).commit()
+        SolCubeService.sync(ctx)
+        if (on || enabled(ctx, KEY_TEMP)) Shell.start(ctx, Shell.Kind.TEMP) else Shell.stop(ctx, Shell.Kind.TEMP)
     }
 
     /** Starts whatever is enabled but not running (after a reboot, when Shizuku comes back, after a crash). */
@@ -246,7 +254,7 @@ object Components {
         if (enabled(ctx, Routines.KEY)) Shell.start(ctx, Shell.Kind.ROUTINES)
         Profiles.load(ctx)   // one-time migration from DoublePress NFC if not initialized yet
         if (enabled(ctx, Profiles.KEY)) Shell.start(ctx, Shell.Kind.PROFILES)
-        if (enabled(ctx, KEY_TEMP)) Shell.start(ctx, Shell.Kind.TEMP)
+        if (enabled(ctx, KEY_TEMP) || enabled(ctx, KEY_FPS)) Shell.start(ctx, Shell.Kind.TEMP)
         if (enabled(ctx, KEY_STREAM)) Shell.start(ctx, Shell.Kind.STREAM)
     }
 }

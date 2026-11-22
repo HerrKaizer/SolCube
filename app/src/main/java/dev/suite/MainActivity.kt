@@ -98,6 +98,7 @@ class MainActivity : Activity() {
     private lateinit var mixSec: Section
     private lateinit var gestSec: Section
     private lateinit var temp: Section
+    private lateinit var fpsSec: Section
     private lateinit var diagDot: View
     private lateinit var diagSummary: TextView
     private lateinit var diagBody: LinearLayout
@@ -306,10 +307,15 @@ class MainActivity : Activity() {
         renderDouble()
 
         showSection(
-            temp, running = TempOverlay.running,
+            fpsSec, running = TempOverlay.running && enabled(fpsSec),
+            detail = if (enabled(fpsSec) && !canDraw) "Needs “Display over other apps”"
+            else "Frames per second on screen, in its own pill: left of the temperature pill in landscape, above it in portrait.",
+        )
+        showSection(
+            temp, running = TempOverlay.running && enabled(temp),
             detail = if (enabled(temp) && !canDraw) "Needs “Display over other apps”"
-            else if (Style.showLoad(this)) "CPU · GPU · Battery °C + CPU · GPU load — drag to move, hold 1 s to turn off"
-            else "CPU · GPU · Battery °C — drag to move, hold 1 s to turn off",
+            else "CPU · GPU · Battery °C" +
+                (if (Style.showLoad(this)) " + CPU · GPU load" else "") + " — drag to move, hold 1 s to turn off",
         )
 
         fun setGroup(g: GroupCard, active: Boolean, text: String) {
@@ -337,7 +343,8 @@ class MainActivity : Activity() {
         })
 
         val gameParts = mutableListOf<String>()
-        if (TempOverlay.running || enabled(temp)) gameParts += "Temp pill"
+        if (enabled(fpsSec)) gameParts += "FPS counter"
+        if (enabled(temp)) gameParts += "Temp pill"
         if (fiRunning || enabled(game)) gameParts += "Frame interpolation"
         if (sr?.optBoolean("running") == true || enabled(srSec)) gameParts += "Super res"
         if (s.stream?.optBoolean("streaming") == true || Components.enabled(this, Components.KEY_STREAM)) gameParts += "Stream"
@@ -495,7 +502,7 @@ class MainActivity : Activity() {
     private fun toggle(sec: Section) {
         if (sec.key in busy) return
         val on = !enabled(sec)
-        val needsOverlay = sec.key in setOf(Components.KEY_CTS_TOUCH, Components.KEY_CTS_BUTTON, Components.KEY_CTS_NAV, Components.KEY_TEMP)
+        val needsOverlay = sec.key in setOf(Components.KEY_CTS_TOUCH, Components.KEY_CTS_BUTTON, Components.KEY_CTS_NAV, Components.KEY_TEMP, Components.KEY_FPS)
         if (on && needsOverlay && !Settings.canDrawOverlays(this)) {
             openOverlaySettings()
         }
@@ -508,6 +515,7 @@ class MainActivity : Activity() {
                 Components.KEY_SR -> Components.setSr(this, on)
                 Components.KEY_MIX -> Components.setMix(this, on)
                 Components.KEY_TEMP -> Components.setTemp(this, on)
+                Components.KEY_FPS -> Components.setFps(this, on)
                 GestureStore.KEY -> GestureStore.setOn(this, on)
             }
             noticeName(sec.key)?.let { Island.show(this, "$it ${if (on) "on" else "off"}") }
@@ -527,6 +535,7 @@ class MainActivity : Activity() {
         Components.KEY_SR -> "SR"
         Components.KEY_MIX -> "Mixing"
         Components.KEY_TEMP -> "Temp pill"
+        Components.KEY_FPS -> "FPS counter"
         GestureStore.KEY -> "Gestures"
         else -> null
     }
@@ -640,6 +649,9 @@ class MainActivity : Activity() {
 
         // 4. Gaming big card (collapsed by default)
         gamingGroup = groupCard("gaming", "Gaming", defaultOpen = false)
+        fpsSec = section(Components.KEY_FPS, "FPS counter", collapsible = false, inner = true)
+        gamingGroup.body.addView(fpsSec.card, innerCardParams())
+
         temp = section(Components.KEY_TEMP, "Temperature overlay", inner = true)
         addTempSettings(temp.body)
         gamingGroup.body.addView(temp.card, innerCardParams())
