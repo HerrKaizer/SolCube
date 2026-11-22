@@ -12,6 +12,7 @@ import android.os.Vibrator
 import android.provider.Settings
 import android.util.Log
 import org.json.JSONArray
+import org.json.JSONObject
 
 /**
  * Invisible activity that runs a power-button action and finishes:
@@ -23,9 +24,26 @@ class DoublePressActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         overridePendingTransition(0, 0)
-        DoublePress.run(this)
-        finish()
-        overridePendingTransition(0, 0)
+        val app = applicationContext
+        if (Routines.hasEnabledTrigger(app, "double_press")) {
+            Thread {
+                val matched = Routines.trigger(app, "double_press")
+                runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    if (matched) {
+                        if (DoublePress.vibrate(this)) DoublePress.vibrateOnce(this)
+                    } else {
+                        DoublePress.run(this)
+                    }
+                    finish()
+                    overridePendingTransition(0, 0)
+                }
+            }.start()
+        } else {
+            DoublePress.run(this)
+            finish()
+            overridePendingTransition(0, 0)
+        }
     }
 }
 
@@ -46,6 +64,7 @@ class HoldActivity : Activity() {
  */
 class PressAction(slot: String, private val allowCts: Boolean) {
     private val kTarget = "${slot}_target"
+    private val kCustom = "${slot}_custom"
     private val kApps = "${slot}_apps"
 
     companion object {
@@ -53,21 +72,33 @@ class PressAction(slot: String, private val allowCts: Boolean) {
         const val RING_SILENT = "ring:silent"   // silent on / off
         const val RING_VIBRATE = "ring:vibrate" // vibrate on / off
         const val CTS = "cts"
+        const val CUSTOM = "custom"             // arbitrary action JSON from Actions catalog
         private const val TAG = "SolCube"
     }
 
     private fun raw(ctx: Context) = Components.prefs(ctx).getString(kTarget, null)
 
     /** The app to open ("" if none picked yet). */
-    fun target(ctx: Context): String = raw(ctx)?.removePrefix("app:")?.takeIf { it.contains('.') } ?: ""
+    fun target(ctx: Context): String =
+        raw(ctx)?.takeIf { it.startsWith("app:") || (!it.startsWith("ring:") && it != CTS && it != CUSTOM) }
+            ?.removePrefix("app:")?.takeIf { it.contains('.') } ?: ""
 
     fun setTarget(ctx: Context, pkg: String) = Components.prefs(ctx).edit().putString(kTarget, "app:$pkg").apply()
 
-    /** A non-app action (ring:… or cts), or null when it opens an app. */
+    /** A non-app action (ring:…, cts, or custom), or null when it opens an app. */
     fun action(ctx: Context): String? =
-        raw(ctx)?.takeIf { it.startsWith("ring:") || (allowCts && it == CTS) }
+        raw(ctx)?.takeIf { it.startsWith("ring:") || (allowCts && it == CTS) || it == CUSTOM }
 
     fun setAction(ctx: Context, c: String) = Components.prefs(ctx).edit().putString(kTarget, c).apply()
+
+    fun customAction(ctx: Context): JSONObject? {
+        if (raw(ctx) != CUSTOM) return null
+        val s = Components.prefs(ctx).getString(kCustom, null) ?: return null
+        return runCatching { JSONObject(s) }.getOrNull()
+    }
+
+    fun setCustomAction(ctx: Context, act: JSONObject) =
+        Components.prefs(ctx).edit().putString(kTarget, CUSTOM).putString(kCustom, act.toString()).apply()
 
     fun apps(ctx: Context): List<String> {
         val list = Components.prefs(ctx).getString(kApps, null)
@@ -83,12 +114,11 @@ class PressAction(slot: String, private val allowCts: Boolean) {
     fun perform(act: Activity, vibrate: Boolean, nfc: Boolean) {
         val app = act.applicationContext
         val a = action(act)
-        Log.i(TAG, "power action → ${a ?: target(act)}")
-        if (vibrate && a != CTS) runCatching {
-            val attrs = android.os.VibrationAttributes.Builder()
-                .setUsage(android.os.VibrationAttributes.USAGE_COMMUNICATION_REQUEST)
-                .build()
-            act.getSystemService(Vibrator::class.java).vibrate(VibrationEffect.createOneShot(60, 255), attrs)
+        val custom = if (a == CUSTOM) customAction(act) else null
+        val customType = custom?.optString("type")
+        Log.i(TAG, "power action → ${custom?.toString() ?: a ?: target(act)}")
+        if (vibrate && a != CTS && customType != "circle_to_search") {
+            DoublePress.vibrateOnce(act)
         }
         when {
             a == CTS -> Thread {
@@ -96,6 +126,15 @@ class PressAction(slot: String, private val allowCts: Boolean) {
                 val r = if (Components.enabled(app, Components.KEY_CTS)) Shell.command(app, Shell.Kind.CTS, "power-cts") else null
                 if (r != "ok") Shell.oneShot(app, "cts")
             }.start()
+            a == CUSTOM -> {
+                if (custom == null) return
+                Thread {
+                    val json = custom.toString()
+                    val live = Shell.service(Shell.Kind.ROUTINES) ?: Shell.service(Shell.Kind.CTS)
+                    val sent = live?.let { runCatching { it.command("run_action $json") == "ok" }.getOrDefault(false) } ?: false
+                    if (!sent) Shell.oneShot(app, "run_action $json")
+                }.start()
+            }
             a != null -> Ringer.toggle(app, a)
             else -> {
                 val pkg = target(act)
@@ -173,6 +212,13 @@ object DoublePress {
         if (me !in set) set += me
         val cmd = "prefer-double " + me.flattenToString() + " " + set.joinToString(",") { it.flattenToString() }
         return Shell.oneShot(ctx, cmd) == "ok"
+    }
+
+    fun vibrateOnce(ctx: Context) = runCatching {
+        val attrs = android.os.VibrationAttributes.Builder()
+            .setUsage(android.os.VibrationAttributes.USAGE_COMMUNICATION_REQUEST)
+            .build()
+        ctx.getSystemService(Vibrator::class.java)?.vibrate(VibrationEffect.createOneShot(60, 255), attrs)
     }
 
     fun run(act: Activity) = action.perform(act, vibrate(act), nfc = false)

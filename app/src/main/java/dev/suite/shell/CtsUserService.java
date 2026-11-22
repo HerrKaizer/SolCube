@@ -49,10 +49,19 @@ public class CtsUserService extends ISolCubeService.Stub {
             CtsListener.freezeMs = Math.max(0, Math.min(600, o.optLong("freeze", 0)));
             String sec = o.optString("secret", "");
             if (!sec.isEmpty()) CtsListener.secret = sec;
+            boolean touch = o.optBoolean("touch", true);
+            CtsListener.touchCts = o.optBoolean("touchCts", touch);
+            CtsListener.touchRoutine = o.optBoolean("touchRoutine", false);
+            boolean nav = o.optBoolean("nav", false);
+            CtsListener.navCts = o.optBoolean("navCts", nav);
+            CtsListener.navRoutine = o.optBoolean("navRoutine", false);
             CtsListener.navHoldMs = clamp(o.optLong("navHold", 450));
-            CtsListener.navEnabled = o.optBoolean("nav", false);
-            PowerKey.cts = o.optBoolean("buttonCts", true);
-            apply(o.optBoolean("touch", true), o.optBoolean("button", true),
+            CtsListener.navEnabled = nav;
+            boolean btnCts = o.optBoolean("buttonCts", true);
+            PowerKey.cts = btnCts;
+            PowerKey.act = o.optBoolean("buttonAct", !btnCts);
+            PowerKey.routine = o.optBoolean("buttonRoutine", false);
+            apply(touch, o.optBoolean("button", true),
                     o.optLong("touchHold", 400), o.optLong("buttonHold", 350));
         } catch (Exception e) {
             L.e("bad config", e);
@@ -137,8 +146,11 @@ public class CtsUserService extends ISolCubeService.Stub {
             JSONObject o = new JSONObject();
             o.put("running", listening);
             o.put("touch", listening && CtsListener.touchEnabled);
+            o.put("touchRoutine", listening && CtsListener.touchRoutine);
             o.put("button", listening && PowerKey.started);
+            o.put("buttonRoutine", listening && PowerKey.routine);
             o.put("nav", listening && CtsListener.navEnabled);
+            o.put("navRoutine", listening && CtsListener.navRoutine);
             o.put("log", new JSONArray(L.recent(20)));
             return o.toString();
         } catch (Exception e) {
@@ -148,6 +160,18 @@ public class CtsUserService extends ISolCubeService.Stub {
 
     /** "test <freezeMs>": run the whole screenshot -> ripple -> Circle to Search sequence. */
     @Override public String command(String cmd) {
+        if (cmd != null && cmd.startsWith("run_action ")) {
+            try {
+                JSONObject a = new JSONObject(cmd.substring(11).trim());
+                Thread t = new Thread(() -> ShellActions.runAction(a), "cts-action");
+                t.setDaemon(true);
+                t.start();
+                return "ok";
+            } catch (Exception e) {
+                L.e("run_action", e);
+                return "err";
+            }
+        }
         if (cmd != null && cmd.startsWith("test ")) {
             long ms = Long.parseLong(cmd.substring(5).trim());
             new Thread(() -> CtsListener.test(ms), "cts-test").start();

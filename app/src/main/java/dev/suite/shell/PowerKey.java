@@ -28,8 +28,10 @@ final class PowerKey {
 
     // where the ripple starts: power button on the right edge (natural portrait, 0..1)
     static float fx = 1.0f, fy = 0.37f;
-    static volatile long holdMs = 350;   // set from SolCube
-    static volatile boolean cts = true;  // hold = Circle to Search; false = the "Power button hold" card's action
+    static volatile long holdMs = 350;      // set from SolCube
+    static volatile boolean cts = true;     // hold = Circle to Search
+    static volatile boolean act = false;    // hold = "Power button hold" card's action
+    static volatile boolean routine = false; // hold = Routine trigger (priority when matched)
     static volatile boolean started;
 
     static final Object lock = new Object();
@@ -189,13 +191,20 @@ final class PowerKey {
                 }
             }
             if (fire) {
-                L.i("power hold" + (cts ? "" : " → SolCube action"));
-                if (cts) CtsListener.fire(fx, fy, new float[]{fx, fy, fx, fy}, c);
-                else {
-                    // the "Power button hold" card: SolCube's invisible activity opens the app / switches the sound mode
+                if (routine && CtsListener.triggerRoutine("power_hold")) {
+                    L.i("power hold → routine");
+                    CtsListener.pop();
+                } else if (cts) {
+                    L.i("power hold");
+                    CtsListener.fire(fx, fy, new float[]{fx, fy, fx, fy}, c);
+                } else if (act) {
+                    L.i("power hold → SolCube action");
+                    // the "Power button hold" card: SolCube's invisible activity opens the app / switches the sound mode / runs action
                     CtsListener.pop();
                     SysSettings.exec("am", "start", "-n", "dev.suite/.HoldActivity",
                             "-f", "0x10800000");   // NEW_TASK | NO_ANIMATION
+                } else {
+                    L.i("power hold → no matching routine");
                 }
             }
         }

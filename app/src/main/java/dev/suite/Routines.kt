@@ -76,6 +76,12 @@ object Routines {
         "Schedule" to listOf(
             "time" to "At a time",
         ),
+        "Shortcuts" to listOf(
+            "two_finger_hold" to "Two-finger hold",
+            "power_hold" to "Power button hold",
+            "nav_hold" to "Navigation bar hold",
+            "double_press" to "Double power press",
+        ),
         "Gestures" to listOf(
             "gesture1" to "One-finger gesture",   // picker only: stored as type "gesture", fingers 1
             "gesture" to "Two-finger gesture",
@@ -299,10 +305,42 @@ object Routines {
         Components.prefs(ctx).edit().putString(PREF, JSONArray(list).toString()).putBoolean(KEY, any).commit()
         if (!push) return
         SolCubeService.sync(ctx)
-        if (!any) { Shell.stop(ctx, Shell.Kind.ROUTINES); return }
-        val s = Shell.service(Shell.Kind.ROUTINES)
-        if (s == null) Shell.start(ctx, Shell.Kind.ROUTINES)   // configured once attached
-        else runCatching { s.configure(config(ctx)) }
+        if (!any) {
+            Shell.stop(ctx, Shell.Kind.ROUTINES)
+        } else {
+            val s = Shell.service(Shell.Kind.ROUTINES)
+            if (s == null) Shell.start(ctx, Shell.Kind.ROUTINES)   // configured once attached
+            else runCatching { s.configure(config(ctx)) }
+        }
+        Components.syncCts(ctx)
+    }
+
+    fun hasEnabledTrigger(ctx: Context, type: String): Boolean = load(ctx).any { r ->
+        r.optBoolean("on", true) && r.optJSONObject("trigger")?.optString("type") == type
+    }
+
+    fun needsCtsListener(ctx: Context): Boolean = load(ctx).any { r ->
+        r.optBoolean("on", true) && r.optJSONObject("trigger")?.optString("type") in
+            setOf("two_finger_hold", "power_hold", "nav_hold")
+    }
+
+    /** Fires any matching enabled routine(s) for a shortcut trigger. Call off the main thread. */
+    fun trigger(ctx: Context, type: String): Boolean {
+        if (!hasEnabledTrigger(ctx, type) || Shell.state() != Shell.State.READY) return false
+        var s = Shell.service(Shell.Kind.ROUTINES)
+        var newlyStarted = false
+        if (s == null) {
+            newlyStarted = true
+            Shell.start(ctx, Shell.Kind.ROUTINES)
+            val until = System.currentTimeMillis() + 3000
+            while (s == null && System.currentTimeMillis() < until) {
+                Thread.sleep(100)
+                s = Shell.service(Shell.Kind.ROUTINES)
+            }
+        }
+        if (s == null) return false
+        if (newlyStarted) runCatching { s.configure(config(ctx)) }
+        return runCatching { s.command("trigger $type") == "matched" }.getOrDefault(false)
     }
 
     fun config(ctx: Context): String = JSONObject().put("routines", JSONArray(load(ctx)))

@@ -102,6 +102,10 @@ public class UtilUserService extends ISolCubeService.Stub {
             if (cmd.equals("cts")) {   // Circle to Search straight away (no ripple: the listener isn't running)
                 return CtsTrigger.trigger(CtsTrigger.service(), 1) ? "ok" : "failed";
             }
+            if (cmd.startsWith("run_action ")) {
+                ShellActions.runAction(new org.json.JSONObject(cmd.substring(11).trim()), true);
+                return "ok";
+            }
             if (cmd.startsWith("ringer ")) {   // ringer normal|vibrate|silent
                 String m = cmd.substring(7).trim().toUpperCase();
                 SysSettings.exec("cmd", "audio", "set-ringer-mode", m);

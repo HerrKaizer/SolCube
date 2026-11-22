@@ -505,6 +505,12 @@ public class RoutinesUserService extends ISolCubeService.Stub {
                     case "gesture":   // event-only: GestureListener sends "gesture:<fingers>:<id>"
                         if (event != null && event.equals("gesture:" + t.optInt("fingers", 2) + ":" + t.optString("gesture")) && gate) run(r, "gesture", 0);
                         break;
+                    case "two_finger_hold":
+                    case "power_hold":
+                    case "nav_hold":
+                    case "double_press":
+                        // event-only: dispatched synchronously by command("trigger <type>")
+                        break;
                     case "time": {
                         int at = minutes(t.optString("at"));
                         if (at < 0 || !gate) break;
@@ -937,7 +943,8 @@ public class RoutinesUserService extends ISolCubeService.Stub {
         if (depth == 0) prevCond.clear();   // re-baseline at end of top-level run
         L.i("✓ " + r.optString("name") + " done");
         if (depth == 0 && !hasAction(actions, "lock") && !hasAction(actions, "notice")
-                && (failed > 0 || !hasAction(actions, "circle_to_search")))
+                && (failed > 0 || (!hasAction(actions, "circle_to_search")
+                        && !hasAction(actions, "gemini_cts") && !hasAction(actions, "gemini_live"))))
             SysSettings.notice(failed == 0 ? r.optString("name") : r.optString("name") + ": " + failed + " failed", failed == 0);
         if (depth == 0) h.post(() -> evaluate("post_run"));
     }
@@ -1066,7 +1073,56 @@ public class RoutinesUserService extends ISolCubeService.Stub {
         });
     }
 
+    private boolean triggerShortcut(String trigType) {
+        if (trigType == null || trigType.isEmpty()) return false;
+        java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
+        boolean[] matched = new boolean[1];
+        h.post(() -> {
+            List<JSONObject> toRun = new ArrayList<>();
+            try {
+                long now = System.currentTimeMillis();
+                Snapshot snap = new Snapshot();
+                for (int i = 0; i < routines.length(); i++) {
+                    JSONObject r = routines.optJSONObject(i);
+                    if (r == null || !r.optBoolean("on", true)) continue;
+                    JSONObject t = r.optJSONObject("trigger");
+                    if (t == null || !trigType.equals(t.optString("type"))) continue;
+                    if (scheduleGate(r, now) && conditionsGate(r, snap)) {
+                        toRun.add(r);
+                    }
+                }
+                matched[0] = !toRun.isEmpty();
+            } catch (Throwable t) {
+                L.e("trigger " + trigType, t);
+            } finally {
+                latch.countDown();
+            }
+            for (JSONObject r : toRun) {
+                run(r, trigType, 0);
+            }
+        });
+        try {
+            latch.await(1500, java.util.concurrent.TimeUnit.MILLISECONDS);
+        } catch (InterruptedException ignored) {
+            Thread.currentThread().interrupt();
+        }
+        return matched[0];
+    }
+
     @Override public String command(String cmd) {
+        if (cmd.startsWith("trigger ")) {
+            return triggerShortcut(cmd.substring(8).trim()) ? "matched" : "none";
+        }
+        if (cmd.startsWith("run_action ")) {
+            try {
+                JSONObject a = new JSONObject(cmd.substring(11).trim());
+                h.post(() -> ShellActions.runAction(a));
+                return "ok";
+            } catch (Exception e) {
+                L.e("run_action", e);
+                return "err";
+            }
+        }
         if (cmd.startsWith("run ")) {
             String id = cmd.substring(4).trim();
             h.post(() -> {

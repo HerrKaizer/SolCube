@@ -60,6 +60,8 @@ object Actions {
             "stream_laptop" to "Stream to laptop",
             "gestures" to "Gestures",
             "circle_to_search" to "Circle to Search",
+            "gemini_cts" to "Gemini CTS",
+            "gemini_live" to "Gemini Live",
             "cts_touch" to "CTS: two-finger hold",
             "cts_button" to "CTS: power-button hold",
             "cts_nav" to "CTS: nav bar hold",
@@ -90,7 +92,7 @@ object Actions {
         "stream_laptop", "gestures", "cts_touch", "cts_button", "cts_nav", "power_hold",
     )
 
-    fun values(type: String, allowRestore: Boolean): List<String> {
+    fun values(type: String, allowRestore: Boolean, allowToggle: Boolean = false): List<String> {
         val base = when (type) {
             "rotation" -> listOf("portrait", "auto", "landscape")
             "dark_mode" -> listOf("on", "off", "auto")
@@ -102,15 +104,22 @@ object Actions {
             "media_control" -> return listOf("play_pause", "play", "pause", "next", "prev", "stop")
             "wait" -> return listOf("1", "3", "5", "10", "30")
             "open_app", "launch_bg", "close_app", "close_apps", "revive",
-            "lock", "wake_screen", "go_home", "open_url", "circle_to_search", "notice",
+            "lock", "wake_screen", "go_home", "open_url", "circle_to_search",
+            "gemini_cts", "gemini_live", "notice",
             "vibrate", "screenshot", "run_routine", "shell_cmd" -> return emptyList()
             "data", "wifi", "airplane", "saver", "dnd" -> listOf("off", "on")
             else -> listOf("on", "off")
         }
-        return if (allowRestore && type in STATEFUL) base + "restore" else base
+        val withToggle = if (allowToggle && type in STATEFUL && "on" in base && "off" in base) {
+            listOf("toggle") + base
+        } else {
+            base
+        }
+        return if (allowRestore && type in STATEFUL) withToggle + "restore" else withToggle
     }
 
     fun valueText(type: String, v: String): String = when {
+        v == "toggle" -> "Toggle"
         v == "restore" -> "Back to before"
         type == "stream_laptop" && v == "wide" -> "16:10 screen"
         type == "rotation" && v == "portrait" -> "Portrait lock"
@@ -141,8 +150,8 @@ object Actions {
         else -> v.replaceFirstChar { it.uppercase() }
     }
 
-    fun defaultAction(type: String, allowRestore: Boolean): JSONObject = JSONObject().put("type", type).apply {
-        values(type, allowRestore).firstOrNull()?.let { put("value", it) }
+    fun defaultAction(type: String, allowRestore: Boolean, allowToggle: Boolean = false): JSONObject = JSONObject().put("type", type).apply {
+        values(type, allowRestore, allowToggle).firstOrNull()?.let { put("value", it) }
         when (type) {
             "revive" -> put("apps", JSONArray(Routines.REVIVE_DEFAULT))
             "launch_bg", "close_app" -> put("apps", JSONArray())
@@ -204,6 +213,7 @@ object Actions {
                 val id = o.optString("routineId")
                 if (id.isEmpty()) "Run routine" else "Run ${routineName(id)}"
             }
+            o.optString("value") == "toggle" -> "Toggle $name"
             type == "media_control" -> "Media: ${valueText(type, o.optString("value", "play_pause"))}"
             type == "stream_laptop" -> when (o.optString("value")) {
                 "wide" -> "Laptop 16:10 screen"

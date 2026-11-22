@@ -33,6 +33,10 @@ class TestReceiver : BroadcastReceiver() {
                     // --es apps pkg1,pkg2
                     "dev.suite.RT_REVIVE" -> Shell.service(Shell.Kind.ROUTINES)?.command("revive " + intent.getStringExtra("apps"))
                     "dev.suite.RT_RUN" -> Shell.command(ctx, Shell.Kind.ROUTINES, "run " + intent.getStringExtra("id"))
+                    "dev.suite.RT_TRIGGER" -> {
+                        val trig = intent.getStringExtra("trigger").orEmpty()
+                        pending.resultData = if (trig.isNotEmpty() && Routines.trigger(ctx, trig)) "matched" else "none"
+                    }
                     "dev.suite.RT_STATUS" -> android.util.Log.i("SolCube", "routines: " + Shell.service(Shell.Kind.ROUTINES)?.status())
                     "dev.suite.GET_FEATURE" -> {
                         val feature = intent.getStringExtra("feature")

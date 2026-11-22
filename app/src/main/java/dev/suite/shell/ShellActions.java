@@ -120,8 +120,119 @@ public final class ShellActions {
             case "circle_to_search":
                 triggerCircleToSearch();
                 return true;
+            case "gemini_cts":
+                triggerGeminiOverlay();
+                return true;
+            case "gemini_live":
+                triggerGeminiLive();
+                return true;
             default:
                 return false;
+        }
+    }
+
+    /** Executes any action once (used by Double power press / Power hold custom actions). */
+    public static void runAction(JSONObject a) { runAction(a, false); }
+
+    public static void runAction(JSONObject a, boolean syncNotice) {
+        if (a == null) return;
+        String type = a.optString("type");
+        if (type.isEmpty()) return;
+        try {
+            if (runInstant(a, null, null)) return;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return;
+        }
+        String current = read(type);
+        if (current == null) {
+            L.i("run_action: unknown " + type);
+            return;
+        }
+        String rawVal = a.optString("value");
+        String target;
+        String displayVal;
+        if ("toggle".equals(rawVal)) {
+            boolean curOn;
+            if ("stream_laptop".equals(type)) {
+                curOn = "on".equals(current) || "wide".equals(current);
+            } else if ("keep_awake".equals(type)) {
+                long ms = 60_000L;
+                try { ms = Long.parseLong(current); } catch (NumberFormatException ignored) {}
+                curOn = ms >= 600_000L;
+            } else if ("dark_mode".equals(type) && "auto".equals(current)) {
+                curOn = SysSettings.exec("dumpsys", "uimode").contains("mComputedNightMode=true");
+            } else {
+                curOn = "on".equals(current);
+            }
+            displayVal = curOn ? "off" : "on";
+            if ("keep_awake".equals(type)) {
+                target = curOn ? "60000" : "1800000";
+            } else {
+                target = displayVal;
+            }
+        } else {
+            displayVal = rawVal;
+            target = targetValue(type, a);
+        }
+        if (target == null) return;
+        write(type, target);
+        L.i("run_action " + type + ": " + current + " → " + target);
+        String msg = actionNotice(type, displayVal);
+        if (msg != null && !msg.isEmpty()) {
+            if (syncNotice) {
+                AppKeeper.ensureA11y();
+                SysSettings.exec("am", "broadcast", "-n", "dev.suite/.IslandReceiver",
+                        "--es", "text", msg, "--ez", "ok", "true");
+            } else {
+                SysSettings.notice(msg, true);
+            }
+        }
+    }
+
+    private static String actionNotice(String type, String v) {
+        switch (type) {
+            case "wifi": return "Wi-Fi " + v;
+            case "data": return "Data " + v;
+            case "bluetooth": return "Bluetooth " + v;
+            case "nfc": return "NFC " + v;
+            case "airplane": return "Airplane " + v;
+            case "location": return "Location " + v;
+            case "auto_sync": return "Auto-sync " + v;
+            case "dnd": return "DND " + v;
+            case "ringer": return "silent".equals(v) ? "Silent" : "vibrate".equals(v) ? "Vibrate" : "Ring";
+            case "media": return "Media " + v + "%";
+            case "ring_vol": return "Ring " + v + "%";
+            case "notif_vol": return "Notif " + v + "%";
+            case "alarm_vol": return "Alarm " + v + "%";
+            case "brightness": return "Brightness " + v + "%";
+            case "auto_brightness": return "Auto-bright " + v;
+            case "dark_mode": return "Dark mode " + v;
+            case "rotation": return "auto".equals(v) ? "Auto-rotate" : "landscape".equals(v) ? "Landscape" : "Portrait lock";
+            case "screen_timeout":
+                try {
+                    long s = Long.parseLong(v) / 1000L;
+                    return s >= 60 ? "Timeout " + (s / 60) + " min" : "Timeout " + s + " s";
+                } catch (NumberFormatException ignored) {
+                    return "Timeout";
+                }
+            case "keep_awake": return "off".equals(v) ? "Normal timeout" : "Keep screen on";
+            case "extra_dim": return "Extra dim " + v;
+            case "grayscale": return "Grayscale " + v;
+            case "saver": return "Saver " + v;
+            case "boost": return "Boost " + v;
+            case "temp_pill": return "Temp pill " + v;
+            case "fps_counter": return "FPS " + v;
+            case "frame_interp": return "FI " + v;
+            case "super_res": return "SR " + v;
+            case "play_together": return "Mixing " + v;
+            case "stream_laptop": return "Laptop " + ("wide".equals(v) ? "16:10" : v);
+            case "gestures": return "Gestures " + v;
+            case "cts_touch": return "Touch CTS " + v;
+            case "cts_button": return "Power CTS " + v;
+            case "cts_nav": return "Nav CTS " + v;
+            case "power_hold": return "Power hold " + v;
+            default: return null;
         }
     }
 
@@ -448,6 +559,50 @@ public final class ShellActions {
             return;
         }
         CtsListener.launch();
+    }
+
+    public static void triggerGeminiLive() {
+        // Explicit -p com.google.android.googlequicksearchbox avoids Chrome opening on ROMs where
+        // bard.google.com App Links verification is disabled.
+        String out = SysSettings.exec("am", "start", "-f", "0x10000000",
+                "-a", "android.intent.action.VIEW",
+                "-d", "https://bard.google.com/android?source=bardshell&feature=liveconv",
+                "-p", "com.google.android.googlequicksearchbox");
+        if (!out.contains("Error:") && !out.contains("Exception")) {
+            L.i("gemini_live: started bardshell liveconv");
+            return;
+        }
+        out = SysSettings.exec("am", "start", "-f", "0x10000000",
+                "-n", "com.google.android.apps.bard/.widget.RobinWidgetEntryPointActivity",
+                "--es", "feature", "liveconv");
+        if (!out.contains("Error:") && !out.contains("Exception")) {
+            L.i("gemini_live: started widget entrypoint");
+            return;
+        }
+        SysSettings.exec("am", "start", "-f", "0x10000000",
+                "-a", "android.intent.action.VOICE_COMMAND",
+                "-p", "com.google.android.googlequicksearchbox");
+        L.i("gemini_live: fallback VOICE_COMMAND");
+    }
+
+    public static void triggerGeminiOverlay() {
+        try {
+            if (CtsTrigger.triggerGeminiOverlay(CtsTrigger.service())) {
+                L.i("gemini_cts: triggered overlay via VoiceInteraction");
+                return;
+            }
+        } catch (Throwable t) {
+            L.e("gemini_cts VoiceInteraction", t);
+        }
+        String out = SysSettings.exec("cmd", "voiceinteraction", "show");
+        if (!out.contains("Error:") && !out.contains("Exception") && !out.contains("Unknown")) {
+            L.i("gemini_cts: triggered via cmd voiceinteraction show");
+            return;
+        }
+        SysSettings.exec("am", "start", "-f", "0x10000000",
+                "-a", "android.intent.action.ASSIST",
+                "-p", "com.google.android.googlequicksearchbox");
+        L.i("gemini_cts: fallback ACTION_ASSIST");
     }
 
     private static void mediaControl(String action) {

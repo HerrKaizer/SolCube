@@ -34,5 +34,17 @@ final class CtsTrigger {
         return Boolean.TRUE.equals(r);
     }
 
+    static boolean triggerGeminiOverlay(Object vims) throws Exception {
+        if (vims == null || show == null) return false;
+        Bundle args = new Bundle();
+        args.putLong("invocation_time_ms", SystemClock.elapsedRealtime());
+        args.putInt("invocation_type", 6);   // AssistUtils.INVOCATION_TYPE_POWER_BUTTON_LONG_PRESS
+        int flags = 3;                       // SHOW_WITH_ASSIST (1) | SHOW_WITH_SCREENSHOT (2)
+        Object r = show.getParameterCount() == 4
+                ? show.invoke(vims, null, args, flags, "hyperOS_home")
+                : show.invoke(vims, null, args, flags);
+        return Boolean.TRUE.equals(r);
+    }
+
     private CtsTrigger() {}
 }

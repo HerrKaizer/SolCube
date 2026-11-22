@@ -88,10 +88,10 @@ object Shell {
                 // crashed? bring it back if it should be running
                 main.postDelayed({
                     val paused = k == Kind.FI && Components.enabled(app, Components.KEY_STREAM)   // paused while streaming
-                    val wanted = if (k == Kind.TEMP) {
-                        Components.enabled(app, Components.KEY_TEMP) || Components.enabled(app, Components.KEY_FPS)
-                    } else {
-                        Components.enabled(app, k.key)
+                    val wanted = when (k) {
+                        Kind.TEMP -> Components.enabled(app, Components.KEY_TEMP) || Components.enabled(app, Components.KEY_FPS)
+                        Kind.CTS -> Components.ctsServiceWanted(app)
+                        else -> Components.enabled(app, k.key)
                     }
                     if (wanted && !paused) start(app, k)
                 }, 3000)

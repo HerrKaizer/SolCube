@@ -29,11 +29,13 @@ public class CtsListener {
     static volatile long holdMs = 400;            // two-finger hold (set from SolCube)
     static final long maxGapMs = 300;
     static volatile boolean touchEnabled = true;  // two-finger trigger on/off (set from SolCube)
+    static volatile boolean touchCts = true, touchRoutine = false;
     static volatile long freezeMs = 0;            // overlay freeze after the CTS call (set from SolCube)
     static volatile String secret;                // shared with SolCube for the ripple-port handshake (set from SolCube)
     // Navigation-bar hold: one finger that lands on the gesture bar (bottom strip, middle of the
     // width) and stays still. Moving it (swipe up = home/recents, sideways = switch apps) cancels.
     static volatile boolean navEnabled = false;
+    static volatile boolean navCts = false, navRoutine = false;
     static volatile long navHoldMs = 450;
     static final float NAV_STRIP = 0.035f;          // bottom 3.5 % of the height (~110 px; vivo's bar window is 72 px)
     static final float NAV_SIDE = 0.2f;             // not the outer 20 % on each side (games' corner buttons)
@@ -107,18 +109,19 @@ public class CtsListener {
                 }
                 try { Thread.sleep(15); } catch (InterruptedException e) { return; }
                 boolean fire = false;
+                boolean isNav = false;
                 float fx = 0.5f, fy = 0.5f;
                 float[] fingers = new float[4];
                 Capture cap = null;
                 synchronized (lock) {
                     if (navSince != 0 && !spent) {
                         long held = now() - navSince;
-                        if (capture == null && held >= captureAfter(navHoldMs)) {
+                        if (navCts && capture == null && held >= captureAfter(navHoldMs)) {
                             capture = new Capture();
                             capture.start();
                         }
                         if (held >= navHoldMs) {
-                            spent = true; navSince = 0; fire = true;
+                            spent = true; navSince = 0; fire = true; isNav = true;
                             cap = capture;
                             int s = navSlot >= 0 ? navSlot : 0;
                             fx = (float) x[s] / maxX; fy = (float) y[s] / maxY;
@@ -127,12 +130,12 @@ public class CtsListener {
                         }
                     } else if (twoSince != 0 && !spent) {
                         long held = now() - twoSince;
-                        if (capture == null && held >= captureAfter(holdMs)) {
+                        if (touchCts && capture == null && held >= captureAfter(holdMs)) {
                             capture = new Capture();
                             capture.start();
                         }
                         if (held >= holdMs) {
-                            spent = true; twoSince = 0; fire = true;
+                            spent = true; twoSince = 0; fire = true; isNav = false;
                             cap = capture;
                             int n = 0; long ax = 0, ay = 0;
                             for (int i = 0; i < SLOTS; i++) if (id[i] >= 0) {
@@ -144,7 +147,15 @@ public class CtsListener {
                         }
                     }
                 }
-                if (fire) fire(fx, fy, fingers, cap);
+                if (fire) {
+                    if (isNav) {
+                        if (navRoutine && triggerRoutine("nav_hold")) pop();
+                        else if (navCts) fire(fx, fy, fingers, cap);
+                    } else {
+                        if (touchRoutine && triggerRoutine("two_finger_hold")) pop();
+                        else if (touchCts) fire(fx, fy, fingers, cap);
+                    }
+                }
             }
         });
         timer.setDaemon(true);
@@ -172,6 +183,13 @@ public class CtsListener {
     static long now() { return System.nanoTime() / 1_000_000; }
 
     static final java.util.concurrent.atomic.AtomicBoolean busy = new java.util.concurrent.atomic.AtomicBoolean();
+
+    static boolean triggerRoutine(String triggerType) {
+        String out = SysSettings.exec("am", "broadcast", "-f", "0x11000020",
+                "-n", "dev.suite/.TestReceiver", "-a", "dev.suite.RT_TRIGGER",
+                "--es", "trigger", triggerType);
+        return out != null && out.contains("data=\"matched\"");
+    }
 
     /** Ripple from (fx, fy) over the captured frame, then Circle to Search. Used by both gestures. */
     static void fire(float fx, float fy, float[] fingers, Capture cap) {

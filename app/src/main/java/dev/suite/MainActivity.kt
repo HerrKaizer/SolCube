@@ -221,11 +221,11 @@ class MainActivity : Activity() {
             enabled(sec) && !canDraw -> "Needs “Display over other apps”"
             else -> idle
         }
-        showSection(ctsTouch, running = s.cts?.optBoolean("touch") == true && ripple,
+        showSection(ctsTouch, running = s.cts?.optBoolean("touch") == true && enabled(ctsTouch) && ripple,
             detail = ctsDetail(ctsTouch, "Hold two fingers still on the screen"))
         showSection(ctsButton, running = s.cts?.optBoolean("button") == true && enabled(ctsButton) && ripple,
             detail = ctsDetail(ctsButton, "Hold the power button (screen on)"))
-        showSection(ctsNav, running = s.cts?.optBoolean("nav") == true && ripple,
+        showSection(ctsNav, running = s.cts?.optBoolean("nav") == true && enabled(ctsNav) && ripple,
             detail = ctsDetail(ctsNav, "Hold one finger still on the navigation bar at the bottom"))
         showSection(holdSec, running = s.cts?.optBoolean("button") == true && enabled(holdSec),
             detail = when {
@@ -416,7 +416,7 @@ class MainActivity : Activity() {
                 else -> ""
             }
             val req = when (name) {
-                "cts" -> Components.ctsTouch(this) || Components.ctsButton(this) || Components.ctsNav(this)
+                "cts" -> Components.ctsServiceWanted(this)
                 "routines" -> Routines.load(this).any { it.optBoolean("on", true) }
                 "profiles" -> Profiles.load(this).any { it.optBoolean("on", true) && Profiles.apps(it).isNotEmpty() }
                 "fi" -> Components.enabled(this, Components.KEY_GAME)
@@ -1692,16 +1692,95 @@ class MainActivity : Activity() {
         PressAction.RING_CYCLE -> "go Ring → Vibrate → Silent"
         PressAction.RING_SILENT -> "turn silent mode on or off"
         PressAction.RING_VIBRATE -> "turn vibrate mode on or off"
+        PressAction.CUSTOM -> pa.customAction(this)?.let { customActionPhrase(it) } ?: "run the action picked below"
         else -> pa.target(this).takeIf { it.isNotEmpty() }?.let { "open ${appName(it)}" } ?: "open the app picked below"
     }
 
-    /** The choices of a power-button action: apps (tap to use, hold to remove), sound modes, [cts]. */
+    private fun customActionPhrase(c: org.json.JSONObject): String {
+        val type = c.optString("type")
+        val allRoutines = if (type == "run_routine") Routines.load(this) else emptyList()
+        val rtName: (String) -> String = { rid -> allRoutines.firstOrNull { it.optString("id") == rid }?.optString("name") ?: "?" }
+        val desc = Actions.describe(c, ::appName, rtName)
+        return when {
+            type in setOf("gemini_cts", "gemini_live", "circle_to_search") -> "open $desc"
+            type == "notice" -> "show $desc"
+            type == "shell_cmd" -> c.optString("cmd").trim().takeIf { it.isNotEmpty() }?.let { "run $it" } ?: "run shell command"
+            c.optString("value") == "toggle" -> "toggle ${Actions.ALL[type] ?: type}"
+            type == "media_control" -> "control media (${Actions.valueText(type, c.optString("value", "play_pause"))})"
+            type in setOf("open_app", "open_url", "run_routine", "go_home", "lock", "wake_screen",
+                "screenshot", "vibrate", "close_app", "close_apps", "launch_bg", "revive", "wait") ->
+                desc.replaceFirstChar { it.lowercase() }
+            else -> "set $desc"
+        }
+    }
+
+    private fun amberChip(t: String, selected: Boolean, onClick: () -> Unit): TextView {
+        val dark = isDark()
+        val bg: Drawable = when {
+            selected && dark -> accentGradient(16.dp)
+            selected -> LiquidGlass(
+                p, 16.dp.toFloat(), dark = false, resources.displayMetrics.density, level = 2,
+                tint = Color.argb(245, 0xE6, 0x9A, 0x28),
+                shine = 0.45f,
+                halo = Color.argb(90, 0xF4, 0xB2, 0x4C),
+                stroke = Color.argb(210, 0xB8, 0x76, 0x0A),
+            )
+            else -> LiquidGlass(
+                p, 16.dp.toFloat(), dark, resources.displayMetrics.density, level = 2,
+                tint = Color.argb(if (dark) 58 else 52, 0xF4, 0xB2, 0x4C),
+                stroke = if (dark) Color.argb(175, 0xFF, 0xCE, 0x4A) else Color.argb(170, 0xB8, 0x76, 0x0A),
+            )
+        }
+        val fg = if (selected) Color.rgb(0x1E, 0x10, 0x02) else p.link
+        return label(t, 13f, fg, bold = true).apply {
+            gravity = Gravity.CENTER
+            setPadding(12.dp, 0, 12.dp, 0)
+            background = ripple(bg, 16.dp)
+            setOnClickListener { onClick() }
+        }
+    }
+
+    private fun pickCustomPressAction(pa: PressAction, rerender: () -> Unit) {
+        val flatKeys = Actions.GROUPS.flatMap { (_, items) -> items.map { it.first } }
+        val groups = Actions.GROUPS.map { (hdr, items) -> hdr to items.map { it.second } }
+        val allRoutines = Routines.load(this)
+        SolCubeDialog.Builder(this).setTitle("Pick action")
+            .setGroupedItems(groups) { _, w ->
+                val k = flatKeys[w]
+                val picked = Actions.defaultAction(k, allowRestore = false, allowToggle = true)
+                pa.setCustomAction(this, picked)
+                rerender()
+                if (k in setOf("revive", "launch_bg", "close_app", "open_app", "notice", "open_url", "shell_cmd", "run_routine")) {
+                    editActionDetail(k, picked, allRoutines, null) {
+                        pa.setCustomAction(this, picked)
+                        rerender()
+                    }
+                } else {
+                    val vals = Actions.values(k, allowRestore = false, allowToggle = true)
+                    if (vals.isNotEmpty()) {
+                        SolCubeDialog.Builder(this).setTitle(Actions.ALL[k] ?: k)
+                            .setItems(vals.map { Actions.valueText(k, it) }.toTypedArray()) { _, vw ->
+                                picked.put("value", vals[vw])
+                                pa.setCustomAction(this, picked)
+                                rerender()
+                            }.show()
+                    }
+                }
+            }.show()
+    }
+
+    /** The choices of a power-button action: apps (tap to use, hold to remove), sound modes, [cts], or any action. */
     private fun renderChoices(box: LinearLayout, pa: PressAction, cts: Boolean, rerender: () -> Unit) {
         val act = pa.action(this)
+        val custom = if (act == PressAction.CUSTOM) pa.customAction(this) else null
+        val allRoutines = if (custom?.optString("type") == "run_routine") Routines.load(this) else emptyList()
+        val rtKey = if (custom?.optString("type") == "run_routine") {
+            allRoutines.firstOrNull { it.optString("id") == custom.optString("routineId") }?.optString("name").orEmpty()
+        } else ""
         val t = pa.target(this)
         val apps = pa.apps(this)
         // called on every 2 s refresh: rebuilding the chips (new glass shaders) each time made the page hitch
-        val key = "$act|$t|${apps.joinToString(",")}|$cts|${isDark()}"
+        val key = "$act|${custom?.toString().orEmpty()}|$rtKey|$t|${apps.joinToString(",")}|$cts|${isDark()}"
         if (box.tag == key) return
         box.tag = key
         box.removeAllViews()
@@ -1733,13 +1812,31 @@ class MainActivity : Activity() {
         others += PressAction.RING_CYCLE to "Ring › Vibrate › Silent"
         others += PressAction.RING_SILENT to "Silent on/off"
         others += PressAction.RING_VIBRATE to "Vibrate on/off"
-        box.addView(hScroll(*others.map { (c, name) ->
+        val chips = others.map { (c, name) ->
             chip(name, act == c) {
                 pa.setAction(this, c)
                 rerender()
                 if (c.startsWith("ring:")) io.execute { Ringer.ensureAccess(this) }   // instant changes (silent needs DND access)
             }
-        }.toTypedArray()), LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 6.dp })
+        } + amberChip("Other", act == PressAction.CUSTOM) {
+            pickCustomPressAction(pa, rerender)
+        }
+        box.addView(hScroll(*chips.toTypedArray()), LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 6.dp })
+
+        if (custom != null) {
+            val rtList = if (custom.optString("type") == "run_routine") allRoutines else Routines.load(this)
+            val rtName: (String) -> String = { rid -> rtList.firstOrNull { it.optString("id") == rid }?.optString("name") ?: "Pick routine" }
+            val customRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+            customRow.addView(label(Actions.describe(custom, ::appName, rtName), 13.5f, p.fg, bold = true).apply {
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+            }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            addActionOptionChips(customRow, custom, isRoutine = false, allowToggle = true, allRoutines = rtList, selfRoutineId = null) {
+                pa.setCustomAction(this, custom)
+                rerender()
+            }
+            box.addView(customRow, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 10.dp })
+        }
     }
 
     private fun pickSingleApp(title: String, exclude: Collection<String>, onPick: (String) -> Unit) {
@@ -2570,6 +2667,104 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun editActionDetail(
+        k: String,
+        act: org.json.JSONObject,
+        allRoutines: List<org.json.JSONObject>,
+        selfRoutineId: String?,
+        rebuild: () -> Unit,
+    ) {
+        val selectableRoutines = allRoutines.filter { it.optString("id") != selfRoutineId }
+        when (k) {
+            "revive" -> pickReviveApps(act.optJSONArray("apps") ?: org.json.JSONArray().also { act.put("apps", it) }) { rebuild() }
+            "launch_bg" -> pickMultiApps("Launch in background", act.optJSONArray("apps") ?: org.json.JSONArray().also { act.put("apps", it) }, userOnly = false) { rebuild() }
+            "close_app" -> pickMultiApps("Close these apps", act.optJSONArray("apps") ?: org.json.JSONArray().also { act.put("apps", it) }, userOnly = false) { rebuild() }
+            "close_apps" -> pickMultiApps("Keep these apps open", act.optJSONArray("except") ?: org.json.JSONArray().also { act.put("except", it) }, userOnly = false) { rebuild() }
+            "open_app" -> pickSingleApp("Open app", emptyList()) { pkg -> act.put("pkg", pkg); rebuild() }
+            "notice" -> promptText("Status pill text", act.optString("text"), "Message to show") { t -> act.put("text", t); rebuild() }
+            "open_url" -> promptText("Open link / URL", act.optString("url"), "https://example.com") { u -> act.put("url", u); rebuild() }
+            "shell_cmd" -> promptText("Shell command", act.optString("cmd"), "e.g. input keyevent 3") { c -> act.put("cmd", c); rebuild() }
+            "run_routine" -> {
+                if (selectableRoutines.isEmpty()) { toast("No other routines"); return }
+                SolCubeDialog.Builder(this).setTitle("Run routine")
+                    .setItems(selectableRoutines.map { it.optString("name") }.toTypedArray()) { _, w ->
+                        act.put("routineId", selectableRoutines[w].optString("id")); rebuild()
+                    }.show()
+            }
+        }
+    }
+
+    private fun addActionOptionChips(
+        row: LinearLayout,
+        a: org.json.JSONObject,
+        isRoutine: Boolean,
+        allowToggle: Boolean,
+        allRoutines: List<org.json.JSONObject>,
+        selfRoutineId: String?,
+        onUpdate: () -> Unit,
+    ) {
+        val at = a.optString("type")
+        val rtName: (String) -> String = { rid -> allRoutines.firstOrNull { it.optString("id") == rid }?.optString("name") ?: "Pick routine" }
+        val vals = Actions.values(at, allowRestore = isRoutine, allowToggle = allowToggle)
+        when (at) {
+            "revive", "launch_bg", "close_app" -> {
+                val apps = a.optJSONArray("apps") ?: org.json.JSONArray().also { a.put("apps", it) }
+                row.addView(chip("${apps.length()} apps", false) { editActionDetail(at, a, allRoutines, selfRoutineId, onUpdate) },
+                    LinearLayout.LayoutParams(WRAP_CONTENT, 32.dp).apply { leftMargin = 6.dp })
+            }
+            "close_apps" -> {
+                val except = a.optJSONArray("except") ?: org.json.JSONArray().also { a.put("except", it) }
+                row.addView(chip(if (except.length() == 0) "Except…" else "Keep ${except.length()}", except.length() > 0) {
+                    editActionDetail(at, a, allRoutines, selfRoutineId, onUpdate)
+                }, LinearLayout.LayoutParams(WRAP_CONTENT, 32.dp).apply { leftMargin = 6.dp })
+            }
+            "open_app" -> {
+                val pkg = a.optString("pkg")
+                row.addView(chip(if (pkg.isEmpty()) "Pick app" else appName(pkg).take(14), pkg.isNotEmpty()) {
+                    editActionDetail(at, a, allRoutines, selfRoutineId, onUpdate)
+                }, LinearLayout.LayoutParams(WRAP_CONTENT, 32.dp).apply { leftMargin = 6.dp })
+            }
+            "notice" -> {
+                val t = a.optString("text")
+                row.addView(chip(if (t.isEmpty()) "Set text" else t.take(14), t.isNotEmpty()) {
+                    editActionDetail(at, a, allRoutines, selfRoutineId, onUpdate)
+                }, LinearLayout.LayoutParams(WRAP_CONTENT, 32.dp).apply { leftMargin = 6.dp })
+            }
+            "open_url" -> {
+                val u = a.optString("url")
+                val shortU = u.removePrefix("https://").removePrefix("http://").take(14)
+                row.addView(chip(if (u.isEmpty()) "Set URL" else shortU, u.isNotEmpty()) {
+                    editActionDetail(at, a, allRoutines, selfRoutineId, onUpdate)
+                }, LinearLayout.LayoutParams(WRAP_CONTENT, 32.dp).apply { leftMargin = 6.dp })
+            }
+            "shell_cmd" -> {
+                val c = a.optString("cmd")
+                row.addView(chip(if (c.isEmpty()) "Set cmd" else c.take(14), c.isNotEmpty()) {
+                    editActionDetail(at, a, allRoutines, selfRoutineId, onUpdate)
+                }, LinearLayout.LayoutParams(WRAP_CONTENT, 32.dp).apply { leftMargin = 6.dp })
+            }
+            "run_routine" -> {
+                val rid = a.optString("routineId")
+                row.addView(chip(if (rid.isEmpty()) "Pick routine" else rtName(rid).take(14), rid.isNotEmpty()) {
+                    editActionDetail(at, a, allRoutines, selfRoutineId, onUpdate)
+                }, LinearLayout.LayoutParams(WRAP_CONTENT, 32.dp).apply { leftMargin = 6.dp })
+            }
+        }
+        if (vals.isNotEmpty()) {
+            val v = a.optString("value", vals.first())
+            row.addView(chip(Actions.valueText(at, v), false) {
+                if (vals.size <= 6) {
+                    a.put("value", vals[(vals.indexOf(v) + 1) % vals.size]); onUpdate()
+                } else {
+                    SolCubeDialog.Builder(this).setTitle(Actions.ALL[at] ?: at)
+                        .setItems(vals.map { Actions.valueText(at, it) }.toTypedArray()) { _, w ->
+                            a.put("value", vals[w]); onUpdate()
+                        }.show()
+                }
+            }, LinearLayout.LayoutParams(WRAP_CONTENT, 32.dp).apply { leftMargin = 6.dp })
+        }
+    }
+
     private fun renderActionsEditor(
         doCard: LinearLayout,
         acts: org.json.JSONArray,
@@ -2578,91 +2773,13 @@ class MainActivity : Activity() {
         selfRoutineId: String?,
         rebuild: () -> Unit,
     ) {
-        val rtName: (String) -> String = { rid -> allRoutines.firstOrNull { it.optString("id") == rid }?.optString("name") ?: "Pick routine" }
-        val selectableRoutines = allRoutines.filter { it.optString("id") != selfRoutineId }
-        fun editActionDetail(k: String, act: org.json.JSONObject) {
-            when (k) {
-                "revive" -> pickReviveApps(act.optJSONArray("apps") ?: org.json.JSONArray().also { act.put("apps", it) }) { rebuild() }
-                "launch_bg" -> pickMultiApps("Launch in background", act.optJSONArray("apps") ?: org.json.JSONArray().also { act.put("apps", it) }, userOnly = false) { rebuild() }
-                "close_app" -> pickMultiApps("Close these apps", act.optJSONArray("apps") ?: org.json.JSONArray().also { act.put("apps", it) }, userOnly = false) { rebuild() }
-                "open_app" -> pickSingleApp("Open app", emptyList()) { pkg -> act.put("pkg", pkg); rebuild() }
-                "notice" -> promptText("Status pill text", act.optString("text"), "Message to show") { t -> act.put("text", t); rebuild() }
-                "open_url" -> promptText("Open link / URL", act.optString("url"), "https://example.com") { u -> act.put("url", u); rebuild() }
-                "shell_cmd" -> promptText("Shell command", act.optString("cmd"), "e.g. input keyevent 3") { c -> act.put("cmd", c); rebuild() }
-                "run_routine" -> {
-                    if (selectableRoutines.isEmpty()) { toast("No other routines"); return }
-                    SolCubeDialog.Builder(this).setTitle("Run routine")
-                        .setItems(selectableRoutines.map { it.optString("name") }.toTypedArray()) { _, w ->
-                            act.put("routineId", selectableRoutines[w].optString("id")); rebuild()
-                        }.show()
-                }
-            }
-        }
-
         for (i in 0 until acts.length()) {
             val a = acts.getJSONObject(i)
             val at = a.optString("type")
             val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
             row.addView(label("${i + 1}.  " + (Actions.ALL[at] ?: at), 14.5f, p.fg),
                 LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-            val vals = Actions.values(at, allowRestore = isRoutine)
-            when (at) {
-                "revive", "launch_bg", "close_app" -> {
-                    val apps = a.optJSONArray("apps") ?: org.json.JSONArray().also { a.put("apps", it) }
-                    row.addView(chip("${apps.length()} apps", false) { editActionDetail(at, a) },
-                        LinearLayout.LayoutParams(WRAP_CONTENT, 32.dp))
-                }
-                "close_apps" -> {
-                    val except = a.optJSONArray("except") ?: org.json.JSONArray().also { a.put("except", it) }
-                    row.addView(chip(if (except.length() == 0) "Except…" else "Keep ${except.length()}", except.length() > 0) {
-                        pickMultiApps("Keep these apps open", except, userOnly = false) { rebuild() }
-                    }, LinearLayout.LayoutParams(WRAP_CONTENT, 32.dp))
-                }
-                "open_app" -> {
-                    val pkg = a.optString("pkg")
-                    row.addView(chip(if (pkg.isEmpty()) "Pick app" else appName(pkg).take(14), pkg.isNotEmpty()) {
-                        editActionDetail(at, a)
-                    }, LinearLayout.LayoutParams(WRAP_CONTENT, 32.dp))
-                }
-                "notice" -> {
-                    val t = a.optString("text")
-                    row.addView(chip(if (t.isEmpty()) "Set text" else t.take(14), t.isNotEmpty()) {
-                        editActionDetail(at, a)
-                    }, LinearLayout.LayoutParams(WRAP_CONTENT, 32.dp))
-                }
-                "open_url" -> {
-                    val u = a.optString("url")
-                    val shortU = u.removePrefix("https://").removePrefix("http://").take(14)
-                    row.addView(chip(if (u.isEmpty()) "Set URL" else shortU, u.isNotEmpty()) {
-                        editActionDetail(at, a)
-                    }, LinearLayout.LayoutParams(WRAP_CONTENT, 32.dp))
-                }
-                "shell_cmd" -> {
-                    val c = a.optString("cmd")
-                    row.addView(chip(if (c.isEmpty()) "Set cmd" else c.take(14), c.isNotEmpty()) {
-                        editActionDetail(at, a)
-                    }, LinearLayout.LayoutParams(WRAP_CONTENT, 32.dp))
-                }
-                "run_routine" -> {
-                    val rid = a.optString("routineId")
-                    row.addView(chip(if (rid.isEmpty()) "Pick routine" else rtName(rid).take(14), rid.isNotEmpty()) {
-                        editActionDetail(at, a)
-                    }, LinearLayout.LayoutParams(WRAP_CONTENT, 32.dp))
-                }
-            }
-            if (vals.isNotEmpty()) {
-                val v = a.optString("value", vals.first())
-                row.addView(chip(Actions.valueText(at, v), false) {
-                    if (vals.size <= 6) {
-                        a.put("value", vals[(vals.indexOf(v) + 1) % vals.size]); rebuild()
-                    } else {
-                        SolCubeDialog.Builder(this).setTitle(Actions.ALL[at] ?: at)
-                            .setItems(vals.map { Actions.valueText(at, it) }.toTypedArray()) { _, w ->
-                                a.put("value", vals[w]); rebuild()
-                            }.show()
-                    }
-                }, LinearLayout.LayoutParams(WRAP_CONTENT, 32.dp))
-            }
+            addActionOptionChips(row, a, isRoutine = isRoutine, allowToggle = false, allRoutines = allRoutines, selfRoutineId = selfRoutineId, onUpdate = rebuild)
             if (i > 0) row.addView(label("↑", 15f, p.sub).apply {
                 gravity = Gravity.CENTER
                 background = ripple(null, 16.dp)
@@ -2687,7 +2804,7 @@ class MainActivity : Activity() {
                     acts.put(act)
                     rebuild()
                     if (k in setOf("open_app", "launch_bg", "close_app", "notice", "open_url", "shell_cmd", "run_routine")) {
-                        editActionDetail(k, act)
+                        editActionDetail(k, act, allRoutines, selfRoutineId, rebuild)
                     }
                 }.show()
         }, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = 6.dp; leftMargin = (-12).dp })
@@ -3060,6 +3177,35 @@ class MainActivity : Activity() {
                     else -> "Two fingers a little apart, draw it big, anywhere. Not on the lock screen."
                 }, 12f, p.sub)
                     .apply { setPadding(0, 6.dp, 0, 0) })
+            }
+
+            if (type in setOf("two_finger_hold", "power_hold", "nav_hold")) {
+                when (type) {
+                    "two_finger_hold" -> addHoldStepper(whenCard, Components.KEY_TOUCH_HOLD) { Components.touchHold(this) }
+                    "power_hold" -> addHoldStepper(whenCard, Components.KEY_BUTTON_HOLD) { Components.buttonHold(this) }
+                    "nav_hold" -> addHoldStepper(whenCard, Components.KEY_NAV_HOLD) { Components.navHold(this) }
+                }
+                whenCard.addView(label("Shares this hold duration with Shortcuts. When this routine's schedule and conditions match, it runs instead of the Shortcuts card.",
+                    12f, p.sub).apply { setPadding(0, 6.dp, 0, 0) })
+            }
+
+            if (type == "double_press") {
+                if (!DoublePress.ready(this)) {
+                    whenCard.addView(label("Double power press isn't handled by SolCube yet.",
+                        12f, p.sub).apply { setPadding(0, 8.dp, 0, 0) })
+                    whenCard.addView(textButton("Set up double press") {
+                        io.execute {
+                            val ok = DoublePress.makeDefault(this)
+                            main.post {
+                                if (!ok) toast("Couldn't set it (is Shizuku running?)")
+                                rebuild()
+                            }
+                        }
+                    }, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { leftMargin = (-12).dp })
+                } else {
+                    whenCard.addView(label("Runs instead of the Double power press card when this routine's schedule and conditions match.",
+                        12f, p.sub).apply { setPadding(0, 8.dp, 0, 0) })
+                }
             }
 
             if (type == "time") {

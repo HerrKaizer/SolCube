@@ -176,6 +176,9 @@ object Components {
     fun navHold(ctx: Context) = prefs(ctx).getInt(KEY_NAV_HOLD, 450)
     fun holdAction(ctx: Context) = prefs(ctx).getBoolean(KEY_HOLD_ACT, false)
 
+    fun ctsServiceWanted(ctx: Context): Boolean =
+        ctsTouch(ctx) || ctsButton(ctx) || ctsNav(ctx) || holdAction(ctx) || Routines.needsCtsListener(ctx)
+
     const val KEY_FREEZE = "cts_freeze"
     // Tested 2026-11-15: with the ripple in the accessibility overlay, Circle to Search's screenshot
     // stays clean even at 0 ms, so the ripple starts right away (RippleHost keeps 250 ms for the
@@ -183,15 +186,45 @@ object Components {
     const val DEFAULT_FREEZE = 0
     fun freeze(ctx: Context) = prefs(ctx).getInt(KEY_FREEZE, DEFAULT_FREEZE)
 
-    fun ctsConfig(ctx: Context): String = JSONObject()
-        // two-finger holds happen all the time while playing on the phone-as-pad
-        .put("touch", ctsTouch(ctx) && !enabled(ctx, KEY_STREAM))
-        // one physical gesture: Circle to Search OR the hold card's action, never both
-        .put("button", ctsButton(ctx) || holdAction(ctx)).put("buttonCts", !holdAction(ctx))
-        .put("nav", ctsNav(ctx) && !enabled(ctx, KEY_STREAM)).put("navHold", navHold(ctx))
-        .put("touchHold", touchHold(ctx)).put("buttonHold", buttonHold(ctx))
-        .put("freeze", freeze(ctx))
-        .put("secret", Ipc.secret(ctx)).toString()   // ripple-port handshake (see Ipc)
+    fun ctsConfig(ctx: Context): String {
+        val streaming = enabled(ctx, KEY_STREAM)
+        val touchCts = ctsTouch(ctx) && !streaming
+        val touchRt = Routines.hasEnabledTrigger(ctx, "two_finger_hold") && !streaming
+        val navCts = ctsNav(ctx) && !streaming
+        val navRt = Routines.hasEnabledTrigger(ctx, "nav_hold") && !streaming
+        val btnCts = ctsButton(ctx)
+        val btnAct = holdAction(ctx)
+        val btnRt = Routines.hasEnabledTrigger(ctx, "power_hold")
+        return JSONObject()
+            // two-finger / nav holds pause while the phone is the game pad
+            .put("touch", touchCts || touchRt)
+            .put("touchCts", touchCts)
+            .put("touchRoutine", touchRt)
+            // one physical gesture: routine (when matched), else Circle to Search OR the hold card's action
+            .put("button", btnCts || btnAct || btnRt)
+            .put("buttonCts", btnCts)
+            .put("buttonAct", btnAct)
+            .put("buttonRoutine", btnRt)
+            .put("nav", navCts || navRt)
+            .put("navCts", navCts)
+            .put("navRoutine", navRt)
+            .put("navHold", navHold(ctx))
+            .put("touchHold", touchHold(ctx))
+            .put("buttonHold", buttonHold(ctx))
+            .put("freeze", freeze(ctx))
+            .put("secret", Ipc.secret(ctx)).toString()   // ripple-port handshake (see Ipc)
+    }
+
+    /** Starts, reconfigures, or stops the CTS/hold listener service to match active triggers. Call off the main thread. */
+    fun syncCts(ctx: Context) {
+        val any = ctsServiceWanted(ctx)
+        prefs(ctx).edit().putBoolean(KEY_CTS, any).commit()
+        SolCubeService.sync(ctx)                    // the ripple overlay lives in the app
+        if (!any) { Shell.stop(ctx, Shell.Kind.CTS); return }
+        val s = Shell.service(Shell.Kind.CTS)
+        if (s == null) Shell.start(ctx, Shell.Kind.CTS)
+        else runCatching { s.configure(ctsConfig(ctx)) }   // button off -> it restarts itself
+    }
 
     /** Turns one trigger on/off. The listener runs while either is on. Call off the main thread. */
     fun setCtsTrigger(ctx: Context, key: String, on: Boolean) {
@@ -201,13 +234,7 @@ object Components {
             if (on && key == KEY_CTS_BUTTON) e.putBoolean(KEY_HOLD_ACT, false)
             if (on && key == KEY_HOLD_ACT) e.putBoolean(KEY_CTS_BUTTON, false)
         }.commit()
-        val any = ctsTouch(ctx) || ctsButton(ctx) || ctsNav(ctx) || holdAction(ctx)
-        prefs(ctx).edit().putBoolean(KEY_CTS, any).commit()
-        SolCubeService.sync(ctx)                    // the ripple overlay lives in the app
-        if (!any) { Shell.stop(ctx, Shell.Kind.CTS); return }
-        val s = Shell.service(Shell.Kind.CTS)
-        if (s == null) Shell.start(ctx, Shell.Kind.CTS)
-        else runCatching { s.configure(ctsConfig(ctx)) }   // button off -> it restarts itself
+        syncCts(ctx)
     }
 
     fun setHold(ctx: Context, key: String, ms: Int) {
@@ -252,7 +279,10 @@ object Components {
     /** Starts whatever is enabled but not running (after a reboot, when Shizuku comes back, after a crash). */
     fun reconcile(ctx: Context) {
         if (Shell.state() != Shell.State.READY) return
-        if (enabled(ctx, KEY_CTS)) Shell.start(ctx, Shell.Kind.CTS)
+        if (ctsServiceWanted(ctx)) {
+            prefs(ctx).edit().putBoolean(KEY_CTS, true).commit()
+            Shell.start(ctx, Shell.Kind.CTS)
+        }
         if (enabled(ctx, KEY_GAME) && !enabled(ctx, KEY_STREAM)) Shell.start(ctx, Shell.Kind.FI)   // paused while streaming
         if (enabled(ctx, KEY_SR)) Shell.start(ctx, Shell.Kind.SR)
         if (enabled(ctx, KEY_MIX)) Shell.start(ctx, Shell.Kind.MIX)
