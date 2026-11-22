@@ -53,6 +53,7 @@ object Actions {
         ),
         "SolCube & Utilities" to listOf(
             "play_together" to "Play together",
+            "frame_interp" to "Frame interpolation",
             "super_res" to "Super resolution",
             "notice" to "Show status pill",
             "vibrate" to "Vibrate (done)",
@@ -73,7 +74,7 @@ object Actions {
         "wifi", "data", "bluetooth", "nfc", "airplane", "location", "auto_sync",
         "ringer", "dnd", "media", "ring_vol", "notif_vol", "alarm_vol",
         "brightness", "auto_brightness", "dark_mode", "rotation", "screen_timeout",
-        "keep_awake", "extra_dim", "grayscale", "saver", "boost", "play_together", "super_res",
+        "keep_awake", "extra_dim", "grayscale", "saver", "boost", "play_together", "frame_interp", "super_res",
     )
 
     fun values(type: String, allowRestore: Boolean): List<String> {

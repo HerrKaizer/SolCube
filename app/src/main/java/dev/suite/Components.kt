@@ -213,18 +213,21 @@ object Components {
         prefs(ctx).edit().putBoolean(KEY_GAME, on).commit()
         SolCubeService.sync(ctx)                    // the service re-attaches after reboots
         if (on) Shell.start(ctx, Shell.Kind.FI) else Shell.stop(ctx, Shell.Kind.FI)
+        FeatureTile.refreshAll(ctx)
     }
 
     fun setSr(ctx: Context, on: Boolean) {
         prefs(ctx).edit().putBoolean(KEY_SR, on).commit()
         SolCubeService.sync(ctx)
         if (on) Shell.start(ctx, Shell.Kind.SR) else Shell.stop(ctx, Shell.Kind.SR)
+        FeatureTile.refreshAll(ctx)
     }
 
     fun setMix(ctx: Context, on: Boolean) {
         prefs(ctx).edit().putBoolean(KEY_MIX, on).commit()
         SolCubeService.sync(ctx)
         if (on) Shell.start(ctx, Shell.Kind.MIX) else Shell.stop(ctx, Shell.Kind.MIX)
+        FeatureTile.refreshAll(ctx)
     }
 
     fun setTemp(ctx: Context, on: Boolean) {

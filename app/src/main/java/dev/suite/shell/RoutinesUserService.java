@@ -122,7 +122,11 @@ public class RoutinesUserService extends ISolCubeService.Stub {
     }
 
     private volatile boolean observing;
-    private boolean armed, needLock, needApp, needCharge, needAudioBt, needDnd, needAirplane, needPowerMode;
+    private boolean armed, needLock, needApp, needCharge, needAudioBt, needDnd, needAirplane, needPowerMode, needMisc, needDark;
+    private String lastMisc;
+    private Boolean lastDark;
+    private volatile long screenOffSince = 0;   // 0 = screen on (or unknown)
+    private final Map<String, Long> heldSince = new HashMap<>();   // debounce for media_stop
     private int fastCycle;
     private Boolean wasLocked, wasInteractive, wasCharging, wasHeadphones;
     private String lastZen, lastAir, lastPowerMode, lastFrontPkg = "";
@@ -135,14 +139,14 @@ public class RoutinesUserService extends ISolCubeService.Stub {
             if (!armed) {
                 wasLocked = null; wasInteractive = null;
                 wasCharging = null; wasHeadphones = null; lastBtSet = null;
-                lastZen = null; lastAir = null; lastPowerMode = null;
+                lastZen = null; lastAir = null; lastPowerMode = null; lastMisc = null; lastDark = null;
                 return;
             }
             try {
                 fastCycle++;
                 boolean interactive = true;
                 boolean locked = false;
-                if (needLock || needApp) {
+                if (needLock || needApp || needMisc) {
                     if (wm == null) {
                         Method get = Class.forName("android.os.ServiceManager").getMethod("getService", String.class);
                         wm = Class.forName("android.view.IWindowManager$Stub").getMethod("asInterface", IBinder.class)
@@ -160,6 +164,8 @@ public class RoutinesUserService extends ISolCubeService.Stub {
                         if (wasLocked != null && wasLocked && !locked) { unlockEvents = true; evaluate("unlock"); }
                         if (wasLocked != null && !wasLocked && locked) evaluate("lock");
                     }
+                    if (!interactive && screenOffSince == 0) screenOffSince = System.currentTimeMillis();
+                    if (interactive) screenOffSince = 0;
                     wasLocked = locked;
                     wasInteractive = interactive;
                 }
@@ -199,6 +205,33 @@ public class RoutinesUserService extends ISolCubeService.Stub {
                     String a = SysSettings.get("global", "airplane_mode_on");
                     if (lastAir != null && !lastAir.equals(a)) evaluate("airplane");
                     lastAir = a;
+                }
+                if (needMisc) {
+                    // game / media / call / rotation / switches / sound mode (+ dark mode every 6 s)
+                    StringBuilder sb = new StringBuilder();
+                    String game = SysSettings.get("secure", "current_game_package");
+                    sb.append(game == null ? "" : game).append('|');
+                    sb.append(interactive && !locked ? ShellActions.frontTask().pkg : "").append('|');
+                    try {
+                        AudioManager am = ctx != null ? ctx.getSystemService(AudioManager.class) : null;
+                        if (am != null) sb.append(am.isMusicActive()).append('|').append(am.getMode()).append('|');
+                    } catch (Throwable ignored) {}
+                    try {
+                        DisplayManager dm = ctx != null ? ctx.getSystemService(DisplayManager.class) : null;
+                        Display d = dm != null ? dm.getDisplay(Display.DEFAULT_DISPLAY) : null;
+                        if (d != null) sb.append(d.getRotation()).append('|');
+                    } catch (Throwable ignored) {}
+                    sb.append(SysSettings.get("global", "bluetooth_on")).append('|')
+                      .append(SysSettings.get("global", "wifi_on")).append('|')
+                      .append(ShellActions.read("data")).append('|')
+                      .append(SysSettings.get("global", "mode_ringer")).append('|');
+                    if (needDark) {
+                        if (lastDark == null || fastCycle % 4 == 0) lastDark = new Snapshot().darkMode();
+                        sb.append(lastDark);
+                    }
+                    String m = sb.toString();
+                    if (lastMisc != null && !lastMisc.equals(m)) evaluate("misc");
+                    lastMisc = m;
                 }
                 if (needPowerMode) {
                     String pmVal = SysSettings.get("system", "power_save_type") + ":" + SysSettings.get("global", "low_power");
@@ -435,7 +468,7 @@ public class RoutinesUserService extends ISolCubeService.Stub {
         try {
             long now = System.currentTimeMillis();
             Snapshot snap = new Snapshot();
-            boolean nLock = false, nApp = false, nCharge = false, nAudioBt = false, nDnd = false, nAir = false, nPwr = false;
+            boolean nLock = false, nApp = false, nCharge = false, nAudioBt = false, nDnd = false, nAir = false, nPwr = false, nMisc = false, nDark = false;
             for (int i = 0; i < routines.length(); i++) {
                 JSONObject r = routines.getJSONObject(i);
                 if (!r.optBoolean("on", true)) continue;
@@ -448,6 +481,9 @@ public class RoutinesUserService extends ISolCubeService.Stub {
                     if (type.equals("unlock") || type.equals("lock") || type.equals("screen_on") || type.equals("screen_off")) nLock = true;
                     if (type.equals("app_open") || type.equals("app_close")) nApp = true;
                     if (type.equals("charging_on") || type.equals("charging_off")) nCharge = true;
+                    if (type.equals("screen_off_for")) nLock = true;
+                    if (MISC.contains(type)) nMisc = true;
+                    if (type.equals("dark_on") || type.equals("dark_off")) { nMisc = true; nDark = true; }
                     if (type.equals("bt_connect") || type.equals("bt_disconnect")
                             || type.equals("headphones_connect") || type.equals("headphones_disconnect")) nAudioBt = true;
                     if (!observing) {
@@ -512,6 +548,7 @@ public class RoutinesUserService extends ISolCubeService.Stub {
                     }
                     case "charging_off":
                     case "headphones_disconnect":
+                    case "game_close":
                     case "app_close": {
                         boolean raw = rawActive(t, type, snap);
                         Boolean prev = prevRaw.put(id, raw);
@@ -532,7 +569,9 @@ public class RoutinesUserService extends ISolCubeService.Stub {
             needDnd = nDnd;
             needAirplane = nAir;
             needPowerMode = nPwr;
-            setArmed(nLock || nApp || nCharge || nAudioBt || nDnd || nAir || nPwr);
+            needMisc = nMisc;
+            needDark = nDark;
+            setArmed(nLock || nApp || nCharge || nAudioBt || nDnd || nAir || nPwr || nMisc);
         } catch (Throwable t) {
             L.e("evaluate", t);
         }
@@ -544,6 +583,8 @@ public class RoutinesUserService extends ISolCubeService.Stub {
                 return matchesCharger(t.optString("mode", "any"), snap.battery());
             case "headphones_disconnect":
                 return snap.headphones();
+            case "game_close":
+                return isGameInFront(snap);
             case "app_close": {
                 Set<String> apps = strSet(t.optJSONArray("apps"));
                 return !apps.isEmpty() && apps.contains(snap.frontApp());
@@ -574,6 +615,43 @@ public class RoutinesUserService extends ISolCubeService.Stub {
             }
             case "temp_above":
                 return snap.battery().tempTenths >= t.optInt("temp", 42) * 10;
+            case "temp_below":
+                return snap.battery().tempTenths > 0 && snap.battery().tempTenths <= t.optInt("temp", 38) * 10;
+            case "screen_off_for": {
+                // fires once the screen has been off this long (the fast loop notes when it went off)
+                if (snap.interactive() || screenOffSince == 0) return false;
+                long waitMs = Math.max(1, t.optInt("minutes", 10)) * 60_000L;
+                long left = screenOffSince + waitMs - now;
+                if (left > 0) {
+                    if (left < TICK) h.postDelayed(() -> evaluate("screen_off_for"), left + 300L);
+                    return false;
+                }
+                return true;
+            }
+            case "game_open": return isGameInFront(snap);
+            case "media_start": return snap.mediaPlaying();
+            case "media_stop": {
+                // a short gap between tracks isn't "stopped": wait 4 s
+                if (snap.mediaPlaying()) { heldSince.remove(id); return false; }
+                Long since = heldSince.get(id);
+                if (since == null) { heldSince.put(id, now); h.postDelayed(() -> evaluate("misc"), 4300L); return false; }
+                return now - since >= 4000L;
+            }
+            case "call_start": return snap.inCall();
+            case "call_end": return !snap.inCall();
+            case "landscape": return snap.landscape();
+            case "portrait": return !snap.landscape();
+            case "bt_on": return "on".equals(read("bluetooth"));
+            case "bt_off": return "off".equals(read("bluetooth"));
+            case "wifi_on": return "on".equals(read("wifi"));
+            case "wifi_switched_off": return "off".equals(read("wifi"));
+            case "data_on": return "on".equals(read("data"));
+            case "data_off": return "off".equals(read("data"));
+            case "ringer_normal": return "normal".equals(read("ringer"));
+            case "ringer_vibrate": return "vibrate".equals(read("ringer"));
+            case "ringer_silent": return "silent".equals(read("ringer"));
+            case "dark_on": return snap.darkMode();
+            case "dark_off": return !snap.darkMode();
             case "bt_connect": {
                 Set<String> cur = snap.connectedBt();
                 if (cur.isEmpty()) return false;
@@ -618,6 +696,18 @@ public class RoutinesUserService extends ISolCubeService.Stub {
             }
         }
         return false;
+    }
+
+    /** Trigger types the fast loop watches through its "misc" signature. */
+    private static final Set<String> MISC = new HashSet<>(java.util.Arrays.asList(
+            "game_open", "game_close", "media_start", "media_stop", "call_start", "call_end", "landscape", "portrait",
+            "bt_on", "bt_off", "wifi_on", "wifi_switched_off", "data_on", "data_off",
+            "ringer_normal", "ringer_vibrate", "ringer_silent"));
+
+    /** vivo Game Cube sets current_game_package while one of its games runs; it counts while that game is in front. */
+    private static boolean isGameInFront(Snapshot snap) {
+        String g = SysSettings.get("secure", "current_game_package");
+        return g != null && !g.isEmpty() && !"null".equals(g) && g.equals(snap.frontApp());
     }
 
     private static long wifiGoneWaitMs(JSONObject t) {

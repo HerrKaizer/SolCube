@@ -22,12 +22,22 @@ object Routines {
             "wifi_off" to "Wi-Fi is off",
             "airplane_on" to "Airplane mode on",
             "airplane_off" to "Airplane mode off",
+            "wifi_on" to "Wi-Fi turned on",
+            "wifi_switched_off" to "Wi-Fi turned off",
+            "data_on" to "Mobile data on",
+            "data_off" to "Mobile data off",
         ),
         "Bluetooth & Audio" to listOf(
             "bt_connect" to "Bluetooth connects",
             "bt_disconnect" to "Bluetooth disconnects",
+            "bt_on" to "Bluetooth turned on",
+            "bt_off" to "Bluetooth turned off",
             "headphones_connect" to "Headphones connected",
             "headphones_disconnect" to "Headphones disconnected",
+            "media_start" to "Media starts playing",
+            "media_stop" to "Media stops playing",
+            "call_start" to "Call starts or rings",
+            "call_end" to "Call ends",
         ),
         "Battery & Power" to listOf(
             "charging_on" to "Charger connected",
@@ -39,16 +49,29 @@ object Routines {
             "boost_on" to "Boost mode on",
             "boost_off" to "Boost mode off",
             "temp_above" to "Battery temperature high",
+            "temp_below" to "Battery cooled down",
         ),
         "Device & Screen" to listOf(
             "unlock" to "Phone unlocked",
             "lock" to "Phone locked",
             "screen_on" to "Screen turns on",
             "screen_off" to "Screen turns off",
+            "screen_off_for" to "Screen off for a while",
+            "landscape" to "Turned to landscape",
+            "portrait" to "Turned to portrait",
             "dnd_on" to "Do Not Disturb on",
             "dnd_off" to "Do Not Disturb off",
+            "ringer_normal" to "Sound mode: ring",
+            "ringer_vibrate" to "Sound mode: vibrate",
+            "ringer_silent" to "Sound mode: silent",
+            "dark_on" to "Dark mode on",
+            "dark_off" to "Dark mode off",
+        ),
+        "Apps & Games" to listOf(
             "app_open" to "App opened",
             "app_close" to "App closed",
+            "game_open" to "Any game opened",
+            "game_close" to "Game closed",
         ),
         "Schedule" to listOf(
             "time" to "At a time",
@@ -326,6 +349,8 @@ object Routines {
             "battery_below" -> "Battery ≤ ${t.optInt("percent", 20)}%"
             "battery_above" -> "Battery ≥ ${t.optInt("percent", 80)}%"
             "temp_above" -> "Battery temp ≥ ${t.optInt("temp", 42)} °C"
+            "temp_below" -> "Battery temp ≤ ${t.optInt("temp", 38)} °C"
+            "screen_off_for" -> "Screen off for ${t.optInt("minutes", 10)} min"
             "app_open" -> "When $appText opens"
             "app_close" -> "When $appText closes"
             "gesture" -> t.optString("gesture").takeIf { it.isNotEmpty() }?.let { gestureName(it) }

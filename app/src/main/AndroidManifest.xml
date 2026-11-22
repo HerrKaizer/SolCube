@@ -122,6 +122,35 @@
                 android:value="Temperature overlay and the Circle to Search ripple overlay" />
         </service>
 
+        <!-- Quick Settings tiles: the same switches as the cards -->
+        <service
+            android:name=".FiTile"
+            android:label="Frame interpolation"
+            android:icon="@drawable/ic_tile_fi"
+            android:exported="true"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter><action android:name="android.service.quicksettings.action.QS_TILE" /></intent-filter>
+            <meta-data android:name="android.service.quicksettings.TOGGLEABLE_TILE" android:value="true" />
+        </service>
+        <service
+            android:name=".SrTile"
+            android:label="Super resolution"
+            android:icon="@drawable/ic_tile_sr"
+            android:exported="true"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter><action android:name="android.service.quicksettings.action.QS_TILE" /></intent-filter>
+            <meta-data android:name="android.service.quicksettings.TOGGLEABLE_TILE" android:value="true" />
+        </service>
+        <service
+            android:name=".MixTile"
+            android:label="Play together"
+            android:icon="@drawable/ic_tile_mix"
+            android:exported="true"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter><action android:name="android.service.quicksettings.action.QS_TILE" /></intent-filter>
+            <meta-data android:name="android.service.quicksettings.TOGGLEABLE_TILE" android:value="true" />
+        </service>
+
         <service
             android:name=".SolCubeA11y"
             android:label="@string/a11y_label"

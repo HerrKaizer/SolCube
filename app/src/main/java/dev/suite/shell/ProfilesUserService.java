@@ -21,6 +21,9 @@ public class ProfilesUserService extends ISolCubeService.Stub {
     private static final long POLL_IDLE_MS = 1500;
     private static final long LEAVE_DEBOUNCE_MS = 300;
     private static final long LOCK_NFC_MS = 3 * 60_000L;
+    /** Actions that only accompany others; they never count as "something to do". */
+    private static final java.util.Set<String> COSMETIC =
+            new java.util.HashSet<>(java.util.Arrays.asList("vibrate", "notice", "wait"));
 
     private volatile JSONArray profiles = new JSONArray();
     private volatile boolean stop;
@@ -34,6 +37,9 @@ public class ProfilesUserService extends ISolCubeService.Stub {
     private long goneSince;
     private long lockedSince;
     private volatile long suppressLeaveUntil;
+    private static final long NFC_GUARD_MS = 30_000;
+    private String nfcAtScreenOff;
+    private long nextNfcCheck;
 
     @Override public synchronized void configure(String json) {
         try {
@@ -91,6 +97,7 @@ public class ProfilesUserService extends ISolCubeService.Stub {
 
                 synchronized (this) {
                     if (stop) break;
+                    nfcGuard(on, now);
                     if (!activeId.isEmpty()) {
                         JSONObject cur = findById(activeId);
                         if (cur == null || !cur.optBoolean("on", true)) {
@@ -140,6 +147,26 @@ public class ProfilesUserService extends ISolCubeService.Stub {
         }
     }
 
+    /**
+     * OriginOS (CN) re-enables NFC by itself at ~2 AM after a non-system app turned it off. If NFC
+     * was off when the screen went off and comes on while the screen is still off (nobody can
+     * have done that by hand), turn it back off.
+     */
+    private void nfcGuard(boolean screenOn, long now) {
+        if (screenOn) { nfcAtScreenOff = null; return; }
+        if (nfcAtScreenOff == null) {
+            nfcAtScreenOff = ShellActions.nfcRawState();
+            nextNfcCheck = now + NFC_GUARD_MS;
+            return;
+        }
+        if (now < nextNfcCheck) return;
+        nextNfcCheck = now + NFC_GUARD_MS;
+        if ("off".equals(nfcAtScreenOff) && activeId.isEmpty() && "on".equals(ShellActions.nfcRawState())) {
+            L.i("NFC came on by itself with the screen off: turning it back off");
+            ShellActions.setNfc(false);
+        }
+    }
+
     private void enterProfile(JSONObject p, ShellActions.TaskHit hit) {
         activeId = p.optString("id");
         activeName = p.optString("name");
@@ -148,13 +175,33 @@ public class ProfilesUserService extends ISolCubeService.Stub {
         saved.clear();
         goneSince = 0;
         lockedSince = 0;
+        JSONArray actions = p.optJSONArray("actions");
+        boolean onlyIfNeeded = p.optBoolean("onlyIfNeeded", false);
+        boolean[] skip = new boolean[actions == null ? 0 : actions.length()];
+        if (onlyIfNeeded && actions != null) {
+            boolean anyReal = false, anyNeeded = false;
+            for (int i = 0; i < actions.length(); i++) {
+                JSONObject a = actions.optJSONObject(i);
+                if (a == null) { skip[i] = true; continue; }
+                String t = a.optString("type");
+                if (COSMETIC.contains(t)) continue;
+                anyReal = true;
+                skip[i] = ShellActions.alreadyDone(a);
+                if (!skip[i]) anyNeeded = true;
+            }
+            if (anyReal && !anyNeeded) {
+                // Everything is already in place: stay silent, and leaving has nothing to undo.
+                L.i("▶ " + activeName + " (" + hit.pkg + ") — already done, skipped");
+                return;
+            }
+        }
         L.i("▶ " + activeName + " (" + hit.pkg + ")");
         if (!activeName.isEmpty()) SysSettings.notice(activeName, true);
 
-        JSONArray actions = p.optJSONArray("actions");
         if (actions == null) return;
         for (int i = 0; i < actions.length(); i++) {
             if (stop) break;
+            if (skip[i]) continue;
             JSONObject a = actions.optJSONObject(i);
             if (a == null) continue;
             String type = a.optString("type");
@@ -167,6 +214,10 @@ public class ProfilesUserService extends ISolCubeService.Stub {
                         finally { suppressLeaveUntil = System.currentTimeMillis() + 300; }
                     }, "prof-bg").start();
                 }
+                continue;
+            }
+            if (("boost".equals(type) || "saver".equals(type)) && isGame(hit.pkg)) {
+                powerModeAfterGameCube(a, type, activeId);
                 continue;
             }
             try {
@@ -189,11 +240,53 @@ public class ProfilesUserService extends ISolCubeService.Stub {
         }
     }
 
+    /** vivo Game Cube treats the app as a game (it sets current_game_package as the game opens). */
+    private static boolean isGame(String pkg) {
+        for (int i = 0; i < 8; i++) {   // Game Cube marks it a moment after the app comes to the front
+            if (pkg.equals(SysSettings.get("secure", "current_game_package"))) return true;
+            try { Thread.sleep(200); } catch (InterruptedException e) { Thread.currentThread().interrupt(); return false; }
+        }
+        return false;
+    }
+
+    /**
+     * In a game, vivo Game Cube applies the mode it remembers for that game ~3.5 s after it opens
+     * and ignores (or overwrites) changes made before that, so its panel kept showing the old mode
+     * while the system said Boost. Switch once Game Cube is done: the panel then follows, as it
+     * does for a change from Settings, and Game Cube remembers it for the game (and switches back
+     * by itself on exit). Checks again a few seconds later in case Game Cube was slow.
+     */
+    private void powerModeAfterGameCube(JSONObject a, String type, String profileId) {
+        String target = ShellActions.targetValue(type, a);
+        if (target == null) return;
+        new Thread(() -> {
+            try {
+                Thread.sleep(4500);
+                for (int i = 0; i < 2 && !stop; i++) {
+                    synchronized (ProfilesUserService.this) {
+                        if (!profileId.equals(activeId)) return;   // left the game meanwhile
+                        String cur = ShellActions.read(type);
+                        if (cur != null && !cur.equals(target)) {
+                            if (activeRestore && !saved.containsKey(type)) saved.put(type, cur);
+                            ShellActions.write(type, target);
+                            L.i(type + ": " + cur + " → " + target + " (after Game Cube)");
+                        }
+                    }
+                    Thread.sleep(3000);
+                }
+            } catch (InterruptedException ignored) {
+            } catch (Throwable t) {
+                L.e("power mode in game", t);
+            }
+        }, "prof-power").start();
+    }
+
     private void exitActive(String why) {
         if (activeId.isEmpty()) return;
         L.i("■ " + activeName + " (" + why + ")");
-        if (!activeName.isEmpty()) SysSettings.notice(activeName + " off", true);
+        // Only say "<name> off" when leaving actually puts something back.
         if (activeRestore && !saved.isEmpty()) {
+            if (!activeName.isEmpty()) SysSettings.notice(activeName + " off", true);
             java.util.List<Map.Entry<String, String>> entries = new java.util.ArrayList<>(saved.entrySet());
             for (int i = entries.size() - 1; i >= 0; i--) {
                 Map.Entry<String, String> e = entries.get(i);

@@ -38,6 +38,8 @@ import kotlin.math.sin
  */
 object Island {
     private const val TAG = "SolCube"
+    /** Window width for the app-overlay fallback in landscape (centred, only as wide as the pill can get). */
+    private const val LAND_OVERLAY_W = 1300
     private val main = Handler(Looper.getMainLooper())
     private var current: PillView? = null
     private val pending = ArrayList<Triple<String, Boolean, Boolean>>()   // wait for the current pill to go back in
@@ -76,8 +78,9 @@ object Island {
     }
 
     /** [still] keeps it out until hide() (for the editor). */
-    fun show(ctx: Context, text: String, ok: Boolean = true, still: Boolean = false, waited: Int = 0) {
-        if (Looper.myLooper() != Looper.getMainLooper()) { main.post { show(ctx, text, ok, still, waited) }; return }
+    /** [onTap]: the pill takes a tap (its window is then only as wide as the pill area) and stays out 6 s. */
+    fun show(ctx: Context, text: String, ok: Boolean = true, still: Boolean = false, waited: Int = 0, onTap: (() -> Unit)? = null) {
+        if (Looper.myLooper() != Looper.getMainLooper()) { main.post { show(ctx, text, ok, still, waited, onTap) }; return }
         load(ctx)
         current?.let {
             if (it.isAttachedToWindow) {
@@ -92,7 +95,7 @@ object Island {
         // moment after the app starts. Showing right away fell back to the app overlay, which sits
         // UNDER the status bar (the notification icons drew over the pill): wait for it, up to 2 s.
         if (a11y == null && waited < 20 && a11yEnabled(app)) {
-            main.postDelayed({ show(app, text, ok, still, waited + 1) }, 100)
+            main.postDelayed({ show(app, text, ok, still, waited + 1, onTap) }, 100)
             return
         }
         if (a11y == null && !Settings.canDrawOverlays(app)) return
@@ -104,8 +107,11 @@ object Island {
         // (NOT_TOUCHABLE) app overlay at most 80 % opaque, which made the pill see-through. So
         // that window takes touches instead, and is only as wide as the pill's area.
         val overlay = a11y == null
-        val offX = if (overlay) (geo.leftLimit - 80f).coerceAtLeast(0f) else 0f
-        val view = PillView(vctx, text, ok, still, offX) { v ->
+        val narrow = overlay || onTap != null   // a window that takes touches is kept to the pill area
+        // landscape: no punch hole to come out of, the pill drops in at the top centre instead
+        val land = vctx.resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+        val offX = if (narrow && !land) (geo.leftLimit - 80f).coerceAtLeast(0f) else 0f
+        val view = PillView(vctx, text, ok, still, offX, onTap) { v ->
             runCatching { wm.removeView(v) }
             if (current === v) current = null
             val ps = pending.toList(); val pc = pendingCtx
@@ -114,14 +120,19 @@ object Island {
             if (pc != null) ps.forEach { p -> show(pc, p.first, p.second, p.third) }
         }
         val lp = WindowManager.LayoutParams(
-            if (overlay) (geo.holeX + geo.holeR + 12f - offX).toInt() else WindowManager.LayoutParams.MATCH_PARENT, 260, type,
+            when {
+                !narrow -> WindowManager.LayoutParams.MATCH_PARENT
+                land -> LAND_OVERLAY_W
+                else -> (geo.holeX + geo.holeR + 12f - offX).toInt()
+            }, 260, type,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                (if (overlay) WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL else WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) or
+                (if (narrow) WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL else WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
         ).apply {
-            gravity = android.view.Gravity.TOP or android.view.Gravity.START
+            gravity = android.view.Gravity.TOP or
+                (if (land) android.view.Gravity.CENTER_HORIZONTAL else android.view.Gravity.START)
             x = offX.toInt()
             alpha = 1f
             layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
@@ -141,6 +152,7 @@ object Island {
     private class PillView(
         ctx: Context, private var text: String, private var ok: Boolean, private var still: Boolean,
         private val offX: Float,   // the window's left edge in screen pixels (geometry is in screen pixels)
+        private val onTap: (() -> Unit)?,
         private val onGone: (View) -> Unit,
     ) : View(ctx) {
         private val dens = resources.displayMetrics.density
@@ -188,16 +200,19 @@ object Island {
         private val pad get() = g.pillH * 0.42f
         private val icon get() = g.pillH * 0.46f
         private val right get() = g.holeX - g.holeR - g.gap
+        private val land get() = resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+        /** The widest the pill may get: up to the clock in portrait, under half the screen in landscape. */
+        private val maxW get() = if (land) minOf(width.toFloat(), 1300f) * 0.9f else right - g.leftLimit
 
         private fun shown(t: String = text): String {
             txt.textSize = g.textSp * dens
-            val room = right - g.leftLimit - pad * 2 - icon - 6 * dens
+            val room = maxW - pad * 2 - icon - 6 * dens
             return android.text.TextUtils.ellipsize(t, android.text.TextPaint(txt), maxOf(0f, room), android.text.TextUtils.TruncateAt.END).toString()
         }
 
         private fun fullWidth(t: String = text): Float {
             txt.textSize = g.textSp * dens
-            return min(right - g.leftLimit, maxOf(g.pillH, pad + icon + 6 * dens + txt.measureText(shown(t)) + pad))
+            return min(maxW, maxOf(g.pillH, pad + icon + 6 * dens + txt.measureText(shown(t)) + pad))
         }
 
         /** Width now: between the old and the new text's while they swap. */
@@ -269,7 +284,7 @@ object Island {
         private fun afterText() {
             removeCallbacks(hold); removeCallbacks(next)
             if (queue.isNotEmpty()) postDelayed(next, maxOf(0L, minShow - (System.currentTimeMillis() - readableAt)))
-            else if (!still) postDelayed(hold, 3500)
+            else if (!still) postDelayed(hold, if (onTap != null) 6000 else 3500)
         }
 
         private fun swapNext() {
@@ -292,6 +307,12 @@ object Island {
             }
         }
 
+        override fun onTouchEvent(e: android.view.MotionEvent): Boolean {
+            val tap = onTap ?: return false
+            if (e.actionMasked == android.view.MotionEvent.ACTION_UP && !closing) { runCatching { tap() }; close() }
+            return true
+        }
+
         override fun onDetachedFromWindow() {
             super.onDetachedFromWindow()
             removeCallbacks(hold); removeCallbacks(next); swapAnim?.cancel()
@@ -301,6 +322,7 @@ object Island {
 
         override fun onDraw(c: Canvas) {
             if (s <= 0.001f) return
+            if (land) { drawLand(c); return }
             c.translate(-offX, 0f)
             val p = s.coerceAtLeast(0f)
             // it is a pill from the first frame: it starts as the hole itself and, while its right
@@ -334,8 +356,29 @@ object Island {
             // outline only once the pill has left the hole (an outline round the camera, or across the
             // neck, would show the seam), fading in with the text
             val neckShown = joined && gapNow < limit
+            rimAndText(c, p, r, by, !neckShown)
+        }
+
+        /**
+         * Landscape: no punch hole up there, so no drop and no neck. The pill springs down from
+         * above the top edge to the top centre (same spring: overshoots a little, settles) and
+         * glides back up when it closes.
+         */
+        private fun drawLand(c: Canvas) {
+            val p = s.coerceAtLeast(0f)
+            val h = g.pillH * (0.6f + 0.4f * (p / 0.6f).coerceIn(0f, 1f))
+            val r = h / 2
+            val cx = width / 2f
+            val by = -g.pillH + (g.pillY + g.pillH) * p           // p = 1 → its place, > 1 a bit lower
+            val w = h + (targetWidth() - h) * ((p - 0.08f) / 0.72f).coerceIn(0f, 1f)
+            rect.set(cx - w / 2, by - r, cx + w / 2, by + r)
+            c.drawRoundRect(rect, r, r, bg)
+            rimAndText(c, p, r, by, true)
+        }
+
+        private fun rimAndText(c: Canvas, p: Float, r: Float, by: Float, showRim: Boolean) {
             val ra = ((p - 0.62f) / 0.3f).coerceIn(0f, 1f)
-            if (!neckShown && ra > 0f) {
+            if (showRim && ra > 0f) {
                 rim.color = Color.argb((0x33 * ra).toInt(), 255, 255, 255)
                 val hw = rim.strokeWidth / 2
                 rimRect.set(rect.left + hw, rect.top + hw, rect.right - hw, rect.bottom - hw)

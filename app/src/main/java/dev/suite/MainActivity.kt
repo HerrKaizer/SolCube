@@ -85,6 +85,8 @@ class MainActivity : Activity() {
     private lateinit var shortcutsGroup: GroupCard
     private lateinit var automationGroup: GroupCard
     private lateinit var gamingGroup: GroupCard
+    private lateinit var audioGroup: GroupCard
+    private lateinit var volDial: VolumeDial
     private lateinit var ctsTouch: Section
     private lateinit var ctsButton: Section
     private lateinit var ctsNav: Section
@@ -102,6 +104,7 @@ class MainActivity : Activity() {
     private lateinit var diagAppText: TextView
     private lateinit var diagSvcText: TextView
     private lateinit var diagLogText: TextView
+    private lateinit var diagLiveText: TextView
     private var lastDiagReport: String = ""
     private var mainScroll: ScrollView? = null
 
@@ -150,9 +153,25 @@ class MainActivity : Activity() {
         cleanupOldBackup()
         keepAlive()
         renderDouble()   // vivo's switch / the handler may have changed in Settings
+        // volume buttons / other apps change the media volume: keep the fine volume control in step
+        runCatching { registerReceiver(volReceiver, android.content.IntentFilter("android.media.VOLUME_CHANGED_ACTION"), RECEIVER_EXPORTED) }
+        syncVolume()
+    }
+
+    private val volReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(c: android.content.Context, i: android.content.Intent) {
+            if (i.getIntExtra("android.media.EXTRA_VOLUME_STREAM_TYPE", -1) == android.media.AudioManager.STREAM_MUSIC) syncVolume()
+        }
+    }
+
+    private fun syncVolume() {
+        if (!::volDial.isInitialized || volDial.isDragging) return
+        val v = FineVolume.percent(this)
+        if (volDial.value != v) volDial.value = v
     }
 
     override fun onPause() {
+        runCatching { unregisterReceiver(volReceiver) }
         resumed = false
         main.removeCallbacksAndMessages(null)
         super.onPause()
@@ -254,21 +273,13 @@ class MainActivity : Activity() {
                 }
             },
         )
-        fiLive.visibility = if (fi != null) View.VISIBLE else View.GONE
-        fiLog.visibility = fiLive.visibility
-        if (fi != null) {
-            fiLive.text = "fi  = ${fi.optString("fi")}\ngpu = ${fi.optString("gpu")}"
-            fiLog.text = logText(fi)
-        }
-
-        // Super resolution
+        // Super resolution (its raw values are in Diagnostics)
         val sr = s.sr
         showSection(
             srSec, running = sr?.optBoolean("running") == true,
             detail = when {
                 !shellOk && enabled(srSec) -> "Waiting for Shizuku"
-                sr == null -> "vivo super resolution, kept on while enabled"
-                else -> "sr = ${sr.optString("sr")}  vsr = ${sr.optString("vsr")}"
+                else -> "vivo super resolution, kept on while enabled"
             },
         )
 
@@ -327,12 +338,17 @@ class MainActivity : Activity() {
 
         val gameParts = mutableListOf<String>()
         if (TempOverlay.running || enabled(temp)) gameParts += "Temp pill"
-        if (fiRunning || enabled(game)) gameParts += "Frame interp"
+        if (fiRunning || enabled(game)) gameParts += "Frame interpolation"
         if (sr?.optBoolean("running") == true || enabled(srSec)) gameParts += "Super res"
         if (s.stream?.optBoolean("streaming") == true || Components.enabled(this, Components.KEY_STREAM)) gameParts += "Stream"
         setGroup(gamingGroup,
             TempOverlay.running || fiRunning || sr?.optBoolean("running") == true || s.stream?.optBoolean("streaming") == true || Components.enabled(this, Components.KEY_STREAM),
             if (gameParts.isEmpty()) "All off" else gameParts.joinToString(" · "))
+
+        val mixOn = mix?.optBoolean("running") == true || enabled(mixSec)
+        syncVolume()
+        setGroup(audioGroup, mixOn,
+            (if (mixOn) "Mixing · " else "") + "Volume ${FineVolume.percent(this)}%")
 
         renderDiagnostics(s, canDraw)
     }
@@ -418,7 +434,25 @@ class MainActivity : Activity() {
         if (diagAppText.text != appInfo) diagAppText.text = appInfo
         if (diagSvcText.text != svcInfo) diagSvcText.text = svcInfo
         if (diagLogText.text != recentLogs) diagLogText.text = recentLogs
-        lastDiagReport = "$appInfo\n\nServices:\n$svcInfo\n\nRecent events:\n$recentLogs"
+
+        // the raw values that used to sit on the feature cards
+        val live = buildString {
+            val fi = s.fi
+            appendLine("Frame interpolation")
+            if (fi == null) appendLine("  not running")
+            else {
+                appendLine("  fi  = ${fi.optString("fi")}")
+                appendLine("  gpu = ${fi.optString("gpu")}")
+                logText(fi).lines().forEach { appendLine("  $it") }
+            }
+            val sr = s.sr
+            appendLine("Super resolution")
+            appendLine(if (sr == null) "  not running" else "  sr = ${sr.optString("sr")}  vsr = ${sr.optString("vsr")}")
+            appendLine("Gestures")
+            append("  last drawing: ${lastGestureText(s.routines)}")
+        }
+        if (diagLiveText.text != live) diagLiveText.text = live
+        lastDiagReport = "$appInfo\n\nServices:\n$svcInfo\n\nLive values:\n$live\n\nRecent events:\n$recentLogs"
     }
 
     private fun enabled(sec: Section) = Components.enabled(this, sec.key)
@@ -612,17 +646,23 @@ class MainActivity : Activity() {
 
         game = section(Components.KEY_GAME, "Frame interpolation", inner = true)
         addGameControls(game.body)
+        qsHint(game.body, FiTile::class.java, "Frame interpolation", R.drawable.ic_tile_fi)
         gamingGroup.body.addView(game.card, innerCardParams())
 
         srSec = section(Components.KEY_SR, "Super resolution", collapsible = false, inner = true)
+        qsHint(srSec.body, SrTile::class.java, "Super resolution", R.drawable.ic_tile_sr)
         gamingGroup.body.addView(srSec.card, innerCardParams())
 
         gamingGroup.body.addView(buildStreamCard(inner = true))
         root.addView(gamingGroup.card, cardParams())
 
-        // 5. Play together (standalone card)
-        mixSec = section(Components.KEY_MIX, "Play together", collapsible = false)
-        root.addView(mixSec.card, cardParams())
+        // 5. Audio big card: Play together (mixing) + Fine volume
+        audioGroup = groupCard("audio", "Audio", defaultOpen = false)
+        mixSec = section(Components.KEY_MIX, "Play together", collapsible = false, inner = true)
+        qsHint(mixSec.body, MixTile::class.java, "Play together", R.drawable.ic_tile_mix)
+        audioGroup.body.addView(mixSec.card, innerCardParams())
+        audioGroup.body.addView(buildFineVolumeCard())
+        root.addView(audioGroup.card, cardParams())
 
         // 5. Settings big card, separated below with open space
         val settingsCard = card().apply {
@@ -662,6 +702,7 @@ class MainActivity : Activity() {
             }
         }, LinearLayout.LayoutParams(MATCH_PARENT, 44.dp).apply { topMargin = 12.dp })
         settingsHost.addView(themeCard, innerCardParams())
+
 
         val powerCard = innerCard().apply {
             val baseBg = background
@@ -720,6 +761,10 @@ class MainActivity : Activity() {
             LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 12.dp })
         diagSvcText = mono(11.5f).apply { setLineSpacing(2.dp.toFloat(), 1f) }
         diagBody.addView(diagSvcText, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 4.dp })
+        diagBody.addView(label("Live values", 13f, p.fg, bold = true),
+            LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 12.dp })
+        diagLiveText = mono(11f).apply { setLineSpacing(2.dp.toFloat(), 1f) }
+        diagBody.addView(diagLiveText, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 4.dp })
         diagBody.addView(label("Recent events", 13f, p.fg, bold = true),
             LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 12.dp })
         diagLogText = mono(11f).apply { setLineSpacing(2.dp.toFloat(), 1f) }
@@ -889,8 +934,11 @@ class MainActivity : Activity() {
         defaultOpen: Boolean = false,
     ) {
         var open = uiPrefs().getBoolean("open_$key", defaultOpen)
-        val restClipChildren = body.clipChildren
-        val restClipToPadding = body.clipToPadding
+        // after the animation the body must NOT clip: the glow on gold chips/buttons draws outside
+        // their bounds (Glow.unclip turns clipping off later than this, so saving the value here
+        // brought clipping back on every expand and cut the halos off square)
+        val restClipChildren = false
+        val restClipToPadding = false
         val initLp = body.layoutParams as? LinearLayout.LayoutParams
         val restTopMargin = initLp?.topMargin ?: 0
         val restBottomMargin = initLp?.bottomMargin ?: 0
@@ -1136,7 +1184,8 @@ class MainActivity : Activity() {
         else card.addView(statusRow, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 8.dp })
 
         val detail = label("", 13f, p.sub).apply { setLineSpacing(2.dp.toFloat(), 1f) }
-        card.addView(detail, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 6.dp })
+        // compact cards keep the face as short as the group cards: extra lines go inside, under the chevron
+        if (!compact) card.addView(detail, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 6.dp })
 
         val body = if (collapsible && chevron != null) {
             LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }.also { b ->
@@ -1144,6 +1193,7 @@ class MainActivity : Activity() {
                 makeCollapsible(key, card, listOf(header, statusRow, detail), chevron, b, defaultOpen = false)
             }
         } else card
+        if (compact) body.addView(detail, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 10.dp })
 
         sec = Section(key, card, body, toggle, dot, status, detail, compact)
         return sec
@@ -1151,8 +1201,6 @@ class MainActivity : Activity() {
 
     // ------------------------------------------------------------------ FI + SR controls
 
-    private lateinit var fiLive: TextView
-    private lateinit var fiLog: TextView
     private lateinit var gameList: LinearLayout
     private lateinit var thresholds: LinearLayout
 
@@ -1166,11 +1214,9 @@ class MainActivity : Activity() {
     }
 
     private fun addGameControls(card: LinearLayout) {
-        fiLive = mono(11.5f)
-        card.addView(fiLive, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 8.dp })
-
+        // (the raw fi / gpu values and the log are in Diagnostics)
         card.addView(View(this).apply { setBackgroundColor(p.stroke) },
-            LinearLayout.LayoutParams(MATCH_PARENT, 1.dp).apply { topMargin = 8.dp; bottomMargin = 6.dp })
+            LinearLayout.LayoutParams(MATCH_PARENT, 1.dp).apply { topMargin = 12.dp; bottomMargin = 6.dp })
         card.addView(label("Games", 14.5f, p.fg, bold = true).apply { setPadding(0, 8.dp, 0, 2.dp) })
         card.addView(label("Tap the ratio to change it. Only whole multiples work.", 12f, p.sub))
         gameList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -1205,9 +1251,6 @@ class MainActivity : Activity() {
         thresholds = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         card.addView(thresholds)
 
-        card.addView(label("Log", 14.5f, p.fg, bold = true).apply { setPadding(0, 16.dp, 0, 4.dp) })
-        fiLog = mono(10.5f)
-        card.addView(fiLog)
         renderGames()
     }
 
@@ -1218,6 +1261,31 @@ class MainActivity : Activity() {
             background = ripple(if (selected) accentGradient(16.dp) else glass(16.dp), 16.dp)
             setOnClickListener { onClick() }
         }
+
+    /** Fine volume: media volume in 1 % steps (vivo's stream has 150 steps; the buttons jump 10). */
+    private fun buildFineVolumeCard(): LinearLayout {
+        val c = innerCard()
+        val head = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        head.addView(label("Fine volume", 16.5f, p.fg, bold = true), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        val styles = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        head.addView(styles)
+        c.addView(head)
+        c.addView(label("Media volume in 1 % steps. The volume buttons still jump 10 % at a time.", 12.5f, p.sub),
+            LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 4.dp })
+        volDial = VolumeDial(this, p, isDark(), fontMedium, FineVolume.knob(this)) { v -> FineVolume.set(this, v) }
+        volDial.value = FineVolume.percent(this)
+        c.addView(volDial, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 8.dp })
+        fun drawStyles() {
+            styles.removeAllViews()
+            val knob = FineVolume.knob(this)
+            styles.addView(chip("Knob", knob) { FineVolume.setKnob(this, true); volDial.knob = true; volDial.requestLayout(); volDial.invalidate(); drawStyles() },
+                LinearLayout.LayoutParams(WRAP_CONTENT, 32.dp))
+            styles.addView(chip("Slider", !knob) { FineVolume.setKnob(this, false); volDial.knob = false; volDial.requestLayout(); volDial.invalidate(); drawStyles() },
+                LinearLayout.LayoutParams(WRAP_CONTENT, 32.dp).apply { leftMargin = 6.dp })
+        }
+        drawStyles()
+        return c
+    }
 
     private fun renderGames() {
         gameList.removeAllViews()
@@ -2069,22 +2137,28 @@ class MainActivity : Activity() {
         if (key != gestUsedKey) renderGestureList()
         val on = enabled(gestSec)
         val running = on && st?.optBoolean("gestures") == true
-        val lastG = st?.optString("lastGesture").orEmpty()
+        // one short line (the card face has room for ~25 characters); the last drawing is in Diagnostics
         showSection(gestSec, running = running, detail = when {
-            !on -> "Draw shapes with one or two fingers to run actions"
+            !on -> "Off"
             !shellOk -> "Waiting for Shizuku"
-            used.isEmpty() -> "No gesture has an action yet. Tap one below to assign."
+            used.isEmpty() -> "No gesture has an action"
             st == null -> "Starting…"
             !running -> "Starting the listener…"
-            else -> "Listening for ${used.size} gesture${if (used.size == 1) "" else "s"}" + when {
-                lastG.isEmpty() || lastG == "—" -> ""
-                lastG.startsWith("! ") -> "\nLast drawing ignored: " + lastG.removePrefix("! ")
-                lastG.startsWith("? ") -> lastG.removePrefix("? ").split(" ").let { pt ->
-                    "\nLast drawing not recognised (closest ${GestureStore.name(this, pt[0])} ${pt.getOrElse(1) { "" }}) at ${pt.lastOrNull() ?: ""}"
-                }
-                else -> lastG.split(" ").let { pt -> "\nLast: ${GestureStore.name(this, pt[0])} ${pt.getOrElse(1) { "" }} at ${pt.lastOrNull() ?: ""}" }
-            }
+            else -> "Listening for ${used.size} gesture${if (used.size == 1) "" else "s"}"
         })
+    }
+
+    /** The last drawing the gesture listener saw, for Diagnostics. */
+    private fun lastGestureText(st: org.json.JSONObject?): String {
+        val lastG = st?.optString("lastGesture").orEmpty()
+        return when {
+            lastG.isEmpty() || lastG == "—" -> "(none yet)"
+            lastG.startsWith("! ") -> "ignored: " + lastG.removePrefix("! ")
+            lastG.startsWith("? ") -> lastG.removePrefix("? ").split(" ").let { pt ->
+                "not recognised (closest ${GestureStore.name(this, pt[0])} ${pt.getOrElse(1) { "" }}) at ${pt.lastOrNull() ?: ""}"
+            }
+            else -> lastG.split(" ").let { pt -> "${GestureStore.name(this, pt[0])} ${pt.getOrElse(1) { "" }} at ${pt.lastOrNull() ?: ""}" }
+        }
     }
 
     private fun gesturePad(hint: String): GesturePad = GesturePad(this, p.accent, alpha(p.fg, 0.22f), p.sub).apply {
@@ -2660,6 +2734,17 @@ class MainActivity : Activity() {
             val doCard = card()
             doCard.addView(label("Do", 14.5f, p.fg, bold = true))
             renderActionsEditor(doCard, actions(), isRoutine = false, allRoutines = allRoutines, selfRoutineId = null, rebuild = rebuild)
+            doCard.addView(Switch(this).apply {
+                text = "Only if not already done"
+                textSize = 13.5f
+                setTextColor(p.fg)
+                typeface = fontRegular
+                styleSwitch(this)
+                isChecked = pr.optBoolean("onlyIfNeeded", false)
+                setOnCheckedChangeListener { _, c -> pr.put("onlyIfNeeded", c) }
+            }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 8.dp })
+            doCard.addView(label("Skips actions that are already in place (app already running, setting already set, music already playing). If nothing is left to do, the profile stays silent: no pill.",
+                12f, p.sub).apply { setPadding(0, 4.dp, 0, 0) })
             dynamic.addView(doCard, cardParams())
 
             // ---- When leaving
@@ -2995,6 +3080,33 @@ class MainActivity : Activity() {
                 row.addView(chip("+", false) { t.put("temp", minOf(52, tempC + 1)); rebuild() },
                     LinearLayout.LayoutParams(44.dp, 32.dp).apply { leftMargin = 6.dp })
                 whenCard.addView(row, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 10.dp })
+            }
+
+            if (type == "temp_below") {
+                val tempC = t.optInt("temp", 38)
+                val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+                row.addView(label("At or below $tempC °C", 13.5f, p.fg), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+                row.addView(chip("−", false) { t.put("temp", maxOf(25, tempC - 1)); rebuild() }, LinearLayout.LayoutParams(44.dp, 32.dp))
+                row.addView(chip("+", false) { t.put("temp", minOf(48, tempC + 1)); rebuild() },
+                    LinearLayout.LayoutParams(44.dp, 32.dp).apply { leftMargin = 6.dp })
+                whenCard.addView(row, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 10.dp })
+            }
+
+            if (type == "screen_off_for") {
+                val mins = t.optInt("minutes", 10)
+                val steps = listOf(1, 2, 5, 10, 15, 20, 30, 45, 60, 90, 120, 180, 240)
+                val i = steps.indexOfFirst { it >= mins }.let { if (it < 0) steps.size - 1 else it }
+                val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+                row.addView(label("Off for $mins min", 13.5f, p.fg), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+                row.addView(chip("−", false) { t.put("minutes", steps[maxOf(0, i - 1)]); rebuild() }, LinearLayout.LayoutParams(44.dp, 32.dp))
+                row.addView(chip("+", false) { t.put("minutes", steps[minOf(steps.size - 1, i + 1)]); rebuild() },
+                    LinearLayout.LayoutParams(44.dp, 32.dp).apply { leftMargin = 6.dp })
+                whenCard.addView(row, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 10.dp })
+            }
+
+            if (type == "game_open" || type == "game_close") {
+                whenCard.addView(label("Any game vivo Game Cube runs (the ones it lists in Game space)", 12.5f, p.sub)
+                    .apply { setPadding(0, 10.dp, 0, 0) })
             }
 
             if (type == "app_open" || type == "app_close") {
@@ -3395,6 +3507,16 @@ class MainActivity : Activity() {
                 setStroke(1.dp, alpha(p.accent, 0.45f))
             }
         }, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { leftMargin = 10.dp })
+    }
+
+    /** "Also a Quick Settings tile" + a button for the system's add-tile prompt. */
+    private fun qsHint(into: LinearLayout, cls: Class<*>, name: String, icon: Int) {
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        row.addView(label("Also a Quick Settings tile", 12.5f, p.sub), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        row.addView(textButton("Add tile") {
+            FeatureTile.requestAdd(this, cls, name, icon) { msg -> if (msg.isNotEmpty()) toast(msg) }
+        }.apply { textSize = 13f; setPadding(10.dp, 6.dp, 10.dp, 6.dp) }, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
+        into.addView(row, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 6.dp; rightMargin = (-10).dp })
     }
 
     private fun textButton(t: String, onClick: () -> Unit) = label(t, 14.5f, p.link, bold = true).apply {

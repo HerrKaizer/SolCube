@@ -29,6 +29,9 @@ import kotlin.concurrent.thread
 class GlassBackdrop(context: Context, @Suppress("UNUSED_PARAMETER") base: Int = 0,
                     @Suppress("UNUSED_PARAMETER") glows: List<Int> = emptyList()) : View(context) {
     private val dark = Look.isDark(context)
+    private val key = dark
+    /** How far down the photo the screen starts (negative: the photo starts below the top edge). */
+    private val offDp get() = OFF_DP
     private val density = resources.displayMetrics.density
     private val shader = RuntimeShader(SRC)
     private val paint = Paint()
@@ -78,7 +81,7 @@ class GlassBackdrop(context: Context, @Suppress("UNUSED_PARAMETER") base: Int = 
 
     init {
         load(context.applicationContext, dark) { if (isAttachedToWindow) { set = it; setScroll(lastScroll); refresh() } }
-        set = cache[dark]
+        set = cache[key]
     }
 
     /** Glass panes that show this wallpaper re-draw with it. */
@@ -93,7 +96,7 @@ class GlassBackdrop(context: Context, @Suppress("UNUSED_PARAMETER") base: Int = 
         if (sv != null && sv.childCount > 0) range = (sv.getChildAt(0).height - sv.height).coerceAtLeast(0)
         val w = set
         val max = if (w != null && width > 0)
-            (width.toFloat() * w.full.height / w.full.width - OFF_DP * density - height).coerceAtLeast(0f) else 0f
+            (width.toFloat() * w.full.height / w.full.width - offDp * density - height).coerceAtLeast(0f) else 0f
         val k = if (range > 0) minOf(PARALLAX, max / range) else PARALLAX
         val p = (y * k).coerceAtMost(max)
         if (p != parallax) { parallax = p; refresh() }
@@ -110,7 +113,7 @@ class GlassBackdrop(context: Context, @Suppress("UNUSED_PARAMETER") base: Int = 
 
     /** Sets the wallpaper uniforms on [s] (backdrop or glass shader). */
     fun applyWall(s: RuntimeShader) {
-        val w = set ?: cache[dark]
+        val w = set ?: cache[key]
         s.setFloatUniform("wReady", if (w != null) 1f else 0f)
         val any = w ?: placeholder
         s.setInputShader("w0", any.s0); s.setInputShader("w1", any.s1)
@@ -119,10 +122,14 @@ class GlassBackdrop(context: Context, @Suppress("UNUSED_PARAMETER") base: Int = 
         s.setFloatUniform("wSmallW", any.small[0].width.toFloat())
         s.setFloatUniform("wWidth", width.coerceAtLeast(1).toFloat())
         s.setFloatUniform("wScroll", parallax)
-        s.setFloatUniform("wOff", OFF_DP * density)
+        s.setFloatUniform("wOff", offDp * density)
+        // zoom around the middle of the screen
+        s.setFloatUniform("wZoom", ZOOM)
+        s.setFloatUniform("wAspect", any.full.height.toFloat() / any.full.width)
+        s.setFloatUniform("wPivot", (height / 2f + parallax + offDp * density) / width.coerceAtLeast(1))
         s.setFloatUniform("wDens", density)
         s.setFloatUniform("wT", time)
-        s.setFloatUniform("wAmp", amp)
+        s.setFloatUniform("wAmp", 0f)   // no sway
         s.setFloatUniform("wDark", if (dark) 1f else 0f)
         val b = if (dark) DARK_BASE else LIGHT_BASE
         s.setFloatUniform("wBase", Color.red(b) / 255f, Color.green(b) / 255f, Color.blue(b) / 255f)
@@ -131,7 +138,7 @@ class GlassBackdrop(context: Context, @Suppress("UNUSED_PARAMETER") base: Int = 
     private var halfNode: android.graphics.RenderNode? = null
 
     override fun onDraw(canvas: Canvas) {
-        if (set == null) set = cache[dark]
+        if (set == null) set = cache[key]
         applyWall(shader)
         paint.shader = shader
         if (halfRes(context) && canvas.isHardwareAccelerated && width > 1 && height > 1) {
@@ -170,7 +177,7 @@ class GlassBackdrop(context: Context, @Suppress("UNUSED_PARAMETER") base: Int = 
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
-        if (set == null) set = cache[dark]
+        if (set == null) set = cache[key]
         updateRunning()
     }
     override fun onDetachedFromWindow() {
@@ -194,8 +201,10 @@ class GlassBackdrop(context: Context, @Suppress("UNUSED_PARAMETER") base: Int = 
 
     companion object {
         const val PARALLAX = 0.3f
-        /** The photo's empty top is taller than the title area: start this far down it. */
-        private const val OFF_DP = 185f
+        /** Both photos (grass + satin ribbon, dark and light) are fitted to the screen, then moved
+         *  this far up (dp) and zoomed this much around the screen's middle (set by the user). */
+        private const val OFF_DP = 20f
+        private const val ZOOM = 1.10f
         /** Blur (dp) seen through glass at nesting level 0, 1, 2. */
         val LEVEL_BLUR = floatArrayOf(10f, 17f, 24f)
 
@@ -231,17 +240,27 @@ class GlassBackdrop(context: Context, @Suppress("UNUSED_PARAMETER") base: Int = 
             s.setInputShader("w2", placeholder.s2); s.setInputShader("w3", placeholder.s3)
             s.setFloatUniform("wWidth", 1f)
             s.setFloatUniform("wDens", 1f)
+            s.setFloatUniform("wZoom", 1f)
+            s.setFloatUniform("wAspect", 1f)
         }
 
         private fun load(ctx: Context, dark: Boolean, done: (Wall) -> Unit) {
-            cache[dark]?.let { return }
-            waiting.getOrPut(dark) { mutableListOf() }.add(done)
-            if (!loading.add(dark)) return
+            val key = dark
+            cache[key]?.let { return }
+            waiting.getOrPut(key) { mutableListOf() }.add(done)
+            if (!loading.add(key)) return
             val dm = ctx.resources.displayMetrics
             val screenDp = minOf(dm.widthPixels, dm.heightPixels) / dm.density
+            val screenRatio = maxOf(dm.widthPixels, dm.heightPixels).toFloat() / minOf(dm.widthPixels, dm.heightPixels)
             thread(name = "suite-wallpaper", priority = Thread.NORM_PRIORITY - 1) {
                 val opts = BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.ARGB_8888 }
-                val full = BitmapFactory.decodeResource(ctx.resources, if (dark) R.drawable.wall_dark else R.drawable.wall_light, opts)
+                var full = BitmapFactory.decodeResource(ctx.resources, if (dark) R.drawable.wall_dark else R.drawable.wall_light, opts)
+                run {
+                    // the photos are about the screen's own shape: trim the sides (if needed) so each
+                    // is at least as tall as the screen at screen width
+                    val wantW = (full.height / screenRatio).toInt().coerceAtMost(full.width)
+                    if (wantW < full.width) full = Bitmap.createBitmap(full, (full.width - wantW) / 2, 0, wantW, full.height)
+                }
                 val sw = full.width / SMALL
                 val sh = full.height / SMALL
                 val base = Bitmap.createScaledBitmap(full, sw, sh, true)
@@ -250,9 +269,9 @@ class GlassBackdrop(context: Context, @Suppress("UNUSED_PARAMETER") base: Int = 
                 full.prepareToDraw()
                 val w = Wall(full, small)
                 main.post {
-                    cache[dark] = w
-                    loading.remove(dark)
-                    waiting.remove(dark)?.forEach { it(w) }
+                    cache[key] = w
+                    loading.remove(key)
+                    waiting.remove(key)?.forEach { it(w) }
                 }
             }
         }
@@ -301,6 +320,9 @@ uniform float wSmallW;
 uniform float wWidth;
 uniform float wScroll;
 uniform float wOff;
+uniform float wZoom;
+uniform float wPivot;
+uniform float wAspect;   // photo height / width
 uniform float wDens;
 uniform float wT;
 uniform float wAmp;   // sway strength 0..1 (0 = still: the warp is skipped)
@@ -311,30 +333,19 @@ float3 wall(float2 cp, float blur) {
     // position on the photo, in units of its width (it spans the screen width)
     float2 u = float2(cp.x, cp.y + wScroll + wOff) / wWidth;
     float t = wT;
-    // a breeze in the feather: the stem at the bottom of the photo stays put, the body sways ~10 dp
-    // (from just above the stem to the tips; a little more for the tips beside the title), as a
-    // slow wave that travels up the plume so it bends rather than slides; filaments away from the
-    // stem flutter; the satin form (right half, below the feather tips) stays still
-    if (wAmp > 0.0) {
-    float m = max(smoothstep(1.5, 1.3, u.y), smoothstep(0.62, 0.45, u.x));
-    float gust = 0.75 + 0.25 * sin(t * 0.14) * sin(t * 0.09 + 1.0);
-    float A = 0.042 * smoothstep(3.15, 2.5, u.y) + 0.011 * smoothstep(1.35, 0.95, u.y);   // photo widths
-    float ph = t * 0.34 - (3.2 - u.y) * 0.85;
-    float sx = 0.80 * sin(ph) + 0.20 * sin(1.5 * ph + 0.6);
-    float2 bend = float2(sx, -0.3 * sx) * A * gust;
-    float2 flutter = float2(sin(u.y * 20.0 + u.x * 10.0 - t * 0.90), cos(u.x * 16.0 - u.y * 8.0 - t * 0.70))
-                     * 0.0075 * gust * smoothstep(3.0, 2.3, u.y);
-    u -= (bend + flutter) * m * wAmp;
-    }
-    // the whole picture breathes and drifts very slowly (cropped ~13.5 % so the edges never show, even at peak sway)
-    float s = 0.865 - 0.008 * (0.5 + 0.5 * sin(t * 0.07));
-    u = (u - float2(0.5, 1.8)) * s + float2(0.5 + 0.004 * sin(t * 0.05), 1.8 + 0.01 * sin(t * 0.04));
+    // the picture itself stays still (no sway, no drift). (wAmp is no longer used.)
+    u =(u - float2(0.5, wPivot)) / max(wZoom, 0.1) + float2(0.5, wPivot);
+    u.x += wAmp * 0.0;
     float3 c = wBase;
     if (wReady > 0.5) {
         if (blur < 5.0) c = w0.eval(u * wFullW).rgb;
         else if (blur < 13.5) c = w1.eval(u * wSmallW).rgb;
         else if (blur < 20.5) c = w2.eval(u * wSmallW).rgb;
         else c = w3.eval(u * wSmallW).rgb;
+        // past the photo's edges (moved or zoomed out): its own backdrop colour instead of smeared edge pixels
+        float past = max(max(-u.x, u.x - 1.0), max(-u.y, u.y - wAspect));
+        float3 bg = w3.eval(float2(0.03, 0.03) * wSmallW).rgb;
+        c = mix(c, bg, smoothstep(0.0, 0.05, past));
     }
     // a broad, slow band of light drifting diagonally across every 45 s; it brightens the
     // feather and the satin more than the background

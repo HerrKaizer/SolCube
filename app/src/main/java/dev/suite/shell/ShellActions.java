@@ -276,6 +276,8 @@ public final class ShellActions {
                 return pidof("dev.suite:mix") > 0 ? "on" : "off";
             case "super_res":
                 return (pidof("dev.suite:sr") > 0 || SrUserService.isOn()) ? "on" : "off";
+            case "frame_interp":
+                return running("dev.suite:fi") ? "on" : "off";
         }
         return null;
     }
@@ -371,6 +373,10 @@ public final class ShellActions {
             case "super_res":
                 SysSettings.exec("am", "broadcast", "-n", "dev.suite/.TestReceiver",
                         "-a", "dev.suite.SET_FEATURE", "--es", "feature", "sr", "--ez", "on", String.valueOf(on));
+                break;
+            case "frame_interp":
+                SysSettings.exec("am", "broadcast", "-n", "dev.suite/.TestReceiver",
+                        "-a", "dev.suite.SET_FEATURE", "--es", "feature", "fi", "--ez", "on", String.valueOf(on));
                 break;
         }
     }
@@ -518,8 +524,38 @@ public final class ShellActions {
      * auto-reenabling NFC during the 2 AM vddpa_start job). Falls back to `svc nfc`.
      */
     public static void setNfc(boolean on) {
-        if (setVivoNfc(on)) return;
+        String want = on ? "on" : "off";
+        // Settings answers "done" even when NFC is still turning on/off and then drops the
+        // request (seen when Mir Pay closes within a second): wait for NFC to settle, check, retry.
+        for (int attempt = 0; attempt < 3; attempt++) {
+            if (want.equals(nfcSettled(5000))) return;
+            if (!setVivoNfc(on)) break;
+            if (want.equals(nfcSettled(5000))) return;
+            L.i("nfc " + want + ": didn't stick, retrying (" + (attempt + 1) + ")");
+        }
+        // Last resort. OriginOS treats this as a third-party switch: after an "off" here it
+        // re-enables NFC at ~2 AM (the profiles engine's screen-off guard turns it back off).
+        L.i("nfc " + want + ": using svc");
         SysSettings.exec("svc", "nfc", on ? "enable" : "disable");
+    }
+
+    /** NFC state as dumpsys shows it: "on", "off", "turning on", "turning off" (or "" if unknown). */
+    public static String nfcRawState() {
+        for (String l : SysSettings.exec("dumpsys", "nfc").split("\n")) {
+            String t = l.trim();
+            if (t.startsWith("mState=")) return t.substring(7).trim();
+        }
+        return "";
+    }
+
+    /** Waits (up to maxMs) until NFC is fully on or off and returns that state. */
+    private static String nfcSettled(long maxMs) {
+        long end = System.currentTimeMillis() + maxMs;
+        while (true) {
+            String s = nfcRawState();
+            if ("on".equals(s) || "off".equals(s) || System.currentTimeMillis() > end) return s;
+            try { Thread.sleep(150); } catch (InterruptedException e) { Thread.currentThread().interrupt(); return s; }
+        }
     }
 
     private static boolean setVivoNfc(boolean on) {
@@ -667,7 +703,7 @@ public final class ShellActions {
             String cp = apps.optString(i);
             if (cp == null || cp.isEmpty()) continue;
             try { if (unstop != null) unstop.invoke(ipm, cp, false, 0); } catch (Throwable ignored) {}
-            if (pidof(cp) > 0) {
+            if (running(cp)) {
                 L.i("launch_bg: " + cp + " already running");
                 continue;
             }
@@ -752,6 +788,75 @@ public final class ShellActions {
         }
         if (!hit.cmp.isEmpty()) {
             SysSettings.exec("am", "start", "--activity-no-animation", "--activity-reorder-to-front", "-n", hit.cmp);
+        }
+    }
+
+    /** True if any process of the app (main or ":sub" process) is alive. */
+    public static boolean running(String pkg) {
+        if (pkg == null || pkg.isEmpty()) return false;
+        File[] files = new File("/proc").listFiles();
+        if (files == null) return false;
+        byte[] buf = new byte[160];
+        for (File f : files) {
+            if (!f.getName().matches("\\d+")) continue;
+            try (FileInputStream in = new FileInputStream(new File(f, "cmdline"))) {
+                int n = in.read(buf);
+                if (n <= 0) continue;
+                int end = 0;
+                while (end < n && buf[end] != 0) end++;
+                String name = new String(buf, 0, end);
+                if (name.equals(pkg) || name.startsWith(pkg + ":")) return true;
+            } catch (Exception ignored) {}
+        }
+        return false;
+    }
+
+    private static boolean musicPlaying() {
+        return SysSettings.exec("dumpsys", "audio").contains("state:started");
+    }
+
+    /**
+     * For "Only if not already done": true when this action would change nothing
+     * (setting already at its value, app already running/closed, music already playing/paused).
+     */
+    public static boolean alreadyDone(JSONObject a) {
+        String type = a.optString("type");
+        try {
+            switch (type) {
+                case "launch_bg": {
+                    JSONArray apps = a.optJSONArray("apps");
+                    if (apps == null || apps.length() == 0) return true;
+                    for (int i = 0; i < apps.length(); i++) if (!running(apps.optString(i))) return false;
+                    return true;
+                }
+                case "open_app": {
+                    String pkg = a.optString("pkg");
+                    if (pkg.isEmpty()) {
+                        JSONArray apps = a.optJSONArray("apps");
+                        if (apps != null && apps.length() > 0) pkg = apps.optString(0);
+                    }
+                    return running(pkg);
+                }
+                case "close_app": {
+                    JSONArray apps = a.optJSONArray("apps");
+                    if (apps == null) return true;
+                    for (int i = 0; i < apps.length(); i++) if (running(apps.optString(i))) return false;
+                    return true;
+                }
+                case "media_control": {
+                    String v = a.optString("value", "play_pause");
+                    if ("play".equals(v)) return musicPlaying();
+                    if ("pause".equals(v) || "stop".equals(v)) return !musicPlaying();
+                    return false;
+                }
+                default: {
+                    String cur = read(type);
+                    String target = targetValue(type, a);
+                    return cur != null && target != null && cur.equals(target);
+                }
+            }
+        } catch (Throwable t) {
+            return false;
         }
     }
 

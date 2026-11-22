@@ -44,6 +44,7 @@ class SolCubeService : Service() {
     private val watchdog = object : Runnable {
         override fun run() {
             Components.reconcile(this@SolCubeService)
+            shizukuCheck(false)
             // daily GitHub release check (Updates.check returns at once until a day has passed);
             // a new version opens its pop-up once (allowed from the background: SolCube can draw over apps)
             runCatching {
@@ -56,9 +57,36 @@ class SolCubeService : Service() {
         }
     }
 
+    // ---- Shizuku stopped warning: a pill (tap opens Shizuku) once it has been down a minute, while
+    // the phone is in use; again on unlock, at most every 15 min, until it runs again.
+    private var shizukuDownSince = 0L
+    private var shizukuWarnedAt = 0L
+
+    private fun shizukuCheck(unlocked: Boolean) {
+        val now = System.currentTimeMillis()
+        if (Shell.state() != Shell.State.NOT_RUNNING || !anyEnabled(this)) { shizukuDownSince = 0L; shizukuWarnedAt = 0L; return }
+        if (shizukuDownSince == 0L) shizukuDownSince = now
+        if (now - shizukuDownSince < 55_000L) return
+        val inUse = getSystemService(android.os.PowerManager::class.java).isInteractive &&
+            !getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked
+        if (!inUse) return
+        val again = if (unlocked) 15 * 60_000L else Long.MAX_VALUE
+        if (shizukuWarnedAt != 0L && now - shizukuWarnedAt < again) return
+        shizukuWarnedAt = now
+        Island.show(this, "Shizuku stopped · tap to start", ok = false) {
+            val i = packageManager.getLaunchIntentForPackage("moe.shizuku.privileged.api")
+                ?: Intent(this, MainActivity::class.java)
+            runCatching { startActivity(i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+        }
+    }
+
+    private val unlockReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(c: Context, i: Intent) { bg.postDelayed({ shizukuCheck(true) }, 1200) }
+    }
+
     // Shizuku started (e.g. after a reboot): bring the shell side up.
     private val binderListener = Shizuku.OnBinderReceivedListener { bg.post { Components.reconcile(this) } }
-    private val deadListener = Shizuku.OnBinderDeadListener { Shell.reset() }
+    private val deadListener = Shizuku.OnBinderDeadListener { Shell.reset(); bg.post { shizukuCheck(false) } }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -77,6 +105,7 @@ class SolCubeService : Service() {
         startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
         Shizuku.addBinderReceivedListenerSticky(binderListener)
         Shizuku.addBinderDeadListener(deadListener)
+        registerReceiver(unlockReceiver, android.content.IntentFilter(Intent.ACTION_USER_PRESENT), Context.RECEIVER_EXPORTED)
         bg.postDelayed({ Components.reconcile(this@SolCubeService) }, 2000)
         bg.postDelayed(watchdog, WATCHDOG_MS)
     }
@@ -119,6 +148,7 @@ class SolCubeService : Service() {
     override fun onDestroy() {
         Shizuku.removeBinderReceivedListener(binderListener)
         Shizuku.removeBinderDeadListener(deadListener)
+        runCatching { unregisterReceiver(unlockReceiver) }
         bg.removeCallbacksAndMessages(null)
         worker.quitSafely()
         ripple?.stop(); ripple = null
