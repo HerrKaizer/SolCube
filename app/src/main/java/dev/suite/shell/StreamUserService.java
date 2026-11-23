@@ -40,6 +40,7 @@ public class StreamUserService extends ISolCubeService.Stub {
 
     public StreamUserService() {
         L.tag = "SolCube.stream";
+        AppKeeper.watchInstalled(this::destroy, true);
         wide = readWide();
         loop = new Thread(this::run, "stream-loop");
         loop.start();

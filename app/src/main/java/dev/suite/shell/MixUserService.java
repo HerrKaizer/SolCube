@@ -50,6 +50,7 @@ public class MixUserService extends ISolCubeService.Stub {
 
     public MixUserService(Context given) {
         L.tag = "SolCube.mix";
+        AppKeeper.watchInstalled(this::destroy);
         try {
             ctx = shellContext(given);
             am = ctx.getSystemService(AudioManager.class);

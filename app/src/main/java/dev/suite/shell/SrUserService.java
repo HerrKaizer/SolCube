@@ -15,6 +15,7 @@ public class SrUserService extends ISolCubeService.Stub {
 
     public SrUserService() {
         L.tag = "SolCube.sr";
+        AppKeeper.watchInstalled(this::destroy);
         loop = new Thread(this::run, "sr-loop");
         loop.start();
     }

@@ -14,7 +14,10 @@ import java.util.Map;
  * modified settings when leaving (or after 3 min locked for NFC).
  */
 public class ProfilesUserService extends ISolCubeService.Stub {
-    public ProfilesUserService() { L.tag = "SolCube.prof"; }
+    public ProfilesUserService() {
+        L.tag = "SolCube.prof";
+        AppKeeper.watchInstalled(this::destroy);
+    }
 
     private static final long POLL_ACTIVE_MS = 250;
     private static final long POLL_LOCKED_MS = 500;

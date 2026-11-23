@@ -154,6 +154,7 @@ object Components {
     const val KEY_BUTTON_HOLD = "cts_button_hold"
     const val KEY_CTS_NAV = "cts_nav"
     const val KEY_NAV_HOLD = "cts_nav_hold"
+    const val KEY_CTS_ANIMATE = "cts_animate"
     /** "Power button hold" card: the hold opens an app / switches sound instead of Circle to Search. */
     const val KEY_HOLD_ACT = "hold_action"
     const val HOLD_MIN = 200
@@ -174,6 +175,8 @@ object Components {
     fun buttonHold(ctx: Context) = prefs(ctx).getInt(KEY_BUTTON_HOLD, 350)
     fun ctsNav(ctx: Context) = prefs(ctx).getBoolean(KEY_CTS_NAV, false)
     fun navHold(ctx: Context) = prefs(ctx).getInt(KEY_NAV_HOLD, 450)
+    fun ctsAnimate(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_CTS_ANIMATE, true)
+    fun ctsRippleWanted(ctx: Context): Boolean = ctsAnimate(ctx) && (ctsTouch(ctx) || ctsButton(ctx) || ctsNav(ctx))
     fun holdAction(ctx: Context) = prefs(ctx).getBoolean(KEY_HOLD_ACT, false)
 
     fun ctsServiceWanted(ctx: Context): Boolean =
@@ -211,6 +214,7 @@ object Components {
             .put("navHold", navHold(ctx))
             .put("touchHold", touchHold(ctx))
             .put("buttonHold", buttonHold(ctx))
+            .put("animate", ctsAnimate(ctx))
             .put("freeze", freeze(ctx))
             .put("secret", Ipc.secret(ctx)).toString()   // ripple-port handshake (see Ipc)
     }
@@ -235,6 +239,12 @@ object Components {
             if (on && key == KEY_HOLD_ACT) e.putBoolean(KEY_CTS_BUTTON, false)
         }.commit()
         syncCts(ctx)
+    }
+
+    fun setCtsAnimate(ctx: Context, on: Boolean) {
+        prefs(ctx).edit().putBoolean(KEY_CTS_ANIMATE, on).commit()
+        SolCubeService.sync(ctx)
+        Thread { runCatching { Shell.service(Shell.Kind.CTS)?.configure(ctsConfig(ctx)) } }.start()
     }
 
     fun setHold(ctx: Context, key: String, ms: Int) {

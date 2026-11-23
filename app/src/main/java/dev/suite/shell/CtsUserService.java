@@ -17,13 +17,33 @@ public class CtsUserService extends ISolCubeService.Stub {
     private static volatile boolean configured;
     private static volatile boolean button;
 
+    static final class InputDev {
+        final String path;
+        String name = "";
+        final java.util.Set<Integer> keys = new java.util.LinkedHashSet<>();
+        boolean hasAbsMt, hasSw, hasRel;
+        int maxX, maxY;
+        InputDev(String path) { this.path = path; }
+    }
+
     public CtsUserService() {
         L.tag = "SolCube.cts";
+        AppKeeper.onUninstall = this::destroy;
         CtsListener.touchEnabled = false;   // until SolCube sends the settings
         Thread t = new Thread(() -> {
             try {
                 listening = true;
-                CtsListener.main(new String[]{device("vivo_ts", "/dev/input/event7"), String.valueOf(CtsListener.holdMs), "400"});
+                InputDev td = findTouchDevice(listInputDevices());
+                String[] args;
+                if (td != null && td.maxX > 0 && td.maxY > 0) {
+                    int tol = Math.max(30, td.maxX * 400 / 14400);
+                    args = new String[]{td.path, String.valueOf(CtsListener.holdMs),
+                            String.valueOf(tol), String.valueOf(td.maxX), String.valueOf(td.maxY)};
+                } else {
+                    args = new String[]{device("vivo_ts", "/dev/input/event7"),
+                            String.valueOf(CtsListener.holdMs), "400"};
+                }
+                CtsListener.main(args);
             } catch (Throwable e) {
                 L.e("listener stopped", e);
             } finally {
@@ -31,12 +51,12 @@ public class CtsUserService extends ISolCubeService.Stub {
             }
         }, "cts-listener");
         t.start();
-        // if SolCube never sends settings (shouldn't happen), fall back to both triggers on
+        // if SolCube never sends settings (shouldn't happen), fall back to touch trigger only (never grab power key blindly)
         Thread fallback = new Thread(() -> {
             try { Thread.sleep(5000); } catch (InterruptedException ignored) {}
             if (!configured) {
-                L.i("no settings from SolCube, using defaults");
-                apply(true, true, CtsListener.holdMs, PowerKey.holdMs);
+                L.i("no settings from SolCube, using touch-only defaults");
+                apply(true, false, CtsListener.holdMs, PowerKey.holdMs);
             }
         }, "cts-defaults");
         fallback.setDaemon(true);
@@ -47,6 +67,7 @@ public class CtsUserService extends ISolCubeService.Stub {
         try {
             JSONObject o = new JSONObject(json);
             CtsListener.freezeMs = Math.max(0, Math.min(600, o.optLong("freeze", 0)));
+            CtsListener.animate = o.optBoolean("animate", true);
             String sec = o.optString("secret", "");
             if (!sec.isEmpty()) CtsListener.secret = sec;
             boolean touch = o.optBoolean("touch", true);
@@ -74,13 +95,30 @@ public class CtsUserService extends ISolCubeService.Stub {
         PowerKey.holdMs = clamp(buttonHold);
         CtsListener.touchEnabled = touch;
         if (btn && !PowerKey.started) {
-            // event numbers change between boots (e.g. pmic_resin moved event3 -> event2 and the
-            // fingerprint sensor took event3, which broke volume+power screenshots): look them up by name
-            String pwr = device("pmic_pwrkey", "/dev/input/event1");
-            String volUp = device("gpio-keys", "/dev/input/event0");
-            String volDown = device("pmic_resin", "/dev/input/event2");
-            L.i("keys: power " + pwr + ", volume " + volUp + " + " + volDown);
-            PowerKey.start(pwr, volUp, volDown);
+            // Event numbers and driver names vary across chipsets (Qualcomm: pmic_pwrkey/gpio-keys/pmic_resin;
+            // MediaTek: mtk-pmic-keys/mtk-kpd) and boots: pick by advertised capabilities rather than fixed names.
+            java.util.List<InputDev> devs = listInputDevices();
+            InputDev pwr = findPowerDevice(devs);
+            if (pwr == null) {
+                StringBuilder sb = new StringBuilder();
+                for (InputDev d : devs) {
+                    if (sb.length() > 0) sb.append(", ");
+                    sb.append(d.path).append('(').append(d.name).append(",k=").append(d.keys.size()).append(')');
+                }
+                L.i("power key not found; button hold disabled. devices=[" + sb + "]");
+            } else {
+                java.util.List<InputDev> vols = findVolumeDevices(devs, pwr);
+                String[] volPaths = new String[vols.size()];
+                StringBuilder vs = new StringBuilder();
+                for (int i = 0; i < vols.size(); i++) {
+                    InputDev vd = vols.get(i);
+                    volPaths[i] = vd.path;
+                    if (vs.length() > 0) vs.append(", ");
+                    vs.append(vd.path).append(" (").append(vd.name).append(')');
+                }
+                L.i("keys: power " + pwr.path + " (" + pwr.name + ", keys=" + pwr.keys + "), volume [" + vs + "]");
+                PowerKey.start(pwr.path, pwr.name, volPaths);
+            }
         } else if (!btn && PowerKey.started) {
             L.i("button trigger off: exiting to release the power key (SolCube restarts the listener)");
             System.exit(0);
@@ -89,13 +127,13 @@ public class CtsUserService extends ISolCubeService.Stub {
         L.i("triggers: touch=" + touch + " (" + CtsListener.holdMs + " ms), button=" + btn + " (" + PowerKey.holdMs + " ms)");
     }
 
-    /** /dev/input/eventN of the input device with this name (from /proc/bus/input/devices). */
+    /** /dev/input/eventN of the input device with this name (from `getevent -p`, else `/proc/bus/input/devices`). */
     static String device(String name, String fallback) {
-        // vivo's SELinux policy denies shell both /proc/bus/input/devices and /sys/class/input/*/name,
-        // so ask getevent (it reads each device's name with an ioctl). Before this, the lookup
-        // always failed and fell back to fixed numbers, which only match some phones' boot order.
-        String byIoctl = deviceFromGetevent(name);
-        if (byIoctl != null) return byIoctl;
+        if (name != null) {
+            for (InputDev d : listInputDevices()) {
+                if (name.equals(d.name)) return d.path;
+            }
+        }
         try (java.io.BufferedReader r = new java.io.BufferedReader(new java.io.FileReader("/proc/bus/input/devices"))) {
             String line;
             boolean match = false;
@@ -112,32 +150,158 @@ public class CtsUserService extends ISolCubeService.Stub {
         return fallback;
     }
 
-    private static String getevent;   // `getevent -p` output, read once per process
+    private static String getevent;   // `getevent -p` output, cached once non-empty per process
+    private static java.util.List<InputDev> cachedDevs;
+    private static final java.util.regex.Pattern SEC_HDR =
+            java.util.regex.Pattern.compile("^([A-Z0-9_]+)\\s*\\(([0-9a-fA-F]{4})\\):(.*)$");
+    private static final java.util.regex.Pattern ABS_X = java.util.regex.Pattern.compile("(^|\\s)0035\\s*:");
+    private static final java.util.regex.Pattern ABS_Y = java.util.regex.Pattern.compile("(^|\\s)0036\\s*:");
+    private static final java.util.regex.Pattern ABS_MAX = java.util.regex.Pattern.compile("max\\s+(\\d+)");
 
-    /** "add device 9: /dev/input/event1" followed by `name: "pmic_pwrkey"` in getevent -p's listing. */
-    static synchronized String deviceFromGetevent(String name) {
+    static synchronized java.util.List<InputDev> listInputDevices() {
+        if (cachedDevs != null) return cachedDevs;
+        java.util.List<InputDev> devs = new java.util.ArrayList<>();
         try {
-            if (getevent == null) getevent = SysSettings.exec("getevent", "-p");
-            String dev = null;
-            for (String line : getevent.split("\n")) {
-                line = line.trim();
-                if (line.startsWith("add device")) dev = line.substring(line.indexOf("/dev/input/")).trim();
-                else if (dev != null && line.startsWith("name:") && line.endsWith("\"" + name + "\"")) {
-                    L.i("found " + name + " at " + dev);
-                    return dev;
+            if (getevent == null || getevent.isEmpty()) getevent = SysSettings.exec("getevent", "-p");
+            if (getevent == null || getevent.isEmpty()) return devs;
+            InputDev cur = null;
+            int sec = 0;   // 1=KEY, 3=ABS, 9=PROPS
+            for (String raw : getevent.split("\n")) {
+                String line = raw.trim();
+                if (line.startsWith("add device") && line.contains("/dev/input/")) {
+                    cur = new InputDev(line.substring(line.indexOf("/dev/input/")).trim());
+                    devs.add(cur);
+                    sec = 0;
+                    continue;
                 }
+                if (cur == null) continue;
+                if (line.startsWith("name:")) {
+                    String n = line.substring(5).trim();
+                    if (n.startsWith("\"") && n.endsWith("\"") && n.length() >= 2) n = n.substring(1, n.length() - 1);
+                    cur.name = n;
+                    sec = 0;
+                    continue;
+                }
+                if (line.startsWith("events:")) { sec = 0; continue; }
+                if (line.startsWith("input props:")) {
+                    sec = 9;
+                    if (line.contains("INPUT_PROP_DIRECT")) cur.hasAbsMt = true;
+                    continue;
+                }
+                java.util.regex.Matcher sm = SEC_HDR.matcher(line);
+                if (sm.matches()) {
+                    String code = sm.group(2);
+                    String rest = sm.group(3);
+                    if ("0001".equals(code)) {
+                        sec = 1;
+                        parseKeyCodes(cur, rest);
+                    } else if ("0003".equals(code)) {
+                        sec = 3;
+                        parseAbsLine(cur, rest);
+                    } else if ("0005".equals(code)) {
+                        cur.hasSw = true;
+                        sec = 0;
+                    } else if ("0002".equals(code)) {
+                        cur.hasRel = true;
+                        sec = 0;
+                    } else {
+                        sec = 0;
+                    }
+                    continue;
+                }
+                if (sec == 1) parseKeyCodes(cur, line);
+                else if (sec == 3) parseAbsLine(cur, line);
+                else if (sec == 9 && line.contains("INPUT_PROP_DIRECT")) cur.hasAbsMt = true;
             }
+            if (!devs.isEmpty()) cachedDevs = java.util.Collections.unmodifiableList(devs);
         } catch (Exception e) {
             L.e("getevent", e);
         }
-        return null;
+        return cachedDevs != null ? cachedDevs : devs;
+    }
+
+    private static void parseKeyCodes(InputDev d, String s) {
+        if (s == null) return;
+        for (String tok : s.trim().split("\\s+")) {
+            if (tok.isEmpty()) continue;
+            if (tok.endsWith("*")) tok = tok.substring(0, tok.length() - 1);
+            if (tok.length() >= 1 && tok.length() <= 4 && tok.matches("[0-9a-fA-F]+")) {
+                d.keys.add(Integer.parseInt(tok, 16));
+            }
+        }
+    }
+
+    private static void parseAbsLine(InputDev d, String s) {
+        if (s == null) return;
+        if (ABS_X.matcher(s).find()) {
+            java.util.regex.Matcher m = ABS_MAX.matcher(s);
+            if (m.find()) { d.hasAbsMt = true; d.maxX = Integer.parseInt(m.group(1)) + 1; }
+        } else if (ABS_Y.matcher(s).find()) {
+            java.util.regex.Matcher m = ABS_MAX.matcher(s);
+            if (m.find()) { d.hasAbsMt = true; d.maxY = Integer.parseInt(m.group(1)) + 1; }
+        }
+    }
+
+    private static final String[] EXCLUDED_KEY_NAMES = {
+            "touch", "_ts", "ts_", "finger", "_fp", "fp_", "fpc", "goodix", "silead", "focal", "synaptics",
+            "uinput", "virtual", "headset", "jack", "avrcp", "bluetooth", "bt_", "hid", "mouse",
+            "hall", "lid", "sensor", "vibrat", "haptic", "stylus", "pen", "qwerty", "keyboard"
+    };
+
+    static boolean isExcludedKeyDev(InputDev d) {
+        if (d.hasAbsMt || d.hasRel || d.hasSw || d.keys.isEmpty() || d.keys.size() > 48) return true;
+        if (d.keys.contains(30) && d.keys.contains(57)) return true;   // KEY_A + KEY_SPACE -> QWERTY keyboard
+        String low = d.name.toLowerCase(java.util.Locale.US);
+        for (String kw : EXCLUDED_KEY_NAMES) {
+            if (low.contains(kw)) return true;
+        }
+        return false;
+    }
+
+    static InputDev findPowerDevice(java.util.List<InputDev> devs) {
+        InputDev best = null;
+        int bestScore = Integer.MIN_VALUE;
+        for (InputDev d : devs) {
+            if (isExcludedKeyDev(d) || !d.keys.contains(PowerKey.KEY_POWER)) continue;
+            int score = 0;
+            String low = d.name.toLowerCase(java.util.Locale.US);
+            if ("pmic_pwrkey".equals(low)) score += 100;
+            else if (low.contains("pwrkey") || low.contains("power")
+                    || "mtk-pmic-keys".equals(low) || "pmic-keys".equals(low) || "qpnp_pon".equals(low)) score += 80;
+            else if ("mtk-kpd".equals(low) || "gpio-keys".equals(low) || "gpio_keys".equals(low)
+                    || low.contains("pmic") || low.contains("kpd") || low.contains("key")) score += 50;
+            if (d.keys.size() == 1) score += 40;
+            else score -= d.keys.size();
+            if (score > bestScore) { bestScore = score; best = d; }
+        }
+        return best;
+    }
+
+    static java.util.List<InputDev> findVolumeDevices(java.util.List<InputDev> devs, InputDev powerDev) {
+        java.util.List<InputDev> out = new java.util.ArrayList<>();
+        for (InputDev d : devs) {
+            if (powerDev != null && d.path.equals(powerDev.path)) continue;
+            if (isExcludedKeyDev(d)) continue;
+            if (d.keys.contains(PowerKey.KEY_VOLUMEDOWN) || d.keys.contains(PowerKey.KEY_VOLUMEUP)) out.add(d);
+        }
+        return out;
+    }
+
+    static InputDev findTouchDevice(java.util.List<InputDev> devs) {
+        InputDev fallback = null;
+        for (InputDev d : devs) {
+            if (d.maxX <= 0 || d.maxY <= 0) continue;
+            if ("vivo_ts".equals(d.name)) return d;
+            if (fallback == null) fallback = d;
+        }
+        return fallback;
     }
 
     private static long clamp(long ms) { return Math.max(200, Math.min(1000, ms)); }
 
     @Override public void destroy() {
         L.i("stopping");
-        AppKeeper.disableA11y();
+        if (!AppKeeper.isAppInstalled()) AppKeeper.disableA11y();
         System.exit(0);   // closing the input fds releases the power-key grab
     }
 
@@ -179,8 +343,11 @@ public class CtsUserService extends ISolCubeService.Stub {
         }
         if ("power-cts".equals(cmd)) {   // double power press set to Circle to Search: ripple from the button
             new Thread(() -> {
-                CtsListener.Capture c = new CtsListener.Capture();
-                c.start();
+                CtsListener.Capture c = null;
+                if (CtsListener.animate) {
+                    c = new CtsListener.Capture();
+                    c.start();
+                }
                 float fx = PowerKey.fx, fy = PowerKey.fy;
                 CtsListener.fire(fx, fy, new float[]{fx, fy, fx, fy}, c);
             }, "power-cts").start();

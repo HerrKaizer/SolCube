@@ -31,6 +31,7 @@ public class CtsListener {
     static volatile boolean touchEnabled = true;  // two-finger trigger on/off (set from SolCube)
     static volatile boolean touchCts = true, touchRoutine = false;
     static volatile long freezeMs = 0;            // overlay freeze after the CTS call (set from SolCube)
+    static volatile boolean animate = true;       // false = skip screencap + ripple overlay, trigger CTS immediately
     static volatile String secret;                // shared with SolCube for the ripple-port handshake (set from SolCube)
     // Navigation-bar hold: one finger that lands on the gesture bar (bottom strip, middle of the
     // width) and stays still. Moving it (swipe up = home/recents, sideways = switch apps) cancels.
@@ -116,7 +117,7 @@ public class CtsListener {
                 synchronized (lock) {
                     if (navSince != 0 && !spent) {
                         long held = now() - navSince;
-                        if (navCts && capture == null && held >= captureAfter(navHoldMs)) {
+                        if (navCts && animate && capture == null && held >= captureAfter(navHoldMs)) {
                             capture = new Capture();
                             capture.start();
                         }
@@ -130,7 +131,7 @@ public class CtsListener {
                         }
                     } else if (twoSince != 0 && !spent) {
                         long held = now() - twoSince;
-                        if (touchCts && capture == null && held >= captureAfter(holdMs)) {
+                        if (touchCts && animate && capture == null && held >= captureAfter(holdMs)) {
                             capture = new Capture();
                             capture.start();
                         }
@@ -197,6 +198,10 @@ public class CtsListener {
         // instant feedback: the hold was recognised (BlueLM's own trigger vibration)
         if (!Haptics.bluelmTrigger()) pop();
         try {
+            if (!animate) {
+                launch();
+                return;
+            }
             byte[] frame = null;
             if (cap != null) {
                 try { cap.join(400); } catch (InterruptedException ignored) {}

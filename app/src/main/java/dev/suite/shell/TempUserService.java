@@ -23,6 +23,7 @@ public class TempUserService extends ISolCubeService.Stub {
 
     public TempUserService() {
         L.tag = "SolCube.temp";
+        AppKeeper.watchInstalled(this::destroy, true);
         readCpu();   // seed baseline jiffies for the first delta
     }
 

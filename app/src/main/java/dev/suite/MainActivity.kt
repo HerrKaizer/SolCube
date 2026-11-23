@@ -196,7 +196,10 @@ class MainActivity : Activity() {
 
     private fun render() {
         val s = last ?: Components.Status(Shell.state())
-        val canDraw = Settings.canDrawOverlays(this)
+        val rawOverlay = Settings.canDrawOverlays(this)
+        val a11yOk = SolCubeA11y.instance != null || SolCubeA11y.isEnabled(this)
+        val canDraw = rawOverlay || a11yOk
+        val shellOk = s.shell == Shell.State.READY
 
         shizukuCard.visibility = if (s.shell == Shell.State.READY) View.GONE else View.VISIBLE
         when (s.shell) {
@@ -210,22 +213,23 @@ class MainActivity : Activity() {
             }
             Shell.State.READY -> {}
         }
-        overlayCard.visibility = if (canDraw) View.GONE else View.VISIBLE
-        val shellOk = s.shell == Shell.State.READY
+        overlayCard.visibility = if (canDraw || shellOk) View.GONE else View.VISIBLE
 
-        // Circle to Search: shell listener + ripple overlay in this app
+        // Circle to Search: shell listener + optional ripple overlay in this app
+        val anim = Components.ctsAnimate(this)
         val ripple = RippleHost.running
+        val rippleOk = !anim || ripple
         val listener = s.cts?.optBoolean("running") == true
         fun ctsDetail(sec: Section, idle: String) = when {
             !shellOk && enabled(sec) -> "Waiting for Shizuku"
-            enabled(sec) && !canDraw -> "Needs “Display over other apps”"
+            anim && enabled(sec) && !canDraw && !shellOk -> "Needs “Display over other apps”"
             else -> idle
         }
-        showSection(ctsTouch, running = s.cts?.optBoolean("touch") == true && enabled(ctsTouch) && ripple,
+        showSection(ctsTouch, running = s.cts?.optBoolean("touch") == true && enabled(ctsTouch) && rippleOk,
             detail = ctsDetail(ctsTouch, "Hold two fingers still on the screen"))
-        showSection(ctsButton, running = s.cts?.optBoolean("button") == true && enabled(ctsButton) && ripple,
+        showSection(ctsButton, running = s.cts?.optBoolean("button") == true && enabled(ctsButton) && rippleOk,
             detail = ctsDetail(ctsButton, "Hold the power button (screen on)"))
-        showSection(ctsNav, running = s.cts?.optBoolean("nav") == true && enabled(ctsNav) && ripple,
+        showSection(ctsNav, running = s.cts?.optBoolean("nav") == true && enabled(ctsNav) && rippleOk,
             detail = ctsDetail(ctsNav, "Hold one finger still on the navigation bar at the bottom"))
         showSection(holdSec, running = s.cts?.optBoolean("button") == true && enabled(holdSec),
             detail = when {
@@ -237,7 +241,7 @@ class MainActivity : Activity() {
             enabled(ctsTouch) && s.cts?.optBoolean("touch") == true,
             enabled(ctsButton) && s.cts?.optBoolean("button") == true,
             enabled(ctsNav) && s.cts?.optBoolean("nav") == true,
-        ).any { it } && ripple
+        ).any { it } && rippleOk
         ctsStatus.put(when {
             count == 0 -> "Not running"
             ctsActive -> "$count active"
@@ -249,6 +253,8 @@ class MainActivity : Activity() {
         val anyCts = count > 0
         ctsNote.put(when {
             !anyCts -> "Pick a trigger below"
+            !anim && !listener && shellOk -> "Starting the listener…"
+            !anim -> "Triggers Google's Circle to Search instantly"
             listener && !ripple -> "Listener running, ripple overlay starting…"
             !listener && ripple && shellOk -> "Starting the listener…"
             else -> "Ripple, then Google's Circle to Search"
@@ -308,12 +314,12 @@ class MainActivity : Activity() {
 
         showSection(
             fpsSec, running = TempOverlay.running && enabled(fpsSec),
-            detail = if (enabled(fpsSec) && !canDraw) "Needs “Display over other apps”"
+            detail = if (enabled(fpsSec) && !canDraw && !shellOk) "Needs “Display over other apps”"
             else "Frames per second on screen, in its own pill: left of the temperature pill in landscape, above it in portrait.",
         )
         showSection(
             temp, running = TempOverlay.running && enabled(temp),
-            detail = if (enabled(temp) && !canDraw) "Needs “Display over other apps”"
+            detail = if (enabled(temp) && !canDraw && !shellOk) "Needs “Display over other apps”"
             else "CPU · GPU · Battery °C" +
                 (if (Style.showLoad(this)) " + CPU · GPU load" else "") + " — drag to move, hold 1 s to turn off",
         )
@@ -357,7 +363,7 @@ class MainActivity : Activity() {
         setGroup(audioGroup, mixOn,
             (if (mixOn) "Mixing · " else "") + "Volume ${FineVolume.percent(this)}%")
 
-        renderDiagnostics(s, canDraw)
+        renderDiagnostics(s, rawOverlay)
     }
 
     private fun renderDiagnostics(s: Components.Status, canDraw: Boolean) {
@@ -395,10 +401,17 @@ class MainActivity : Activity() {
         val verName = Updates.current(this)
         val verCode = runCatching { packageManager.getPackageInfo(packageName, 0).longVersionCode }.getOrDefault(0L)
 
+        val hostMode = when {
+            SolCubeA11y.instance != null && SolCubeService.anyEnabled(this@MainActivity) -> "active (a11y)"
+            SolCubeService.running -> "active (fgs)"
+            SolCubeService.anyEnabled(this@MainActivity) -> "starting"
+            else -> "idle"
+        }
+
         val appInfo = buildString {
             appendLine("Version: $verName ($verCode)")
             appendLine("Device: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL} · Android ${android.os.Build.VERSION.RELEASE} (SDK ${android.os.Build.VERSION.SDK_INT})")
-            appendLine("Theme: $themeName (${if (isDark()) "dark" else "light"}) · Keep-alive: ${if (SolCubeService.anyEnabled(this@MainActivity)) "active" else "idle"}")
+            appendLine("Theme: $themeName (${if (isDark()) "dark" else "light"}) · Keep-alive: $hostMode")
             appendLine("Shizuku: $shState · Overlay: ${if (canDraw) "ok" else "missing"} · A11y: ${if (a11yRunning) "on" else "off"}")
             append("DND: ${if (dndGranted) "ok" else "no"} · Battery whitelist: ${if (dozeIgnored) "ok" else "no"} · Double-press: ${if (doubleReady) "suite" else "other"}")
         }
@@ -502,8 +515,11 @@ class MainActivity : Activity() {
     private fun toggle(sec: Section) {
         if (sec.key in busy) return
         val on = !enabled(sec)
-        val needsOverlay = sec.key in setOf(Components.KEY_CTS_TOUCH, Components.KEY_CTS_BUTTON, Components.KEY_CTS_NAV, Components.KEY_TEMP, Components.KEY_FPS)
-        if (on && needsOverlay && !Settings.canDrawOverlays(this)) {
+        val needsOverlay = sec.key in setOf(Components.KEY_TEMP, Components.KEY_FPS) ||
+            (Components.ctsAnimate(this) && sec.key in setOf(Components.KEY_CTS_TOUCH, Components.KEY_CTS_BUTTON, Components.KEY_CTS_NAV))
+        val hasOverlay = Settings.canDrawOverlays(this) || SolCubeA11y.instance != null ||
+            SolCubeA11y.isEnabled(this) || Shell.state() == Shell.State.READY
+        if (on && needsOverlay && !hasOverlay) {
             openOverlaySettings()
         }
         busy += sec.key
@@ -626,6 +642,22 @@ class MainActivity : Activity() {
             LinearLayout.LayoutParams(MATCH_PARENT, 1.dp).apply { topMargin = 14.dp })
         ctsNav = section(Components.KEY_CTS_NAV, "Navigation bar hold", into = ctsBody)
         addHoldStepper(ctsBody, Components.KEY_NAV_HOLD) { Components.navHold(this) }
+        ctsBody.addView(View(this).apply { setBackgroundColor(p.stroke) },
+            LinearLayout.LayoutParams(MATCH_PARENT, 1.dp).apply { topMargin = 14.dp })
+        ctsBody.addView(Switch(this).apply {
+            text = "Instant trigger (no animation)"
+            textSize = 13.5f
+            setTextColor(p.fg)
+            typeface = fontRegular
+            styleSwitch(this)
+            isChecked = !Components.ctsAnimate(this@MainActivity)
+            setOnCheckedChangeListener { _, instant ->
+                Components.setCtsAnimate(this@MainActivity, !instant)
+                render()
+            }
+        }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 12.dp })
+        ctsBody.addView(label("Skips the ripple overlay and opens Circle to Search right away.", 12f, p.sub),
+            LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 2.dp })
         // vivo hides the "default digital assistant" page; Circle to Search needs Google there
         ctsBody.addView(textButton("Default assistant settings") { openDefaultAssistantSettings() },
             LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = 8.dp; leftMargin = (-12).dp })
@@ -1542,7 +1574,9 @@ class MainActivity : Activity() {
         if (streamBusy) return
         val mode = Components.enabled(this, Components.KEY_STREAM)
         val streaming = last?.stream?.optBoolean("streaming") == true
-        if (!Settings.canDrawOverlays(this)) { openOverlaySettings(); return }
+        val hasOverlay = Settings.canDrawOverlays(this) || SolCubeA11y.instance != null ||
+            SolCubeA11y.isEnabled(this) || Shell.state() == Shell.State.READY
+        if (!hasOverlay) { openOverlaySettings(); return }
         streamBusy = true
         render()
         io.execute {

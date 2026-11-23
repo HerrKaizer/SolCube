@@ -26,7 +26,10 @@ import kotlin.math.abs
  */
 class StreamOverlay(private val ctx: Context) {
 
-    private val wm = ctx.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+    private var winCtx: Context = ctx
+    private var wm: WindowManager = ctx.getSystemService(WindowManager::class.java)
+    var usingA11y = false
+        private set
     private val main = Handler(Looper.getMainLooper())
     private val worker = HandlerThread("stream-ui").apply { start() }
     private val bg = Handler(worker.looper)
@@ -51,7 +54,11 @@ class StreamOverlay(private val ctx: Context) {
     private val accent = 0xFFF4B24C.toInt()
 
     fun start() {
-        if (!android.provider.Settings.canDrawOverlays(ctx)) return
+        val a11y = SolCubeA11y.instance
+        if (a11y == null && !android.provider.Settings.canDrawOverlays(ctx)) return
+        winCtx = a11y ?: ctx
+        wm = winCtx.getSystemService(WindowManager::class.java)
+        usingA11y = a11y != null
         build()
         bg.post(poll)
     }
@@ -61,6 +68,7 @@ class StreamOverlay(private val ctx: Context) {
         worker.quitSafely()
         main.removeCallbacksAndMessages(null)
         if (::root.isInitialized) runCatching { wm.removeView(root) }
+        usingA11y = false
     }
 
     // ------------------------------------------------------------------ status
@@ -97,7 +105,7 @@ class StreamOverlay(private val ctx: Context) {
 
     // ------------------------------------------------------------------ layout
 
-    private fun pill(t: String, filled: Boolean, onClick: () -> Unit) = TextView(ctx).apply {
+    private fun pill(t: String, filled: Boolean, onClick: () -> Unit) = TextView(winCtx).apply {
         text = t
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
         typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
@@ -113,9 +121,9 @@ class StreamOverlay(private val ctx: Context) {
 
     @SuppressLint("ClickableViewAccessibility")
     private fun build() {
-        root = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        root = LinearLayout(winCtx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
 
-        bubble = TextView(ctx).apply {
+        bubble = TextView(winCtx).apply {
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
             setTextColor(accent)
             gravity = Gravity.CENTER
@@ -124,13 +132,13 @@ class StreamOverlay(private val ctx: Context) {
         root.addView(bubble, LinearLayout.LayoutParams(dp(40f), dp(40f)))
 
         // two rows so it fits a portrait phone too: [stream][exit] / [brightness − +]
-        panel = LinearLayout(ctx).apply {
+        panel = LinearLayout(winCtx).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(8f), dp(8f), dp(8f), dp(8f))
             background = GradientDrawable().apply { cornerRadius = dp(26f).toFloat(); setColor(ink); setStroke(dp(1f), 0x22FFFFFF) }
             visibility = View.GONE
         }
-        fun row() = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        fun row() = LinearLayout(winCtx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         fun lp(first: Boolean = false) = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(40f)).apply { if (!first) leftMargin = dp(6f) }
         val top = row()
         streamBtn = pill("Start stream", true) { action(if (streaming) "stream off" else "stream on") }
@@ -144,10 +152,10 @@ class StreamOverlay(private val ctx: Context) {
         nav.addView(pill("Back", false) { key(4) }, lp(true))
         nav.addView(pill("Home", false) { key(3) }, lp())
         panel.addView(nav, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(6f) })
-        apps = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+        apps = LinearLayout(winCtx).apply { orientation = LinearLayout.VERTICAL }
         panel.addView(apps)
         val bottom = row()
-        dimText = TextView(ctx).apply {
+        dimText = TextView(winCtx).apply {
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f); setTextColor(sub)
             setPadding(dp(8f), 0, dp(4f), 0)
         }
@@ -160,8 +168,10 @@ class StreamOverlay(private val ctx: Context) {
         params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            if (usingA11y) WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
+            else WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
                 WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON,
@@ -216,7 +226,7 @@ class StreamOverlay(private val ctx: Context) {
         var r: LinearLayout? = null
         Components.streamApps(ctx).filter { pm.getLaunchIntentForPackage(it) != null }.forEachIndexed { i, pkg ->
             if (i % 2 == 0) {
-                r = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL }
+                r = LinearLayout(winCtx).apply { orientation = LinearLayout.HORIZONTAL }
                 apps.addView(r, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(6f) })
             }
             val name = runCatching { pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString() }.getOrDefault(pkg)

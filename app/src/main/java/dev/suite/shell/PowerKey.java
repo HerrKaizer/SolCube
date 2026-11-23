@@ -4,9 +4,13 @@ import android.os.IBinder;
 import android.os.SystemClock;
 import android.view.InputDevice;
 import android.view.KeyEvent;
+import java.io.BufferedReader;
 import java.io.FileDescriptor;
 import java.io.FileInputStream;
+import java.io.FileReader;
 import java.lang.reflect.Method;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * Power button: hold 0.5 s (screen on) -> Circle to Search with the ripple starting at the
@@ -45,10 +49,14 @@ final class PowerKey {
 
     static Object input, power;
     static Method inject, isInteractive;
+    static final Map<Integer, Integer> scanToKey = new HashMap<>();
 
     static synchronized void start(String powerDev, String... volumeDevs) {
-        if (started) return;
-        started = true;
+        start(powerDev, "", volumeDevs);
+    }
+
+    static synchronized void start(String powerDev, String powerDevName, String... volumeDevs) {
+        if (started || powerDev == null || powerDev.isEmpty()) return;
         try {
             Class<?> img = Class.forName("android.hardware.input.InputManagerGlobal");
             input = img.getMethod("getInstance").invoke(null);
@@ -62,6 +70,8 @@ final class PowerKey {
             L.i("power key disabled (no inject/power service): " + t);
             return;
         }
+        loadKeyLayout(powerDevName);
+        started = true;
         Thread t = new Thread(() -> readPower(powerDev), "power");
         t.setDaemon(true); t.start();
         for (String v : volumeDevs) {
@@ -72,23 +82,83 @@ final class PowerKey {
         timer.setDaemon(true); timer.start();
     }
 
+    private static void loadKeyLayout(String devName) {
+        scanToKey.clear();
+        // Standard Linux input-event-codes fallbacks for hardware keys sharing a PMIC/kpd node
+        scanToKey.put(114, KeyEvent.KEYCODE_VOLUME_DOWN);
+        scanToKey.put(115, KeyEvent.KEYCODE_VOLUME_UP);
+        scanToKey.put(113, KeyEvent.KEYCODE_VOLUME_MUTE);
+        scanToKey.put(102, KeyEvent.KEYCODE_HOME);
+        scanToKey.put(172, KeyEvent.KEYCODE_HOME);
+        scanToKey.put(158, KeyEvent.KEYCODE_BACK);
+        scanToKey.put(139, KeyEvent.KEYCODE_MENU);
+        scanToKey.put(127, KeyEvent.KEYCODE_MENU);
+        scanToKey.put(212, KeyEvent.KEYCODE_CAMERA);
+        scanToKey.put(528, KeyEvent.KEYCODE_FOCUS);
+        scanToKey.put(217, KeyEvent.KEYCODE_SEARCH);
+        scanToKey.put(226, KeyEvent.KEYCODE_HEADSETHOOK);
+        scanToKey.put(164, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE);
+        scanToKey.put(163, KeyEvent.KEYCODE_MEDIA_NEXT);
+        scanToKey.put(165, KeyEvent.KEYCODE_MEDIA_PREVIOUS);
+        scanToKey.put(166, KeyEvent.KEYCODE_MEDIA_STOP);
+        scanToKey.put(143, KeyEvent.KEYCODE_WAKEUP);
+        scanToKey.put(142, KeyEvent.KEYCODE_SLEEP);
+        scanToKey.put(582, KeyEvent.KEYCODE_VOICE_ASSIST);
+        scanToKey.put(583, KeyEvent.KEYCODE_ASSIST);
+        parseKlFile("/system/usr/keylayout/Generic.kl");
+        if (devName != null && !devName.isEmpty()) {
+            String kl = devName.replaceAll("[^A-Za-z0-9_-]", "_") + ".kl";
+            parseKlFile("/system/usr/keylayout/" + kl);
+            parseKlFile("/system_ext/usr/keylayout/" + kl);
+            parseKlFile("/product/usr/keylayout/" + kl);
+            parseKlFile("/vendor/usr/keylayout/" + kl);
+            parseKlFile("/odm/usr/keylayout/" + kl);
+        }
+    }
+
+    private static void parseKlFile(String path) {
+        try (BufferedReader r = new BufferedReader(new FileReader(path))) {
+            String line;
+            while ((line = r.readLine()) != null) {
+                int hash = line.indexOf('#');
+                if (hash >= 0) line = line.substring(0, hash);
+                line = line.trim();
+                if (line.isEmpty()) continue;
+                String[] parts = line.split("\\s+");
+                if (parts.length >= 3 && "key".equals(parts[0])) {
+                    try {
+                        int scan = Integer.decode(parts[1]);
+                        int kc = KeyEvent.keyCodeFromString("KEYCODE_" + parts[2]);
+                        if (kc != KeyEvent.KEYCODE_UNKNOWN) scanToKey.put(scan, kc);
+                    } catch (NumberFormatException ignored) {
+                    }
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
     static boolean interactive() {
         try { return (Boolean) isInteractive.invoke(power); } catch (Throwable t) { return true; }
     }
 
-    static void injectKey(int action, long downTime) {
+    static void injectKeyEvent(int action, int keyCode, long downTime, long eventTime, int scanCode) {
         try {
-            long now = SystemClock.uptimeMillis();
-            KeyEvent e = new KeyEvent(downTime, now, action, KeyEvent.KEYCODE_POWER, 0, 0,
-                    -1 /* virtual keyboard */, 0, KeyEvent.FLAG_FROM_SYSTEM, InputDevice.SOURCE_KEYBOARD);
+            KeyEvent e = new KeyEvent(downTime, eventTime, action, keyCode, 0, 0,
+                    -1 /* virtual keyboard */, scanCode, KeyEvent.FLAG_FROM_SYSTEM, InputDevice.SOURCE_KEYBOARD);
             inject.invoke(input, e, 0 /* async */);
         } catch (Throwable t) {
             L.i("inject failed: " + t);
         }
     }
 
+    static void injectKey(int action, long downTime) {
+        injectKeyEvent(action, KeyEvent.KEYCODE_POWER, downTime, SystemClock.uptimeMillis(), 0);
+    }
+
     static void readPower(String dev) {
         FileDescriptor fd = null;
+        Map<Integer, Long> otherDown = new HashMap<>();
         try {
             fd = android.system.Os.open(dev, android.system.OsConstants.O_RDONLY, 0);
             Method ioctl = android.system.Os.class.getMethod("ioctlInt", FileDescriptor.class, int.class);
@@ -103,14 +173,56 @@ final class PowerKey {
                     int type = (b[o + 16] & 0xff) | (b[o + 17] & 0xff) << 8;
                     int code = (b[o + 18] & 0xff) | (b[o + 19] & 0xff) << 8;
                     int val = (b[o + 20] & 0xff) | (b[o + 21] & 0xff) << 8 | (b[o + 22] & 0xff) << 16 | (b[o + 23]) << 24;
-                    if (type == EV_KEY && code == KEY_POWER) onPower(val);
+                    if (type == EV_KEY) {
+                        if (code == KEY_POWER) onPower(val);
+                        else onOtherKey(code, val, otherDown);
+                    }
                 }
             }
         } catch (Throwable t) {
             L.i("power key reader stopped: " + t);
         } finally {
+            long now = SystemClock.uptimeMillis();
+            for (Map.Entry<Integer, Long> e : otherDown.entrySet()) {
+                Integer mapped = scanToKey.get(e.getKey());
+                int kc = mapped != null ? mapped : KeyEvent.KEYCODE_UNKNOWN;
+                injectKeyEvent(KeyEvent.ACTION_UP, kc, e.getValue(), now, e.getKey());
+            }
             // closing the fd releases the grab -> the system gets the button back
             try { if (fd != null) android.system.Os.close(fd); } catch (Throwable ignored) {}
+            started = false;
+        }
+    }
+
+    static void onOtherKey(int scanCode, int val, Map<Integer, Long> otherDown) {
+        if (val != 0 && val != 1) return;   // ignore autorepeat; InputDispatcher synthesizes repeats natively
+        Integer mapped = scanToKey.get(scanCode);
+        int keyCode = mapped != null ? mapped : KeyEvent.KEYCODE_UNKNOWN;
+        if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN || keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
+            onVolume(keyCode == KeyEvent.KEYCODE_VOLUME_DOWN ? 0 : 1, val == 1);
+        }
+        long now = SystemClock.uptimeMillis();
+        long dt;
+        if (val == 1) {
+            otherDown.put(scanCode, now);
+            dt = now;
+        } else {
+            Long prev = otherDown.remove(scanCode);
+            dt = prev != null ? prev : now;
+        }
+        injectKeyEvent(val == 1 ? KeyEvent.ACTION_DOWN : KeyEvent.ACTION_UP, keyCode, dt, now, scanCode);
+    }
+
+    static void onVolume(int idx, boolean pressed) {
+        synchronized (lock) {
+            volHeld[idx] = pressed;
+            if (pressed) {
+                volPressedAt = CtsListener.now();
+                if (down && !pass && !fired) {             // combo: hand power to the system now
+                    pass = true;
+                    injectKey(KeyEvent.ACTION_DOWN, downUptime);
+                }
+            }
         }
     }
 
@@ -149,19 +261,10 @@ final class PowerKey {
                 for (int o = 0; o + 24 <= n; o += 24) {
                     int type = (b[o + 16] & 0xff) | (b[o + 17] & 0xff) << 8;
                     int code = (b[o + 18] & 0xff) | (b[o + 19] & 0xff) << 8;
-                    int val = (b[o + 20] & 0xff) | (b[o + 21] & 0xff) << 8;
-                    if (type != EV_KEY || (code != KEY_VOLUMEDOWN && code != KEY_VOLUMEUP) || val == 2) continue;
-                    int idx = code == KEY_VOLUMEDOWN ? 0 : 1;
-                    synchronized (lock) {
-                        volHeld[idx] = val == 1;
-                        if (val == 1) {
-                            volPressedAt = CtsListener.now();
-                            if (down && !pass && !fired) {             // combo: hand power to the system now
-                                pass = true;
-                                injectKey(KeyEvent.ACTION_DOWN, downUptime);
-                            }
-                        }
-                    }
+                    int val = (b[o + 20] & 0xff) | (b[o + 21] & 0xff) << 8 | (b[o + 22] & 0xff) << 16 | (b[o + 23]) << 24;
+                    if (type != EV_KEY || (code != KEY_VOLUMEDOWN && code != KEY_VOLUMEUP)) continue;
+                    if (val != 0 && val != 1) continue;
+                    onVolume(code == KEY_VOLUMEDOWN ? 0 : 1, val == 1);
                 }
             }
         } catch (Throwable t) {
@@ -183,7 +286,7 @@ final class PowerKey {
             synchronized (lock) {
                 if (down && !pass && !fired) {
                     long held = CtsListener.now() - downAt;
-                    if (cts && cap == null && held >= CtsListener.captureAfter(holdMs)) {
+                    if (cts && CtsListener.animate && cap == null && held >= CtsListener.captureAfter(holdMs)) {
                         cap = new CtsListener.Capture();
                         cap.start();
                     }

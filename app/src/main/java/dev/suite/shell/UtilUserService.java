@@ -54,7 +54,6 @@ public class UtilUserService extends ISolCubeService.Stub {
             "  esac\n" +
             "  content insert --uri content://settings/secure --bind name:s:accessibility_enabled --bind value:s:1 >/dev/null 2>&1\n" +
             "fi\n" +
-            "am start-foreground-service -n dev.suite/.SolCubeService >/dev/null 2>&1\n" +
             "sleep 0.4\n" +
             "am start -n dev.suite/.MainActivity -f 0x10008000 >/dev/null 2>&1\n";
 
@@ -101,6 +100,14 @@ public class UtilUserService extends ISolCubeService.Stub {
             }
             if (cmd.equals("cts")) {   // Circle to Search straight away (no ripple: the listener isn't running)
                 return CtsTrigger.trigger(CtsTrigger.service(), 1) ? "ok" : "failed";
+            }
+            if (cmd.equals("enable-a11y")) {
+                AppKeeper.ensureA11y();
+                return "ok";
+            }
+            if (cmd.equals("disable-a11y")) {
+                AppKeeper.disableA11y();
+                return "ok";
             }
             if (cmd.startsWith("run_action ")) {
                 ShellActions.runAction(new org.json.JSONObject(cmd.substring(11).trim()), true);

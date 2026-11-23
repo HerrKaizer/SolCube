@@ -43,6 +43,7 @@ public class FiUserService extends ISolCubeService.Stub {
 
     public FiUserService() {
         L.tag = "SolCube.fi";
+        AppKeeper.watchInstalled(this::destroy);
     }
 
     // ------------------------------------------------------------------ binder

@@ -61,6 +61,7 @@ class TestReceiver : BroadcastReceiver() {
                     }
                     "dev.suite.TRIGGER_CTS" -> {
                         val ok = Components.enabled(ctx, Components.KEY_CTS) &&
+                            Components.ctsAnimate(ctx) &&
                             RippleHost.running &&
                             Shell.service(Shell.Kind.CTS)?.command("test ${Components.freeze(ctx)}") == "ok"
                         pending.resultData = if (ok) "ok" else "direct"

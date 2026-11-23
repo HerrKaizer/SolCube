@@ -50,7 +50,10 @@ class TempOverlay(private val ctx: Context) {
         }.getOrNull()
     }
 
-    private val wm = ctx.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+    private var winCtx: Context = ctx
+    private var wm: WindowManager = ctx.getSystemService(WindowManager::class.java)
+    var usingA11y = false
+        private set
     private val pm = ctx.getSystemService(Context.POWER_SERVICE) as PowerManager
     private var root: LinearLayout? = null
     private var tempView: PillView? = null
@@ -129,7 +132,11 @@ class TempOverlay(private val ctx: Context) {
 
     fun start() {
         if (root != null) return
-        if (!android.provider.Settings.canDrawOverlays(ctx)) return
+        val a11y = SolCubeA11y.instance
+        if (a11y == null && !android.provider.Settings.canDrawOverlays(ctx)) return
+        winCtx = a11y ?: ctx
+        wm = winCtx.getSystemService(WindowManager::class.java)
+        usingA11y = a11y != null
         addOverlay()
         Shell.start(ctx, Shell.Kind.TEMP)
         running = true
@@ -150,6 +157,7 @@ class TempOverlay(private val ctx: Context) {
         tempView = null
         loadView = null
         fpsView = null
+        usingA11y = false
     }
 
     private fun render() {
@@ -375,7 +383,7 @@ class TempOverlay(private val ctx: Context) {
     @SuppressLint("ClickableViewAccessibility")
     private fun addOverlay() {
         val prefs = ctx.getSharedPreferences("pos", Context.MODE_PRIVATE)
-        fun makePill(initial: String) = PillView(ctx).apply {
+        fun makePill(initial: String) = PillView(winCtx).apply {
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             fontFeatureSettings = "tnum" // fixed-width digits so the pill doesn't jitter
             includeFontPadding = false
@@ -384,7 +392,7 @@ class TempOverlay(private val ctx: Context) {
         val tv = makePill("-- -- --")
         val lv = makePill("-- --")
         val fv = makePill("--")
-        val box = LinearLayout(ctx).apply {
+        val box = LinearLayout(winCtx).apply {
             // FPS first: left of the temperatures in landscape, above them in portrait
             addView(fv, LinearLayout.LayoutParams(
                 WindowManager.LayoutParams.WRAP_CONTENT,
@@ -412,8 +420,10 @@ class TempOverlay(private val ctx: Context) {
         params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            if (usingA11y) WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
+            else WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT

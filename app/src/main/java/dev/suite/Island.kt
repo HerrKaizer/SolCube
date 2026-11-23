@@ -167,7 +167,7 @@ object Island {
         // A notice usually wakes SolCube from vivo's freezer, and the accessibility service connects a
         // moment after the app starts. Showing right away fell back to the app overlay, which sits
         // UNDER the status bar (the notification icons drew over the pill): wait for it, up to 2 s.
-        if (a11y == null && waited < 20 && a11yEnabled(app)) {
+        if (a11y == null && waited < 20 && SolCubeA11y.isEnabled(app)) {
             main.postDelayed({ show(app, text, ok, still, waited + 1, onTap) }, 100)
             return
         }
@@ -214,11 +214,6 @@ object Island {
         }
         try { wm.addView(view, lp); current = view } catch (e: Exception) { Log.w(TAG, "island", e) }
     }
-
-    private fun a11yEnabled(ctx: Context): Boolean = runCatching {
-        Settings.Secure.getString(ctx.contentResolver, "enabled_accessibility_services").orEmpty()
-            .split(':').any { it.equals("${ctx.packageName}/${SolCubeA11y::class.java.name}", true) || it.equals("${ctx.packageName}/.SolCubeA11y", true) }
-    }.getOrDefault(false)
 
     fun hide() = main.post { current?.close() }
 

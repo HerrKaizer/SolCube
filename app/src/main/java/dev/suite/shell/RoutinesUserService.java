@@ -68,6 +68,7 @@ public class RoutinesUserService extends ISolCubeService.Stub {
 
     public RoutinesUserService(Context given) {
         L.tag = "SolCube.rt";
+        AppKeeper.watchInstalled(this::destroy);
         thread = new HandlerThread("routines");
         thread.start();
         h = new Handler(thread.getLooper());

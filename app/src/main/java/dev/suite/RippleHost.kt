@@ -35,6 +35,8 @@ class RippleHost(private val ctx: Context) {
     private val wm: WindowManager
     private var server: ServerSocket? = null
     private var keepAlive: android.view.View? = null
+    private var keepAliveWm: WindowManager? = null
+    private var keepAliveA11y = false
     @Volatile private var holdOverride: Long? = null
 
     init {
@@ -52,7 +54,7 @@ class RippleHost(private val ctx: Context) {
         running = true
         instance = this
         Thread(::serve, "ripple-server").start()
-        addKeepAlive()
+        main.post { addKeepAlive() }
     }
 
     fun stop() {
@@ -60,8 +62,36 @@ class RippleHost(private val ctx: Context) {
         if (instance === this) instance = null
         try { server?.close() } catch (_: Exception) {}
         server = null
-        keepAlive?.let { try { wm.removeViewImmediate(it) } catch (_: Exception) {} }
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            dropKeepAlive()
+        } else {
+            main.post { dropKeepAlive() }
+        }
+    }
+
+    private fun dropKeepAlive() {
+        val v = keepAlive ?: return
+        val vwm = keepAliveWm ?: wm
+        try { vwm.removeViewImmediate(v) } catch (_: Exception) {}
         keepAlive = null
+        keepAliveWm = null
+        keepAliveA11y = false
+    }
+
+    fun refreshKeepAlive() {
+        if (Looper.myLooper() != Looper.getMainLooper()) { main.post { refreshKeepAlive() }; return }
+        if (!running) return
+        if (keepAlive != null && !keepAliveA11y && SolCubeA11y.instance != null) {
+            dropKeepAlive()
+            addKeepAlive()
+        } else if (keepAlive == null) {
+            addKeepAlive()
+        }
+    }
+
+    fun dropA11yKeepAlive() {
+        if (Looper.myLooper() != Looper.getMainLooper()) { main.post { dropA11yKeepAlive() }; return }
+        if (keepAlive != null && keepAliveA11y) dropKeepAlive()
     }
 
     /** Test button in the app. */
@@ -172,11 +202,21 @@ class RippleHost(private val ctx: Context) {
      * process "perceptible", which keeps vivo's fast_freezer off it.
      */
     private fun addKeepAlive() {
-        if (keepAlive != null || !Settings.canDrawOverlays(ctx)) return
-        val v = android.view.View(winCtx)
+        if (!running || keepAlive != null) return
+        val a11y = SolCubeA11y.instance
+        if (a11y == null) {
+            // Wait for SolCubeA11y to bind instead of flashing TYPE_APPLICATION_OVERLAY ("displaying over other apps")
+            if (SolCubeA11y.isEnabled(ctx)) return
+            if (!Settings.canDrawOverlays(ctx)) return
+        }
+        val vctx: Context = a11y ?: winCtx
+        val vwm: WindowManager = a11y?.getSystemService(WindowManager::class.java) ?: wm
+        val type = if (a11y != null) WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
+            else WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+        val v = android.view.View(vctx)
         val lp = WindowManager.LayoutParams(
             1, 1,
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            type,
             WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
@@ -186,7 +226,14 @@ class RippleHost(private val ctx: Context) {
             alpha = 0f
             title = "SolCubeKeepAlive"
         }
-        try { wm.addView(v, lp); keepAlive = v } catch (e: Exception) { Log.w(TAG, "keepAlive", e) }
+        try {
+            vwm.addView(v, lp)
+            keepAlive = v
+            keepAliveWm = vwm
+            keepAliveA11y = a11y != null
+        } catch (e: Exception) {
+            Log.w(TAG, "keepAlive", e)
+        }
     }
 
     /** Must run on the main thread. */

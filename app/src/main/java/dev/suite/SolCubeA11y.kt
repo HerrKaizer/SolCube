@@ -1,34 +1,53 @@
 package dev.suite
 
 import android.accessibilityservice.AccessibilityService
+import android.content.Context
+import android.content.Intent
+import android.content.res.Configuration
+import android.provider.Settings
 import android.view.accessibility.AccessibilityEvent
 
 /**
- * Exists only so the Circle to Search ripple can use TYPE_ACCESSIBILITY_OVERLAY, the one window
- * type an app may draw ABOVE the status and navigation bars (a normal app overlay sits under
- * them, so the real status bar showed on top of the screenshot's own one). It does not read
- * window content or react to events. The shell-side listener keeps it enabled.
+ * Hosts SolCube's background overlays and pill (TYPE_ACCESSIBILITY_OVERLAY) so they render above
+ * system bars without triggering Android's "displaying over other apps" or "running in the
+ * background" system notifications. Does not read window content or react to events.
  */
 class SolCubeA11y : AccessibilityService() {
     companion object {
         @Volatile var instance: SolCubeA11y? = null
+
+        fun isEnabled(ctx: Context): Boolean = runCatching {
+            Settings.Secure.getString(ctx.contentResolver, "enabled_accessibility_services").orEmpty()
+                .split(':').any {
+                    it.equals("${ctx.packageName}/${SolCubeA11y::class.java.name}", true) ||
+                        it.equals("${ctx.packageName}/.SolCubeA11y", true)
+                }
+        }.getOrDefault(false)
     }
 
     override fun onServiceConnected() {
         instance = this
+        SolCubeHost.onA11yConnected(this)
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        SolCubeHost.onConfigurationChanged()
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
 
     override fun onInterrupt() {}
 
-    override fun onUnbind(intent: android.content.Intent?): Boolean {
-        instance = null
+    override fun onUnbind(intent: Intent?): Boolean {
+        if (instance === this) instance = null
+        SolCubeHost.onA11yDisconnected(this)
         return super.onUnbind(intent)
     }
 
     override fun onDestroy() {
-        instance = null
+        if (instance === this) instance = null
+        SolCubeHost.onA11yDisconnected(this)
         super.onDestroy()
     }
 }
