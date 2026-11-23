@@ -40,6 +40,8 @@ public class CtsListener {
     static volatile long navHoldMs = 450;
     static final float NAV_STRIP = 0.035f;          // bottom 3.5 % of the height (~110 px; vivo's bar window is 72 px)
     static final float NAV_SIDE = 0.2f;             // not the outer 20 % on each side (games' corner buttons)
+    static final long NAV_SETTLE_MS = 160;          // vivo waits up to 150 ms for RecentsAnimation finish callback
+    static final long NAV_LIFT_WAIT_MS = 600;       // fallback wait for finger lift if SolCubeA11y is unavailable
 
     /** End-to-end test (shell-only hook): fresh screenshot, then ripple + CTS with the given freeze. */
     static void test(long freeze) {
@@ -61,8 +63,12 @@ public class CtsListener {
     static int tol = 400;
     static int maxX = 14400, maxY = 31680;   // vivo_ts ABS_MT_POSITION_X/Y range (+1)
 
+    // Keep nav-bar jitter tolerance below launcher mTouchSlop (8 dp = 32 px @ 640 dpi / 24 px @ 480 dpi).
+    static int navTol() { return Math.max(20, Math.min(tol, maxX * 260 / 14400)); }
+
     // gesture state (guarded by lock)
     static final Object lock = new Object();
+    static int fingersDown = 0;     // currently touching pointers
     static long firstDown = 0;      // time first finger of this touch went down
     static long twoSince = 0;       // time count became 2 (0 = not armed)
     static long navSince = 0;       // time a single finger went down on the gesture bar (0 = not armed)
@@ -150,8 +156,13 @@ public class CtsListener {
                 }
                 if (fire) {
                     if (isNav) {
-                        if (navRoutine && triggerRoutine("nav_hold")) pop();
-                        else if (navCts) fire(fx, fy, fingers, cap);
+                        if (navRoutine) {
+                            settleNavTouch(cap);
+                            if (triggerRoutine("nav_hold")) pop();
+                            else if (navCts) fire(fx, fy, fingers, cap, false);
+                        } else if (navCts) {
+                            fire(fx, fy, fingers, cap, true);
+                        }
                     } else {
                         if (touchRoutine && triggerRoutine("two_finger_hold")) pop();
                         else if (touchCts) fire(fx, fy, fingers, cap);
@@ -192,12 +203,17 @@ public class CtsListener {
         return out != null && out.contains("data=\"matched\"");
     }
 
-    /** Ripple from (fx, fy) over the captured frame, then Circle to Search. Used by both gestures. */
     static void fire(float fx, float fy, float[] fingers, Capture cap) {
+        fire(fx, fy, fingers, cap, false);
+    }
+
+    /** Ripple from (fx, fy) over the captured frame, then Circle to Search. Used by both gestures. */
+    static void fire(float fx, float fy, float[] fingers, Capture cap, boolean isNav) {
         if (!busy.compareAndSet(false, true)) return;   // one at a time
         // instant feedback: the hold was recognised (BlueLM's own trigger vibration)
         if (!Haptics.bluelmTrigger()) pop();
         try {
+            if (isNav) settleNavTouch(cap);
             if (!animate) {
                 launch();
                 return;
@@ -229,8 +245,11 @@ public class CtsListener {
         for (int i = 0; i < SLOTS; i++) if (id[i] >= 0) count++;
         long t = now();
         synchronized (lock) {
+            fingersDown = count;
             if (count == 0 || (!touchEnabled && !navEnabled)) {
-                firstDown = 0; twoSince = 0; navSince = 0; navSlot = -1; spent = false; capture = null; return;
+                firstDown = 0; twoSince = 0; navSince = 0; navSlot = -1; spent = false; capture = null;
+                if (count == 0) lock.notifyAll();
+                return;
             }
             boolean first = firstDown == 0;
             if (first) { firstDown = t; AppKeeper.kick(); }
@@ -248,8 +267,9 @@ public class CtsListener {
                         break;
                     }
                 } else if (navSince != 0) {
+                    int nt = navTol();
                     if (count != 1 || id[navSlot] < 0
-                            || Math.abs(x[navSlot] - nsx) > tol || Math.abs(y[navSlot] - nsy) > tol) {
+                            || Math.abs(x[navSlot] - nsx) > nt || Math.abs(y[navSlot] - nsy) > nt) {
                         navSince = 0;   // second finger, lifted, or moved (a swipe): not a hold
                     } else {
                         return;         // still holding on the bar
@@ -319,6 +339,73 @@ public class CtsListener {
 
     static Object vims;
 
+    static boolean handshake(InputStream in, OutputStream out) throws Exception {
+        String key = secret;
+        if (key == null || key.isEmpty()) return false;
+        // Make sure the other end is SolCube before any command or screenshot leaves this process: another app
+        // could be holding the port while vivo has SolCube stopped (see RippleHost / dev.suite.Ipc).
+        String hello = readLine(in);
+        if (hello == null || !hello.startsWith("hello ")) return false;
+        String ns = hello.substring(6).trim(), nc = IpcAuth.nonce();
+        out.write(("auth " + nc + " " + IpcAuth.mac(key, "client|" + ns + "|" + nc) + "\n").getBytes());
+        out.flush();
+        String resp = readLine(in);
+        if (resp == null || !resp.startsWith("auth ")
+                || !IpcAuth.same(resp.substring(5).trim(), IpcAuth.mac(key, "server|" + nc + "|" + ns))) {
+            L.i("ripple port is held by something that isn't SolCube: no screenshot sent");
+            return false;
+        }
+        return true;
+    }
+
+    static boolean cancelNavTouch() {
+        String key = secret;
+        if (key == null || key.isEmpty()) {
+            L.i("nav cancel skipped: no secret from SolCube yet");
+            return false;
+        }
+        try (java.net.Socket s = new java.net.Socket()) {
+            s.setTcpNoDelay(true);
+            s.connect(new java.net.InetSocketAddress("127.0.0.1", 47321), 80);
+            s.setSoTimeout(150);
+            OutputStream out = s.getOutputStream();
+            InputStream in = s.getInputStream();
+            if (!handshake(in, out)) return false;
+            out.write("cancel\n".getBytes());
+            out.flush();
+            return "ok".equals(readLine(in));
+        } catch (Exception e) {
+            L.i("nav cancel skipped: " + e);
+            return false;
+        }
+    }
+
+    static void settleNavTouch(Capture cap) {
+        long t0 = now();
+        boolean canceled = cancelNavTouch();
+        if (canceled) {
+            L.i("nav touch canceled " + (now() - t0) + "ms");
+        } else {
+            long deadline = now() + NAV_LIFT_WAIT_MS;
+            synchronized (lock) {
+                while (fingersDown > 0) {
+                    long left = deadline - now();
+                    if (left <= 0) break;
+                    try { lock.wait(left); } catch (InterruptedException e) { break; }
+                }
+            }
+            L.i("nav lift wait " + (now() - t0) + "ms down=" + fingersDown);
+        }
+        long settleFrom = now();
+        if (cap != null) {
+            try { cap.join(400); } catch (InterruptedException ignored) {}
+        }
+        long rem = NAV_SETTLE_MS - (now() - settleFrom);
+        if (rem > 0) {
+            try { Thread.sleep(rem); } catch (InterruptedException ignored) {}
+        }
+    }
+
     /**
      * Ask the CtsRipple app (localhost:47321) to play the ripple at fx,fy (0..1, natural
      * orientation) over the captured frame, and vibrate as it starts.
@@ -340,19 +427,7 @@ public class CtsListener {
             s.setSoTimeout(150);
             OutputStream out = s.getOutputStream();
             InputStream in0 = s.getInputStream();
-            // Make sure the other end is SolCube before the screenshot leaves this process: another app
-            // could be holding the port while vivo has SolCube stopped (see RippleHost / dev.suite.Ipc).
-            String hello = readLine(in0);
-            if (hello == null || !hello.startsWith("hello ")) return false;
-            String ns = hello.substring(6).trim(), nc = IpcAuth.nonce();
-            out.write(("auth " + nc + " " + IpcAuth.mac(key, "client|" + ns + "|" + nc) + "\n").getBytes());
-            out.flush();
-            String resp = readLine(in0);
-            if (resp == null || !resp.startsWith("auth ")
-                    || !IpcAuth.same(resp.substring(5).trim(), IpcAuth.mac(key, "server|" + nc + "|" + ns))) {
-                L.i("ripple port is held by something that isn't SolCube: no screenshot sent");
-                return false;
-            }
+            if (!handshake(in0, out)) return false;
             // 9th field: how long the overlay stays frozen after Circle to Search is called,
             // so CTS's own screenshot doesn't catch the moving ripple
             out.write(String.format(java.util.Locale.US, "ripple %.4f %.4f %d %.4f %.4f %.4f %.4f %d\n",

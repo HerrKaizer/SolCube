@@ -176,7 +176,9 @@ object Components {
     fun ctsNav(ctx: Context) = prefs(ctx).getBoolean(KEY_CTS_NAV, false)
     fun navHold(ctx: Context) = prefs(ctx).getInt(KEY_NAV_HOLD, 450)
     fun ctsAnimate(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_CTS_ANIMATE, true)
-    fun ctsRippleWanted(ctx: Context): Boolean = ctsAnimate(ctx) && (ctsTouch(ctx) || ctsButton(ctx) || ctsNav(ctx))
+    fun ctsRippleWanted(ctx: Context): Boolean =
+        ctsNav(ctx) || Routines.hasEnabledTrigger(ctx, "nav_hold") ||
+            (ctsAnimate(ctx) && (ctsTouch(ctx) || ctsButton(ctx)))
     fun holdAction(ctx: Context) = prefs(ctx).getBoolean(KEY_HOLD_ACT, false)
 
     fun ctsServiceWanted(ctx: Context): Boolean =

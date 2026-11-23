@@ -138,6 +138,12 @@ class RippleHost(private val ctx: Context) {
             out0.write("auth ${Ipc.mac(secret, "server|${auth[1]}|$ns")}\n".toByteArray()); out0.flush()
             val line = readLine(input) ?: return
             val p = line.trim().split(" ")
+            if (p.size == 1 && p[0] == "cancel") {
+                val ok = SolCubeA11y.instance?.cancelOngoingTouch() == true
+                out0.write((if (ok) "ok\n" else "no\n").toByteArray()); out0.flush()
+                Log.i(TAG, "cancel nav touch: $ok")
+                return
+            }
             if (p.size < 3 || p[0] != "ripple") return
             val fx = p[1].toFloatOrNull() ?: return
             val fy = p[2].toFloatOrNull() ?: return

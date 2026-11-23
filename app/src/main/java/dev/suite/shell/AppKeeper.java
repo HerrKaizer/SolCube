@@ -212,7 +212,7 @@ final class AppKeeper {
             }
             missingStreak = 0;
             boolean reenabled = ensureA11y();
-            if (!CtsListener.animate) return;   // instant mode needs no ripple server/overlay
+            if (!CtsListener.animate && !CtsListener.navEnabled) return;   // instant mode without nav hold needs no ripple server/overlay
             if (rippleAlive()) return;
             if (reenabled) {
                 try { Thread.sleep(600); } catch (InterruptedException ignored) {}
