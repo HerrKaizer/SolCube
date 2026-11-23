@@ -97,10 +97,7 @@ public final class ShellActions {
             }
             case "run_routine": {
                 String id = a.optString("routineId").trim();
-                if (!id.isEmpty()) {
-                    SysSettings.exec("am", "broadcast", "-n", "dev.suite/.TestReceiver",
-                            "-a", "dev.suite.RT_RUN", "--es", "id", id);
-                }
+                if (!id.isEmpty()) SysSettings.runRoutine(id);
                 return true;
             }
             case "shell_cmd": {
@@ -181,16 +178,14 @@ public final class ShellActions {
         String msg = actionNotice(type, displayVal);
         if (msg != null && !msg.isEmpty()) {
             if (syncNotice) {
-                AppKeeper.ensureA11y();
-                SysSettings.exec("am", "broadcast", "-n", "dev.suite/.IslandReceiver",
-                        "--es", "text", msg, "--ez", "ok", "true");
+                SysSettings.sendNoticeNow(msg, true);
             } else {
                 SysSettings.notice(msg, true);
             }
         }
     }
 
-    private static String actionNotice(String type, String v) {
+    public static String actionNotice(String type, String v) {
         switch (type) {
             case "wifi": return "Wi-Fi " + v;
             case "data": return "Data " + v;
@@ -232,6 +227,81 @@ public final class ShellActions {
             case "cts_button": return "Power CTS " + v;
             case "cts_nav": return "Nav CTS " + v;
             case "power_hold": return "Power hold " + v;
+            default: return null;
+        }
+    }
+
+    /** Formats a restored raw `read(type)` value as a concise status-pill label. */
+    public static String restoredNotice(String type, String rawVal) {
+        if (type == null || rawVal == null) return null;
+        switch (type) {
+            case "rotation":
+                if (rawVal.startsWith("1:")) return actionNotice("rotation", "auto");
+                if ("0:1".equals(rawVal) || "0:3".equals(rawVal)) return actionNotice("rotation", "landscape");
+                return actionNotice("rotation", "portrait");
+            case "keep_awake":
+                try {
+                    long ms = Long.parseLong(rawVal);
+                    return actionNotice("keep_awake", ms >= 600_000L ? "on" : "off");
+                } catch (NumberFormatException ignored) {
+                    return actionNotice("keep_awake", "off");
+                }
+            case "brightness": {
+                String[] parts = rawVal.split(":");
+                if (parts.length > 1 && "1".equals(parts[1])) return "Auto-bright on";
+                if (parts.length >= 4) {
+                    try {
+                        int pct = "f".equals(parts[2])
+                                ? Math.round(Float.parseFloat(parts[3]) * 100f)
+                                : Math.round(Integer.parseInt(parts[3]) * 100f / 255f);
+                        return "Brightness " + Math.max(0, Math.min(100, pct)) + "%";
+                    } catch (NumberFormatException ignored) {}
+                }
+                return "Brightness";
+            }
+            case "ring_vol":
+            case "media":
+            case "alarm_vol":
+            case "notif_vol": {
+                int stream = "ring_vol".equals(type) ? 2 : "media".equals(type) ? 3 : "alarm_vol".equals(type) ? 4 : 5;
+                try {
+                    int idx = Integer.parseInt(rawVal);
+                    int max = lastInt(SysSettings.exec("cmd", "audio", "get-max-volume", String.valueOf(stream)));
+                    if (max <= 0) max = (stream == 3) ? 15 : 7;
+                    int pct = Math.max(0, Math.min(100, Math.round(idx * 100f / max)));
+                    return actionNotice(type, String.valueOf(pct));
+                } catch (NumberFormatException ignored) {
+                    return null;
+                }
+            }
+            default:
+                return actionNotice(type, rawVal);
+        }
+    }
+
+    /** Short status-pill label for non-cosmetic one-shot profile actions. */
+    public static String instantNotice(JSONObject a) {
+        if (a == null) return null;
+        String type = a.optString("type");
+        switch (type) {
+            case "media_control": {
+                String v = a.optString("value", "play_pause");
+                if ("play".equals(v)) return "Media play";
+                if ("pause".equals(v)) return "Media pause";
+                if ("next".equals(v)) return "Next track";
+                if ("prev".equals(v)) return "Prev track";
+                if ("stop".equals(v)) return "Media stop";
+                return "Play / Pause";
+            }
+            case "close_apps": return "Apps closed";
+            case "close_app": return "App closed";
+            case "screenshot": return "Screenshot";
+            case "open_app": return "Opened app";
+            case "open_url": return "Opened link";
+            case "revive": return "Apps revived";
+            case "go_home": return "Home";
+            case "wake_screen": return "Screen on";
+            case "shell_cmd": return "Shell ran";
             default: return null;
         }
     }
@@ -533,28 +603,15 @@ public final class ShellActions {
     }
 
     private static String getFeature(String feature) {
-        String out = SysSettings.exec("am", "broadcast", "-f", "0x11000020",
-                "-n", "dev.suite/.TestReceiver", "-a", "dev.suite.GET_FEATURE",
-                "--es", "feature", feature);
-        Matcher m = Pattern.compile("data=\"([^\"]*)\"").matcher(out);
-        if (m.find()) {
-            String val = m.group(1);
-            return val.isEmpty() ? null : val;
-        }
-        return null;
+        return SysSettings.getFeature(feature);
     }
 
     private static void setFeature(String feature, String value) {
-        SysSettings.exec("am", "broadcast", "-f", "0x11000020",
-                "-n", "dev.suite/.TestReceiver", "-a", "dev.suite.SET_FEATURE",
-                "--es", "feature", feature, "--es", "value", value,
-                "--ez", "on", String.valueOf("on".equals(value)));
+        SysSettings.setFeature(feature, value);
     }
 
     private static void triggerCircleToSearch() {
-        String out = SysSettings.exec("am", "broadcast", "-f", "0x11000020",
-                "-n", "dev.suite/.TestReceiver", "-a", "dev.suite.TRIGGER_CTS");
-        if (out.contains("data=\"ok\"")) {
+        if (SysSettings.triggerCts()) {
             L.i("circle_to_search: triggered with ripple");
             return;
         }
@@ -910,9 +967,42 @@ public final class ShellActions {
         L.i("revived " + un + " apps, refreshed " + w + " widget providers");
     }
 
-    /** Wakes companion apps in the background (audio session broadcast first, then activity + restore front task). */
-    public static void launchBackground(JSONArray apps, TaskHit frontHit) {
-        if (apps == null || apps.length() == 0) return;
+    private static volatile android.content.Context shellCtx;
+
+    public static void initContext(android.content.Context ctx) {
+        if (ctx != null) shellCtx = ctx;
+    }
+
+    private static boolean hasActiveService(String pkg) {
+        return SysSettings.exec("dumpsys", "activity", "services", pkg).contains("ServiceRecord{");
+    }
+
+    private static boolean startActivityBehind(String targetCmp) {
+        try {
+            android.content.Context sc = shellCtx;
+            if (sc == null) {
+                sc = MixUserService.shellContext(null);
+                shellCtx = sc;
+            }
+            if (sc == null) return false;
+            ComponentName cn = ComponentName.unflattenFromString(targetCmp);
+            if (cn == null) return false;
+            android.content.Intent intent = new android.content.Intent(android.content.Intent.ACTION_MAIN)
+                    .addCategory(android.content.Intent.CATEGORY_LAUNCHER)
+                    .setComponent(cn)
+                    .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK
+                            | android.content.Intent.FLAG_ACTIVITY_NO_ANIMATION);
+            sc.startActivity(intent, android.app.ActivityOptions.makeTaskLaunchBehind().toBundle());
+            return true;
+        } catch (Throwable t) {
+            L.e("launch_bg behind", t);
+            return false;
+        }
+    }
+
+    /** Wakes companion apps in the background (audio session broadcast first, then launch-behind + front-task guard). */
+    public static int launchBackground(JSONArray apps, TaskHit frontHit) {
+        if (apps == null || apps.length() == 0) return 0;
         if (frontHit == null) frontHit = frontTask();
         Object ipm = null;
         Method unstop = null;
@@ -922,7 +1012,8 @@ public final class ShellActions {
             unstop = ipm.getClass().getMethod("setPackageStoppedState", String.class, boolean.class, int.class);
         } catch (Throwable ignored) {}
 
-        boolean launchedActivity = false;
+        int started = 0;
+        Set<String> launchedPkgs = new LinkedHashSet<>();
         for (int i = 0; i < apps.length(); i++) {
             String cp = apps.optString(i);
             if (cp == null || cp.isEmpty()) continue;
@@ -933,13 +1024,11 @@ public final class ShellActions {
             }
             String receiver = findAudioEffectReceiver(cp);
             if (receiver != null) {
-                SysSettings.exec("am", "broadcast", "-f", "0x01000020", "-n", receiver,
-                        "-a", "android.media.action.OPEN_AUDIO_EFFECT_CONTROL_SESSION",
-                        "--ei", "android.media.extra.AUDIO_SESSION", "0",
-                        "--es", "android.media.extra.PACKAGE_NAME", frontHit.pkg);
+                SysSettings.sendAudioEffectBroadcast(receiver, frontHit.pkg);
                 try { Thread.sleep(400); } catch (InterruptedException ignored) {}
-                if (pidof(cp) > 0) {
+                if (pidof(cp) > 0 && hasActiveService(cp)) {
                     L.i("launch_bg: woke " + cp + " via session broadcast");
+                    started++;
                     continue;
                 }
             }
@@ -947,13 +1036,31 @@ public final class ShellActions {
                     "-a", "android.intent.action.MAIN", "-c", "android.intent.category.LAUNCHER", cp);
             String targetCmp = lastComponentLine(cmp, cp);
             if (targetCmp != null) {
-                SysSettings.exec("am", "start", "--activity-no-animation", "-n", targetCmp);
-                launchedActivity = true;
-                try { Thread.sleep(350); } catch (InterruptedException ignored) {}
-                L.i("launch_bg: started " + targetCmp);
+                boolean behind = startActivityBehind(targetCmp);
+                if (!behind) {
+                    SysSettings.exec("am", "start", "--activity-no-animation", "-n", targetCmp);
+                }
+                launchedPkgs.add(cp);
+                started++;
+                try { Thread.sleep(200); } catch (InterruptedException ignored) {}
+                if (launchedPkgs.contains(frontTask().pkg)) restoreFrontTask(frontHit);
+                L.i("launch_bg: started " + targetCmp + (behind ? " (behind)" : ""));
             }
         }
-        if (launchedActivity) restoreFrontTask(frontHit);
+        if (!launchedPkgs.isEmpty() && !frontHit.pkg.isEmpty()) {
+            long deadline = System.currentTimeMillis() + 2500;
+            while (System.currentTimeMillis() < deadline) {
+                try { Thread.sleep(100); } catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
+                String cur = frontTask().pkg;
+                if (launchedPkgs.contains(cur)) {
+                    restoreFrontTask(frontHit);
+                    L.i("launch_bg: kept " + frontHit.pkg + " in front (caught " + cur + ")");
+                } else if (!cur.isEmpty() && !cur.equals(frontHit.pkg)) {
+                    break;
+                }
+            }
+        }
+        return started;
     }
 
     private static String findAudioEffectReceiver(String pkg) {

@@ -52,7 +52,8 @@ object Components {
     fun gameConfig(ctx: Context): String {
         val a = JSONArray()
         games(ctx).forEach { a.put(JSONObject().put("pkg", it.pkg).put("src", it.src).put("dst", it.dst)) }
-        return JSONObject().put("games", a).put("hot", hot(ctx)).put("cool", cool(ctx)).toString()
+        return JSONObject().put("games", a).put("hot", hot(ctx)).put("cool", cool(ctx))
+            .put("secret", Ipc.secret(ctx)).toString()
     }
 
     // ------------------------------------------------------------------ status

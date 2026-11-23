@@ -75,6 +75,7 @@ public class RoutinesUserService extends ISolCubeService.Stub {
         loadState();
         try {
             ctx = MixUserService.shellContext(given);
+            ShellActions.initContext(ctx);
             listen();
         } catch (Throwable t) {
             L.e("DND observer unavailable, checking it every 1.5 s instead", t);
@@ -1056,7 +1057,9 @@ public class RoutinesUserService extends ISolCubeService.Stub {
     @Override public void configure(String json) {
         h.post(() -> {
             try {
-                routines = new JSONObject(json).optJSONArray("routines");
+                JSONObject o = new JSONObject(json);
+                SysSettings.setNoticeSecret(o.optString("secret", ""));
+                routines = o.optJSONArray("routines");
                 if (routines == null) routines = new JSONArray();
                 prevCond.clear();
                 prevRaw.clear();
@@ -1065,7 +1068,7 @@ public class RoutinesUserService extends ISolCubeService.Stub {
                 goneSince.clear();
                 inRange.clear();
                 L.i("loaded " + routines.length() + " routines");
-                GestureListener.configure(new JSONObject(json).optJSONObject("gestures"), routines,
+                GestureListener.configure(o.optJSONObject("gestures"), routines,
                         (gid, fingers, res) -> evaluate("gesture:" + fingers + ":" + gid));
                 evaluate(null);
             } catch (Exception e) {

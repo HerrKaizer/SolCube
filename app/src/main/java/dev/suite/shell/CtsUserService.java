@@ -69,7 +69,10 @@ public class CtsUserService extends ISolCubeService.Stub {
             CtsListener.freezeMs = Math.max(0, Math.min(600, o.optLong("freeze", 0)));
             CtsListener.animate = o.optBoolean("animate", true);
             String sec = o.optString("secret", "");
-            if (!sec.isEmpty()) CtsListener.secret = sec;
+            if (!sec.isEmpty()) {
+                CtsListener.secret = sec;
+                SysSettings.setNoticeSecret(sec);
+            }
             boolean touch = o.optBoolean("touch", true);
             CtsListener.touchCts = o.optBoolean("touchCts", touch);
             CtsListener.touchRoutine = o.optBoolean("touchRoutine", false);

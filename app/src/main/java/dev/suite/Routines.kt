@@ -344,7 +344,8 @@ object Routines {
     }
 
     fun config(ctx: Context): String = JSONObject().put("routines", JSONArray(load(ctx)))
-        .put("gestures", GestureStore.config(ctx)).toString()
+        .put("gestures", GestureStore.config(ctx))
+        .put("secret", Ipc.secret(ctx)).toString()
 
     fun newId() = "r" + System.currentTimeMillis().toString(36)
 

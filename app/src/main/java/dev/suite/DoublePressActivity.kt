@@ -128,6 +128,7 @@ class PressAction(slot: String, private val allowCts: Boolean) {
             }.start()
             a == CUSTOM -> {
                 if (custom == null) return
+                NoticeHost.start(app)
                 Thread {
                     val json = custom.toString()
                     val live = Shell.service(Shell.Kind.ROUTINES) ?: Shell.service(Shell.Kind.CTS)
@@ -141,8 +142,10 @@ class PressAction(slot: String, private val allowCts: Boolean) {
                 if (pkg.isEmpty()) return
                 // NFC first (it takes a moment to come up); the shell side turns it off again once the app is gone
                 if (nfc) Thread { Shell.command(app, Shell.Kind.NFC, "nfc-session $pkg") }.start()
-                runCatching { act.packageManager.getApplicationLabel(act.packageManager.getApplicationInfo(pkg, 0)).toString() }
-                    .getOrNull()?.let { Island.show(app, it) }
+                if (!nfc && !Profiles.hasEnabledForApp(app, pkg)) {
+                    runCatching { act.packageManager.getApplicationLabel(act.packageManager.getApplicationInfo(pkg, 0)).toString() }
+                        .getOrNull()?.let { Island.show(app, it) }
+                }
                 act.packageManager.getLaunchIntentForPackage(pkg)?.let {
                     act.startActivity(it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED))
                 } ?: Log.w(TAG, "power action: $pkg has no launcher activity")

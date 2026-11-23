@@ -2945,6 +2945,22 @@ class MainActivity : Activity() {
             leaveCard.addView(label("NFC and settings changed by this profile return to what they were before (NFC also turns off after 3 min locked; skipped if already on). One-shot and background apps stay as-is.",
                 12f, p.sub).apply { setPadding(0, 4.dp, 0, 0) })
             dynamic.addView(leaveCard, cardParams())
+
+            // ---- Status pill
+            val pillCard = card()
+            pillCard.addView(label("Status pill", 14.5f, p.fg, bold = true))
+            pillCard.addView(Switch(this).apply {
+                text = "Show actions instead of name"
+                textSize = 13.5f
+                setTextColor(p.fg)
+                typeface = fontRegular
+                styleSwitch(this)
+                isChecked = Profiles.pillActions(pr)
+                setOnCheckedChangeListener { _, c -> pr.put("pillActions", c) }
+            }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 8.dp })
+            pillCard.addView(label("Off: shows the profile name (e.g. “Wallet” / “Wallet off”). On: shows what changed (e.g. “NFC on” / “NFC off”).",
+                12f, p.sub).apply { setPadding(0, 4.dp, 0, 0) })
+            dynamic.addView(pillCard, cardParams())
         }
         rebuild()
 

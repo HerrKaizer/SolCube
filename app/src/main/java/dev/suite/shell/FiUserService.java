@@ -51,6 +51,7 @@ public class FiUserService extends ISolCubeService.Stub {
     @Override public synchronized void configure(String json) {
         try {
             JSONObject o = new JSONObject(json);
+            SysSettings.setNoticeSecret(o.optString("secret", ""));
             List<Game> g = new ArrayList<>();
             JSONArray a = o.getJSONArray("games");
             for (int i = 0; i < a.length(); i++) {

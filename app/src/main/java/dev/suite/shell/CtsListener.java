@@ -197,10 +197,7 @@ public class CtsListener {
     static final java.util.concurrent.atomic.AtomicBoolean busy = new java.util.concurrent.atomic.AtomicBoolean();
 
     static boolean triggerRoutine(String triggerType) {
-        String out = SysSettings.exec("am", "broadcast", "-f", "0x11000020",
-                "-n", "dev.suite/.TestReceiver", "-a", "dev.suite.RT_TRIGGER",
-                "--es", "trigger", triggerType);
-        return out != null && out.contains("data=\"matched\"");
+        return SysSettings.triggerRoutine(triggerType);
     }
 
     static void fire(float fx, float fy, float[] fingers, Capture cap) {

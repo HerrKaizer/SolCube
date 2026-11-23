@@ -19,6 +19,67 @@ object RenderTest {
 }
 
 class TestReceiver : BroadcastReceiver() {
+    companion object {
+        fun getFeature(ctx: Context, feature: String?): String = when (feature) {
+            "mix" -> if (Components.enabled(ctx, Components.KEY_MIX)) "on" else "off"
+            "sr" -> if (Components.enabled(ctx, Components.KEY_SR)) "on" else "off"
+            "fi" -> if (Components.enabled(ctx, Components.KEY_GAME)) "on" else "off"
+            "temp" -> if (Components.enabled(ctx, Components.KEY_TEMP)) "on" else "off"
+            "fps" -> if (Components.enabled(ctx, Components.KEY_FPS)) "on" else "off"
+            "gestures" -> if (GestureStore.on(ctx)) "on" else "off"
+            "cts_touch" -> if (Components.ctsTouch(ctx)) "on" else "off"
+            "cts_button" -> if (Components.ctsButton(ctx)) "on" else "off"
+            "cts_nav" -> if (Components.ctsNav(ctx)) "on" else "off"
+            "power_hold" -> if (Components.holdAction(ctx)) "on" else "off"
+            "stream" -> when {
+                Components.read(Shell.Kind.STREAM)?.optBoolean("streaming") == true -> "on"
+                Components.enabled(ctx, Components.KEY_STREAM) -> "wide"
+                else -> "off"
+            }
+            else -> ""
+        }
+
+        fun setFeature(ctx: Context, feature: String?, value: String?, on: Boolean) {
+            when (feature) {
+                "mix" -> Components.setMix(ctx, on)
+                "sr" -> Components.setSr(ctx, on)
+                "fi" -> Components.setGame(ctx, on)
+                "temp" -> Components.setTemp(ctx, on)
+                "fps" -> Components.setFps(ctx, on)
+                "gestures" -> GestureStore.setOn(ctx, on)
+                "cts_touch" -> Components.setCtsTrigger(ctx, Components.KEY_CTS_TOUCH, on)
+                "cts_button" -> Components.setCtsTrigger(ctx, Components.KEY_CTS_BUTTON, on)
+                "cts_nav" -> Components.setCtsTrigger(ctx, Components.KEY_CTS_NAV, on)
+                "power_hold" -> Components.setCtsTrigger(ctx, Components.KEY_HOLD_ACT, on)
+                "stream" -> when (value ?: if (on) "on" else "off") {
+                    "on" -> {
+                        val wideOk = if (!Components.enabled(ctx, Components.KEY_STREAM)) {
+                            Components.setStreamMode(ctx, true) == "ok"
+                        } else true
+                        if (wideOk) Components.streamCmd(ctx, "stream on")
+                    }
+                    "wide" -> {
+                        if (Components.read(Shell.Kind.STREAM)?.optBoolean("streaming") == true) {
+                            Components.streamCmd(ctx, "stream off")
+                        }
+                        if (!Components.enabled(ctx, Components.KEY_STREAM)) {
+                            Components.setStreamMode(ctx, true)
+                        }
+                    }
+                    else -> Components.setStreamMode(ctx, false)
+                }
+            }
+        }
+
+        fun triggerCts(ctx: Context): String {
+            val ok = Components.enabled(ctx, Components.KEY_CTS) &&
+                Components.ctsAnimate(ctx) &&
+                RippleHost.running &&
+                Shell.service(Shell.Kind.CTS)?.command("test ${Components.freeze(ctx)}") == "ok"
+            return if (ok) "ok" else "direct"
+        }
+    }
+
     override fun onReceive(context: Context, intent: Intent) {
         val ms = intent.getIntExtra("freeze", Components.DEFAULT_FREEZE)
         val ctx = context.applicationContext
@@ -38,66 +99,12 @@ class TestReceiver : BroadcastReceiver() {
                         pending.resultData = if (trig.isNotEmpty() && Routines.trigger(ctx, trig)) "matched" else "none"
                     }
                     "dev.suite.RT_STATUS" -> android.util.Log.i("SolCube", "routines: " + Shell.service(Shell.Kind.ROUTINES)?.status())
-                    "dev.suite.GET_FEATURE" -> {
-                        val feature = intent.getStringExtra("feature")
-                        pending.resultData = when (feature) {
-                            "mix" -> if (Components.enabled(ctx, Components.KEY_MIX)) "on" else "off"
-                            "sr" -> if (Components.enabled(ctx, Components.KEY_SR)) "on" else "off"
-                            "fi" -> if (Components.enabled(ctx, Components.KEY_GAME)) "on" else "off"
-                            "temp" -> if (Components.enabled(ctx, Components.KEY_TEMP)) "on" else "off"
-                            "fps" -> if (Components.enabled(ctx, Components.KEY_FPS)) "on" else "off"
-                            "gestures" -> if (GestureStore.on(ctx)) "on" else "off"
-                            "cts_touch" -> if (Components.ctsTouch(ctx)) "on" else "off"
-                            "cts_button" -> if (Components.ctsButton(ctx)) "on" else "off"
-                            "cts_nav" -> if (Components.ctsNav(ctx)) "on" else "off"
-                            "power_hold" -> if (Components.holdAction(ctx)) "on" else "off"
-                            "stream" -> when {
-                                Components.read(Shell.Kind.STREAM)?.optBoolean("streaming") == true -> "on"
-                                Components.enabled(ctx, Components.KEY_STREAM) -> "wide"
-                                else -> "off"
-                            }
-                            else -> ""
-                        }
-                    }
-                    "dev.suite.TRIGGER_CTS" -> {
-                        val ok = Components.enabled(ctx, Components.KEY_CTS) &&
-                            Components.ctsAnimate(ctx) &&
-                            RippleHost.running &&
-                            Shell.service(Shell.Kind.CTS)?.command("test ${Components.freeze(ctx)}") == "ok"
-                        pending.resultData = if (ok) "ok" else "direct"
-                    }
+                    "dev.suite.GET_FEATURE" -> pending.resultData = getFeature(ctx, intent.getStringExtra("feature"))
+                    "dev.suite.TRIGGER_CTS" -> pending.resultData = triggerCts(ctx)
                     "dev.suite.SET_FEATURE" -> {
                         val value = intent.getStringExtra("value")
                         val on = if (value != null) value == "on" else intent.getBooleanExtra("on", false)
-                        when (intent.getStringExtra("feature")) {
-                            "mix" -> Components.setMix(ctx, on)
-                            "sr" -> Components.setSr(ctx, on)
-                            "fi" -> Components.setGame(ctx, on)
-                            "temp" -> Components.setTemp(ctx, on)
-                            "fps" -> Components.setFps(ctx, on)
-                            "gestures" -> GestureStore.setOn(ctx, on)
-                            "cts_touch" -> Components.setCtsTrigger(ctx, Components.KEY_CTS_TOUCH, on)
-                            "cts_button" -> Components.setCtsTrigger(ctx, Components.KEY_CTS_BUTTON, on)
-                            "cts_nav" -> Components.setCtsTrigger(ctx, Components.KEY_CTS_NAV, on)
-                            "power_hold" -> Components.setCtsTrigger(ctx, Components.KEY_HOLD_ACT, on)
-                            "stream" -> when (value ?: if (on) "on" else "off") {
-                                "on" -> {
-                                    val wideOk = if (!Components.enabled(ctx, Components.KEY_STREAM)) {
-                                        Components.setStreamMode(ctx, true) == "ok"
-                                    } else true
-                                    if (wideOk) Components.streamCmd(ctx, "stream on")
-                                }
-                                "wide" -> {
-                                    if (Components.read(Shell.Kind.STREAM)?.optBoolean("streaming") == true) {
-                                        Components.streamCmd(ctx, "stream off")
-                                    }
-                                    if (!Components.enabled(ctx, Components.KEY_STREAM)) {
-                                        Components.setStreamMode(ctx, true)
-                                    }
-                                }
-                                else -> Components.setStreamMode(ctx, false)
-                            }
-                        }
+                        setFeature(ctx, intent.getStringExtra("feature"), value, on)
                     }
                     // the laptop helper hands over its per-run token (it can only reach us via adb)
                     "dev.suite.HELPER_TOKEN" -> intent.getStringExtra("token")?.takeIf { it.matches(Regex("[0-9a-f]{32,64}")) }?.let { t ->

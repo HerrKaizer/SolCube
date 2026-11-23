@@ -204,7 +204,7 @@ public class UtilUserService extends ISolCubeService.Stub {
             ShellActions.setNfc(false);
             L.i("NFC off (" + pkg + " closed)");
             // notice() runs on its own thread: send it here, before the process exits
-            SysSettings.exec("am", "broadcast", "-n", "dev.suite/.IslandReceiver", "--es", "text", "NFC off", "--ez", "ok", "true");
+            SysSettings.sendNoticeNow("NFC off", true);
         }
         System.exit(0);
     }
@@ -259,5 +259,9 @@ public class UtilUserService extends ISolCubeService.Stub {
 
     @Override public void destroy() { System.exit(0); }
     @Override public String status() { return "{\"running\":true}"; }
-    @Override public void configure(String json) {}
+    @Override public void configure(String json) {
+        try {
+            SysSettings.setNoticeSecret(new org.json.JSONObject(json).optString("secret", ""));
+        } catch (Throwable ignored) {}
+    }
 }

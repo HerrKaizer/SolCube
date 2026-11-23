@@ -14,9 +14,16 @@ import java.util.Map;
  * modified settings when leaving (or after 3 min locked for NFC).
  */
 public class ProfilesUserService extends ISolCubeService.Stub {
-    public ProfilesUserService() {
+    public ProfilesUserService() { this(null); }
+
+    public ProfilesUserService(android.content.Context given) {
         L.tag = "SolCube.prof";
         AppKeeper.watchInstalled(this::destroy);
+        try {
+            ShellActions.initContext(MixUserService.shellContext(given));
+        } catch (Throwable t) {
+            L.e("shell context", t);
+        }
     }
 
     private static final long POLL_ACTIVE_MS = 250;
@@ -36,6 +43,7 @@ public class ProfilesUserService extends ISolCubeService.Stub {
     private volatile String activeName = "";
     private volatile String activeApp = "";
     private volatile boolean activeRestore = true;
+    private volatile boolean activePillActions;
     private final Map<String, String> saved = new LinkedHashMap<>();
     private long goneSince;
     private long lockedSince;
@@ -46,7 +54,9 @@ public class ProfilesUserService extends ISolCubeService.Stub {
 
     @Override public synchronized void configure(String json) {
         try {
-            JSONArray a = new JSONObject(json).optJSONArray("profiles");
+            JSONObject o = new JSONObject(json);
+            SysSettings.setNoticeSecret(o.optString("secret", ""));
+            JSONArray a = o.optJSONArray("profiles");
             profiles = a == null ? new JSONArray() : a;
             L.i("loaded " + profiles.length() + " profiles");
             if (loop == null) {
@@ -198,8 +208,11 @@ public class ProfilesUserService extends ISolCubeService.Stub {
                 return;
             }
         }
+        boolean pillActions = p.has("pillActions") ? p.optBoolean("pillActions") : isNfcOnly(actions);
+        activePillActions = pillActions;
+        boolean hasCustomNotice = hasAction(actions, "notice");
         L.i("▶ " + activeName + " (" + hit.pkg + ")");
-        if (!activeName.isEmpty()) SysSettings.notice(activeName, true);
+        if (!pillActions && !hasCustomNotice && !activeName.isEmpty()) SysSettings.notice(activeName, true);
 
         if (actions == null) return;
         for (int i = 0; i < actions.length(); i++) {
@@ -211,27 +224,43 @@ public class ProfilesUserService extends ISolCubeService.Stub {
             if ("launch_bg".equals(type)) {
                 JSONArray apps = a.optJSONArray("apps");
                 if (apps != null && apps.length() > 0) {
-                    suppressLeaveUntil = System.currentTimeMillis() + 1800;
+                    boolean showAct = pillActions;
+                    suppressLeaveUntil = System.currentTimeMillis() + 4000;
                     new Thread(() -> {
-                        try { ShellActions.launchBackground(apps, hit); }
-                        finally { suppressLeaveUntil = System.currentTimeMillis() + 300; }
+                        try {
+                            int n = ShellActions.launchBackground(apps, hit);
+                            if (showAct && n > 0) {
+                                SysSettings.notice(n == 1 ? "Launched in bg" : "Launched " + n + " in bg", true);
+                            }
+                        } finally {
+                            suppressLeaveUntil = System.currentTimeMillis() + 500;
+                        }
                     }, "prof-bg").start();
                 }
                 continue;
             }
             if (("boost".equals(type) || "saver".equals(type)) && isGame(hit.pkg)) {
-                powerModeAfterGameCube(a, type, activeId);
+                powerModeAfterGameCube(a, type, activeId, pillActions);
                 continue;
             }
             try {
-                if (ShellActions.runInstant(a, hit, hit.pkg)) continue;
+                if (ShellActions.runInstant(a, hit, hit.pkg)) {
+                    if (pillActions) {
+                        String msg = ShellActions.instantNotice(a);
+                        if (msg != null) SysSettings.notice(msg, true);
+                    }
+                    continue;
+                }
                 String cur = ShellActions.read(type);
                 String target = ShellActions.targetValue(type, a);
                 if (cur == null || target == null) continue;
                 if (!cur.equals(target)) {
                     if (activeRestore && !saved.containsKey(type)) saved.put(type, cur);
                     ShellActions.write(type, target);
-                    if ("nfc".equals(type) && "on".equals(target)) SysSettings.notice("NFC on", true);
+                    if (pillActions) {
+                        String msg = ShellActions.actionNotice(type, a.optString("value"));
+                        if (msg != null) SysSettings.notice(msg, true);
+                    }
                     L.i(type + ": " + cur + " → " + target);
                 }
             } catch (InterruptedException e) {
@@ -259,7 +288,7 @@ public class ProfilesUserService extends ISolCubeService.Stub {
      * does for a change from Settings, and Game Cube remembers it for the game (and switches back
      * by itself on exit). Checks again a few seconds later in case Game Cube was slow.
      */
-    private void powerModeAfterGameCube(JSONObject a, String type, String profileId) {
+    private void powerModeAfterGameCube(JSONObject a, String type, String profileId, boolean pillActions) {
         String target = ShellActions.targetValue(type, a);
         if (target == null) return;
         new Thread(() -> {
@@ -272,6 +301,10 @@ public class ProfilesUserService extends ISolCubeService.Stub {
                         if (cur != null && !cur.equals(target)) {
                             if (activeRestore && !saved.containsKey(type)) saved.put(type, cur);
                             ShellActions.write(type, target);
+                            if (pillActions) {
+                                String msg = ShellActions.actionNotice(type, a.optString("value"));
+                                if (msg != null) SysSettings.notice(msg, true);
+                            }
                             L.i(type + ": " + cur + " → " + target + " (after Game Cube)");
                         }
                     }
@@ -289,13 +322,16 @@ public class ProfilesUserService extends ISolCubeService.Stub {
         L.i("■ " + activeName + " (" + why + ")");
         // Only say "<name> off" when leaving actually puts something back.
         if (activeRestore && !saved.isEmpty()) {
-            if (!activeName.isEmpty()) SysSettings.notice(activeName + " off", true);
+            if (!activePillActions && !activeName.isEmpty()) SysSettings.notice(activeName + " off", true);
             java.util.List<Map.Entry<String, String>> entries = new java.util.ArrayList<>(saved.entrySet());
             for (int i = entries.size() - 1; i >= 0; i--) {
                 Map.Entry<String, String> e = entries.get(i);
                 try {
                     ShellActions.write(e.getKey(), e.getValue());
-                    if ("nfc".equals(e.getKey()) && "off".equals(e.getValue())) SysSettings.notice("NFC off", true);
+                    if (activePillActions) {
+                        String msg = ShellActions.restoredNotice(e.getKey(), e.getValue());
+                        if (msg != null) SysSettings.notice(msg, true);
+                    }
                     L.i("restored " + e.getKey() + " → " + e.getValue());
                 } catch (Throwable t) {
                     L.e("restore " + e.getKey(), t);
@@ -306,6 +342,7 @@ public class ProfilesUserService extends ISolCubeService.Stub {
         activeId = "";
         activeName = "";
         activeApp = "";
+        activePillActions = false;
         goneSince = 0;
         lockedSince = 0;
     }
@@ -338,5 +375,27 @@ public class ProfilesUserService extends ISolCubeService.Stub {
             if (pkg.equals(a.optString(i))) return true;
         }
         return false;
+    }
+
+    private static boolean hasAction(JSONArray actions, String type) {
+        if (actions == null) return false;
+        for (int i = 0; i < actions.length(); i++) {
+            JSONObject a = actions.optJSONObject(i);
+            if (a != null && type.equals(a.optString("type"))) return true;
+        }
+        return false;
+    }
+
+    private static boolean isNfcOnly(JSONArray actions) {
+        if (actions == null || actions.length() == 0) return false;
+        boolean hasNfc = false;
+        for (int i = 0; i < actions.length(); i++) {
+            JSONObject a = actions.optJSONObject(i);
+            if (a == null) continue;
+            String t = a.optString("type");
+            if ("nfc".equals(t)) hasNfc = true;
+            else if (!"vibrate".equals(t) && !"wait".equals(t)) return false;
+        }
+        return hasNfc;
     }
 }

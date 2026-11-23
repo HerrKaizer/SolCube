@@ -182,6 +182,7 @@ object SolCubeHost {
 
     fun stop() {
         if (Looper.myLooper() != Looper.getMainLooper()) { main.post { stop() }; return }
+        NoticeHost.stop()
         ripple?.stop(); ripple = null
         temp?.stop(); temp = null
         stream?.stop(); stream = null
@@ -199,6 +200,7 @@ object SolCubeHost {
         appCtx = app
         if (started) return
         started = true
+        NoticeHost.start(app)
         val wt = HandlerThread("suite-bg").apply { start() }
         worker = wt
         val bh = Handler(wt.looper)

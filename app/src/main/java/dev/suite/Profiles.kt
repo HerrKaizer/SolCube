@@ -43,6 +43,7 @@ object Profiles {
                 .put("on", true)
                 .put("apps", JSONArray(listOf(target)))
                 .put("restoreOnExit", true)
+                .put("pillActions", true)
                 .put("actions", JSONArray(listOf(JSONObject().put("type", "nfc").put("value", "on"))))
         }
         save(ctx, list, push = false)
@@ -67,13 +68,35 @@ object Profiles {
         else runCatching { s.configure(config(ctx)) }
     }
 
-    fun config(ctx: Context): String = JSONObject().put("profiles", JSONArray(load(ctx))).toString()
+    fun config(ctx: Context): String = JSONObject().put("profiles", JSONArray(load(ctx)))
+        .put("secret", Ipc.secret(ctx)).toString()
 
     fun newId(): String = "p_" + System.currentTimeMillis()
 
     fun apps(p: JSONObject): List<String> = p.optJSONArray("apps")?.let { a ->
         (0 until a.length()).map { a.getString(it) }
     } ?: emptyList()
+
+    /** True when an enabled profile watches [pkg] (so that profile handles the status pill). */
+    fun hasEnabledForApp(ctx: Context, pkg: String): Boolean =
+        load(ctx).any { it.optBoolean("on", true) && pkg in apps(it) }
+
+    /** True when the profile's only non-cosmetic action is toggling NFC (and no custom pill). */
+    fun isNfcOnly(p: JSONObject): Boolean {
+        val actions = p.optJSONArray("actions") ?: return false
+        if (actions.length() == 0) return false
+        var hasNfc = false
+        for (i in 0 until actions.length()) {
+            val t = actions.optJSONObject(i)?.optString("type") ?: continue
+            if (t == "nfc") hasNfc = true
+            else if (t != "vibrate" && t != "wait") return false
+        }
+        return hasNfc
+    }
+
+    /** True when the status pill should show action changes (e.g. "NFC on") instead of the profile name. */
+    fun pillActions(p: JSONObject): Boolean =
+        if (p.has("pillActions")) p.optBoolean("pillActions") else isNfcOnly(p)
 
     fun actionsText(
         p: JSONObject,

@@ -51,29 +51,38 @@ object Island {
         val holeX: Float, val holeY: Float, val holeR: Float,
         val gap: Float,          // from the hole's edge to the pill's right end
         val pillY: Float,        // pill centre line
-        val pillH: Float,        // pill height
+        val pillH: Float,       // pill height
         val textPx: Float,       // text size in px (proportional to pillH)
-        val leftLimit: Float,    // never grow past this (the clock)
+        val leftLimit: Float,    // never grow past this (near left edge, may cover clock)
         val dropIn: Boolean,     // true = landscape or no usable top-center cutout
         val screenW: Int,
         val winH: Int,
+        val safeLeft: Float = 0f,
+        val safeRight: Float = 0f,
     )
 
-    private fun computeGeo(ctx: Context, wm: WindowManager): Geo {
-        val metrics = wm.currentWindowMetrics
+    private fun computeGeo(ctx: Context, wm: WindowManager, viewW: Int = 0, viewH: Int = 0): Geo {
+        val metrics = wm.maximumWindowMetrics
         val bounds = metrics.bounds
-        val screenW = bounds.width().coerceAtLeast(1)
-        val screenH = bounds.height().coerceAtLeast(1)
         val dens = ctx.resources.displayMetrics.density.coerceAtLeast(1f)
-        val land = screenW > screenH
+        val display = ctx.getSystemService(DisplayManager::class.java)?.getDisplay(Display.DEFAULT_DISPLAY)
+        val rot = display?.rotation ?: android.view.Surface.ROTATION_0
+        val rotated = rot == android.view.Surface.ROTATION_90 || rot == android.view.Surface.ROTATION_270
+        val natLand = display?.mode?.let { it.physicalWidth > it.physicalHeight } ?: false
+        val cfgLand = ctx.resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+        val shortSide = minOf(bounds.width(), bounds.height()).coerceAtLeast(1)
+        val longSide = maxOf(bounds.width(), bounds.height()).coerceAtLeast(1)
+        val viewLand = viewW > 0 && viewW > shortSide + 16
+        val land = viewLand || cfgLand || (if (display != null) natLand != rotated else bounds.width() > bounds.height())
+        val screenW = if (land) longSide else shortSide
+        val screenH = if (land) shortSide else longSide
 
         val insetsTop = metrics.windowInsets.getInsetsIgnoringVisibility(WindowInsets.Type.statusBars()).top
         val resId = ctx.resources.getIdentifier("status_bar_height", "dimen", "android")
         val fallbackBarH = if (resId > 0) ctx.resources.getDimensionPixelSize(resId) else (36f * dens).toInt()
         val statusBarH = (if (insetsTop > 0) insetsTop else fallbackBarH).toFloat().coerceAtLeast(24f * dens)
 
-        val cutout = metrics.windowInsets.displayCutout
-            ?: ctx.getSystemService(DisplayManager::class.java)?.getDisplay(Display.DEFAULT_DISPLAY)?.cutout
+        val cutout = metrics.windowInsets.displayCutout ?: display?.cutout
 
         if (!land && cutout != null) {
             val topRect = cutout.boundingRectTop
@@ -110,7 +119,7 @@ object Island {
                 val pillH = maxOf(holeR * 2f * 1.18f, minPillH).coerceAtMost(maxPillH)
                 val pillY = maxOf(holeY, pillH / 2f + 2f * dens)
                 val gap = maxOf(holeR * 0.50f, 4f * dens)
-                val leftLimit = maxOf(54f * dens, screenW * 0.132f)
+                val leftLimit = maxOf(8f * dens, (2f * holeR + gap) * 0.25f + 2f * dens)
                 val right = holeX - holeR - gap
                 if (right - leftLimit >= pillH * 2.2f) {
                     val winH = maxOf((pillY + pillH * 1.1f).toInt(), (statusBarH * 1.6f).toInt(), (64f * dens).toInt())
@@ -131,6 +140,23 @@ object Island {
             }
         }
 
+        var cutL = 0f
+        var cutR = 0f
+        if (land && cutout != null) {
+            if (bounds.width() > bounds.height()) {
+                cutL = cutout.safeInsetLeft.toFloat()
+                cutR = cutout.safeInsetRight.toFloat()
+            } else when (rot) {
+                android.view.Surface.ROTATION_90 -> {
+                    cutL = cutout.safeInsetTop.toFloat()
+                    cutR = cutout.safeInsetBottom.toFloat()
+                }
+                android.view.Surface.ROTATION_270 -> {
+                    cutL = cutout.safeInsetBottom.toFloat()
+                    cutR = cutout.safeInsetTop.toFloat()
+                }
+            }
+        }
         val minPillH = 22f * dens
         val maxPillH = maxOf(minPillH, minOf(statusBarH * 0.85f, 28f * dens))
         val pillH = (26f * dens).coerceIn(minPillH, maxPillH)
@@ -148,6 +174,8 @@ object Island {
             dropIn = true,
             screenW = screenW,
             winH = winH,
+            safeLeft = maxOf(12f * dens, cutL + 8f * dens),
+            safeRight = maxOf(12f * dens, cutR + 8f * dens),
         )
     }
 
@@ -156,7 +184,7 @@ object Island {
     fun show(ctx: Context, text: String, ok: Boolean = true, still: Boolean = false, waited: Int = 0, onTap: (() -> Unit)? = null) {
         if (Looper.myLooper() != Looper.getMainLooper()) { main.post { show(ctx, text, ok, still, waited, onTap) }; return }
         current?.let {
-            if (it.isAttachedToWindow) {
+            if (!it.removed) {
                 // going back in: let it finish, then come out fresh (starting mid-way looked broken)
                 if (it.closing) { pending += Triple(text, ok, still); pendingCtx = ctx.applicationContext; return }
                 it.replace(text, ok, still); return
@@ -181,10 +209,50 @@ object Island {
         // that window takes touches instead, and is only as wide as the pill's area.
         val overlay = a11y == null
         val narrow = overlay || onTap != null   // a window that takes touches is kept to the pill area
-        val g = computeGeo(vctx, wm)
+        val allowMulti = !narrow
+        val g0 = computeGeo(vctx, wm)
         val dens = vctx.resources.displayMetrics.density.coerceAtLeast(1f)
-        val offX = if (narrow && !g.dropIn) (g.leftLimit - 20f * dens).coerceAtLeast(0f) else 0f
-        val view = PillView(vctx, g, text, ok, still, offX, onTap) { v ->
+        fun calcOffX(g: Geo) = if (narrow && !g.dropIn) (g.leftLimit - 20f * dens).coerceAtLeast(0f) else 0f
+        fun calcW(g: Geo, off: Float) = when {
+            !narrow -> WindowManager.LayoutParams.MATCH_PARENT
+            g.dropIn -> minOf((g.screenW * 0.85f).toInt(), (360f * dens).toInt())
+            else -> (g.holeX + g.holeR + 4f * dens - off).toInt().coerceAtLeast(1)
+        }
+        fun calcGravity(g: Geo) = android.view.Gravity.TOP or
+            (if (g.dropIn) android.view.Gravity.CENTER_HORIZONTAL else android.view.Gravity.START)
+
+        val offX0 = calcOffX(g0)
+        val lp = WindowManager.LayoutParams(
+            calcW(g0, offX0), g0.winH, type,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                (if (narrow) WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL else WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = calcGravity(g0)
+            x = offX0.toInt()
+            alpha = 1f
+            layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+            setFitInsetsTypes(0)
+            title = "SolCubeIsland"
+        }
+        val view = PillView(vctx, wm, g0, text, ok, still, offX0, allowMulti, onTap, { v, ng ->
+            val newOff = calcOffX(ng)
+            v.offX = newOff
+            val nw = calcW(ng, newOff)
+            val nh = ng.winH
+            val ngGrav = calcGravity(ng)
+            val nx = newOff.toInt()
+            if (lp.width != nw || lp.height != nh || lp.gravity != ngGrav || lp.x != nx) {
+                lp.width = nw
+                lp.height = nh
+                lp.gravity = ngGrav
+                lp.x = nx
+                if (v.isAttachedToWindow) runCatching { wm.updateViewLayout(v, lp) }
+            }
+        }) { v ->
+            if (v is PillView) v.removed = true
             runCatching { wm.removeView(v) }
             if (current === v) current = null
             val ps = pending.toList(); val pc = pendingCtx
@@ -192,37 +260,40 @@ object Island {
             // the first comes out, the rest queue up on it
             if (pc != null) ps.forEach { p -> show(pc, p.first, p.second, p.third) }
         }
-        val lp = WindowManager.LayoutParams(
-            when {
-                !narrow -> WindowManager.LayoutParams.MATCH_PARENT
-                g.dropIn -> minOf((g.screenW * 0.85f).toInt(), (360f * dens).toInt())
-                else -> (g.holeX + g.holeR + 4f * dens - offX).toInt().coerceAtLeast(1)
-            }, g.winH, type,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                (if (narrow) WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL else WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = android.view.Gravity.TOP or
-                (if (g.dropIn) android.view.Gravity.CENTER_HORIZONTAL else android.view.Gravity.START)
-            x = offX.toInt()
-            alpha = 1f
-            layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
-            setFitInsetsTypes(0)
-            title = "SolCubeIsland"
-        }
         try { wm.addView(view, lp); current = view } catch (e: Exception) { Log.w(TAG, "island", e) }
     }
 
     fun hide() = main.post { current?.close() }
 
     private class PillView(
-        ctx: Context, private val g: Geo, private var text: String, private var ok: Boolean, private var still: Boolean,
-        private val offX: Float,   // the window's left edge in screen pixels (geometry is in screen pixels)
+        ctx: Context,
+        private val wm: WindowManager,
+        private var g: Geo,
+        private var text: String,
+        private var ok: Boolean,
+        private var still: Boolean,
+        var offX: Float,   // the window's left edge in screen pixels (geometry is in screen pixels)
+        private val allowMulti: Boolean,
         private val onTap: (() -> Unit)?,
+        private val onGeoChanged: (PillView, Geo) -> Unit,
         private val onGone: (View) -> Unit,
     ) : View(ctx) {
+        private class LandPill(
+            val text: String,
+            val ok: Boolean,
+            var still: Boolean,
+            var w: Float,
+            var s: Float = 0f,
+            var opening: Boolean = true,
+            var closing: Boolean = false,
+            var readableAt: Long = 0L,
+            var curCx: Float = 0f,
+            var fromCx: Float = 0f,
+            var targetCx: Float = 0f,
+            var anim: ValueAnimator? = null,
+            var hold: Runnable? = null,
+        )
+
         private val dens = resources.displayMetrics.density
         private val bg = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.BLACK }
         private val txt = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -250,6 +321,7 @@ object Island {
         private var snapped = false
         private var anim: ValueAnimator? = null
         private val hold = Runnable { close() }
+        var removed = false
 
         // notices that arrive while this one is out: each is shown for at least minShow, the text
         // cross-fades and the pill eases to the new width
@@ -262,24 +334,123 @@ object Island {
         private val minShow get() = 1600L
         private val next = Runnable { swapNext() }
 
-        init { open() }
+        // landscape multi-pill row: multiple concurrent pills arranged across the status bar
+        private val landPills = ArrayList<LandPill>()
+        private val landOverflow = ArrayDeque<Triple<String, Boolean, Boolean>>()
+        private var rowAnim: ValueAnimator? = null
 
+        private val isLandMulti get() = g.dropIn && allowMulti
         private val pad get() = g.pillH * 0.42f
         private val icon get() = g.pillH * 0.46f
         private val iconGap get() = g.pillH * 0.20f
         private val right get() = g.holeX - g.holeR - g.gap
-        /** The widest the pill may get: up to the clock in portrait, under half the screen in landscape. */
-        private val maxW get() = if (g.dropIn) minOf(width.toFloat(), 360f * dens) * 0.9f else (right - g.leftLimit).coerceAtLeast(g.pillH)
+        /** The widest the pill may get: up to the left margin in portrait (may cover the clock), capped per pill in landscape. */
+        private val maxW get() = if (g.dropIn) minOf(width.toFloat().takeIf { it > 0f } ?: g.screenW.toFloat(), 360f * dens) * 0.9f else (right - g.leftLimit).coerceAtLeast(g.pillH)
+        private val pillGap get() = 8f * dens
+        private val landViewW get() = width.toFloat().takeIf { it > 0f } ?: g.screenW.toFloat()
+        private val landBarLeft get() = g.safeLeft.coerceAtMost(landViewW * 0.25f)
+        private val landBarRight get() = (landViewW - g.safeRight).coerceAtLeast(landBarLeft + g.pillH * 2f)
+        private val landAvailW get() = (landBarRight - landBarLeft).coerceAtLeast(g.pillH)
+        private val landSingleMaxW get() = minOf(landAvailW, 324f * dens)
 
-        private fun shown(t: String = text): String {
+        init {
+            if (isLandMulti) addLandPill(text, ok, still) else open()
+        }
+
+        private fun refreshGeo(w: Int = width, h: Int = height) {
+            val ng = computeGeo(context, wm, w, h)
+            if (ng == g) return
+            val wasMulti = isLandMulti
+            g = ng
+            mark.strokeWidth = (g.pillH * 0.085f).coerceAtLeast(1.5f * dens)
+            onGeoChanged(this, ng)
+            val nowMulti = isLandMulti
+            when {
+                !wasMulti && nowMulti -> {
+                    anim?.cancel(); anim = null
+                    swapAnim?.cancel(); swapAnim = null
+                    removeCallbacks(hold); removeCallbacks(next)
+                    swap = 1f
+                    val first = LandPill(
+                        text = text, ok = ok, still = still,
+                        w = fullWidth(text, landSingleMaxW),
+                        s = s, opening = opening, closing = !opening, readableAt = readableAt,
+                    )
+                    landPills.add(first)
+                    relayoutLandPills(animate = false)
+                    when {
+                        first.closing -> closeLandPill(first)
+                        first.s < 0.99f -> openLandPill(first)
+                        else -> { first.opening = false; scheduleLandHold(first) }
+                    }
+                    val queued = queue.toList()
+                    queue.clear()
+                    queued.forEach { q -> addLandPill(q.first, q.second, false) }
+                }
+                wasMulti && !nowMulti -> {
+                    rowAnim?.cancel(); rowAnim = null
+                    val snapshot = landPills.toList()
+                    snapshot.forEach { lp ->
+                        lp.anim?.cancel(); lp.anim = null
+                        lp.hold?.let { removeCallbacks(it) }; lp.hold = null
+                    }
+                    val head = snapshot.firstOrNull { !it.closing } ?: snapshot.firstOrNull()
+                    if (head != null) {
+                        text = head.text; ok = head.ok; still = head.still
+                        s = head.s; opening = !head.closing; readableAt = head.readableAt; swap = 1f
+                        for (lp in snapshot) {
+                            if (lp !== head && !lp.closing) queue.addLast(lp.text to lp.ok)
+                        }
+                        while (landOverflow.isNotEmpty()) {
+                            val o = landOverflow.removeFirst()
+                            queue.addLast(o.first to o.second)
+                        }
+                        landPills.clear()
+                        if (opening) {
+                            if (s < 0.99f) open() else afterText()
+                        } else {
+                            close()
+                        }
+                    } else {
+                        landPills.clear()
+                        landOverflow.clear()
+                        if (!removed) { removed = true; onGone(this) }
+                    }
+                }
+                wasMulti && nowMulti -> {
+                    for (lp in landPills) lp.w = fullWidth(lp.text, landSingleMaxW)
+                    relayoutLandPills(animate = false)
+                }
+            }
+            invalidate()
+        }
+
+        override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+            super.onConfigurationChanged(newConfig)
+            refreshGeo()
+        }
+
+        override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+            super.onSizeChanged(w, h, oldw, oldh)
+            if (w > 0 && (w != oldw || h != oldh)) {
+                val prevG = g
+                refreshGeo(w, h)
+                if (prevG == g && isLandMulti && (oldw > 0 || abs(w - g.screenW) > 1)) {
+                    for (lp in landPills) lp.w = fullWidth(lp.text, landSingleMaxW)
+                    relayoutLandPills(animate = false)
+                }
+            }
+        }
+
+        private fun shown(t: String = text, limitW: Float = maxW): String {
             txt.textSize = g.textPx
-            val room = maxW - pad * 2 - icon - iconGap
+            val room = limitW - pad * 2 - icon - iconGap
             return android.text.TextUtils.ellipsize(t, android.text.TextPaint(txt), maxOf(0f, room), android.text.TextUtils.TruncateAt.END).toString()
         }
 
-        private fun fullWidth(t: String = text): Float {
+        private fun fullWidth(t: String = text, limitW: Float = maxW): Float {
             txt.textSize = g.textPx
-            return min(maxW, maxOf(g.pillH, pad + icon + iconGap + txt.measureText(shown(t)) + pad))
+            return min(limitW, maxOf(g.pillH, pad + icon + iconGap + txt.measureText(shown(t, limitW)) + pad))
         }
 
         /** Width now: between the old and the new text's while they swap. */
@@ -326,17 +497,35 @@ object Island {
             }
         }
 
-        val closing get() = !opening
+        val closing get() = if (isLandMulti) {
+            landPills.isNotEmpty() && landPills.all { it.closing } && landOverflow.isEmpty()
+        } else {
+            !opening
+        }
 
         fun close() {
+            if (isLandMulti) {
+                landOverflow.clear()
+                rowAnim?.cancel(); rowAnim = null
+                if (landPills.isEmpty()) {
+                    if (!removed) { removed = true; onGone(this) }
+                    return
+                }
+                landPills.toList().forEach { lp -> if (!lp.closing) closeLandPill(lp) }
+                return
+            }
             removeCallbacks(hold); removeCallbacks(next); opening = false
             val from = s
             // no bounce on the way back: a smooth glide into the hole
-            run(550, { f -> s = from * (1 - ease(f)) }) { onGone(this) }
+            run(550, { f -> s = from * (1 - ease(f)) }) { if (!removed) { removed = true; onGone(this) } }
         }
 
         /** A new notice while this one is out (or coming out): queued, shown after the current one. */
         fun replace(newText: String, o: Boolean, st: Boolean) {
+            if (isLandMulti) {
+                addLandPill(newText, o, st)
+                return
+            }
             if (st) still = true
             val last = queue.lastOrNull() ?: (text to ok)
             if (last.first == newText && last.second == o) {   // the same again: just keep it out longer
@@ -345,6 +534,177 @@ object Island {
             }
             queue.addLast(newText to o)
             if (anim?.isRunning != true && swapAnim?.isRunning != true) afterText()
+        }
+
+        private fun addLandPill(newText: String, newOk: Boolean, st: Boolean) {
+            val existing = landPills.firstOrNull { !it.closing && it.text == newText && it.ok == newOk }
+            if (existing != null) {
+                if (st) existing.still = true
+                if (!existing.opening) scheduleLandHold(existing)
+                return
+            }
+            val queuedLast = landOverflow.lastOrNull()
+            if (queuedLast != null && queuedLast.first == newText && queuedLast.second == newOk) return
+            val w = fullWidth(newText, landSingleMaxW)
+            val needed = landPills.sumOf { it.w.toDouble() }.toFloat() + pillGap * landPills.size + w
+            if (landPills.isEmpty() || needed <= landAvailW) {
+                val lp = LandPill(newText, newOk, st, w)
+                landPills.add(lp)
+                relayoutLandPills(animate = landPills.size > 1, newlyAdded = lp)
+                openLandPill(lp)
+            } else {
+                landOverflow.addLast(Triple(newText, newOk, st))
+                nudgeOldestForOverflow()
+            }
+        }
+
+        private fun relayoutLandPills(animate: Boolean, newlyAdded: LandPill? = null) {
+            if (landPills.isEmpty()) {
+                rowAnim?.cancel(); rowAnim = null
+                return
+            }
+            val totalW = landPills.sumOf { it.w.toDouble() }.toFloat() + pillGap * (landPills.size - 1)
+            val center = (landBarLeft + landBarRight) / 2f
+            val startX = (center - totalW / 2f).coerceIn(landBarLeft, maxOf(landBarLeft, landBarRight - totalW))
+            var x = startX
+            for (lp in landPills) {
+                lp.targetCx = x + lp.w / 2f
+                x += lp.w + pillGap
+            }
+            val allFresh = !animate || landPills.all { it === newlyAdded || it.s < 0.05f }
+            if (allFresh) {
+                rowAnim?.cancel(); rowAnim = null
+                for (lp in landPills) {
+                    lp.fromCx = lp.targetCx
+                    lp.curCx = lp.targetCx
+                }
+                invalidate()
+                return
+            }
+            for (lp in landPills) {
+                if (lp !== newlyAdded) lp.fromCx = lp.curCx
+            }
+            if (newlyAdded != null) {
+                val idx = landPills.indexOf(newlyAdded)
+                val prev = if (idx > 0) landPills[idx - 1] else null
+                newlyAdded.fromCx = if (prev != null) {
+                    maxOf(newlyAdded.targetCx, prev.curCx + prev.w / 2f + pillGap + newlyAdded.w / 2f)
+                } else {
+                    newlyAdded.targetCx
+                }
+                newlyAdded.curCx = newlyAdded.fromCx
+            }
+            rowAnim?.cancel()
+            rowAnim = ValueAnimator.ofFloat(0f, 1f).apply {
+                duration = 260
+                interpolator = android.view.animation.LinearInterpolator()
+                addUpdateListener { a ->
+                    val k = ease(a.animatedValue as Float)
+                    for (lp in landPills) lp.curCx = lp.fromCx + (lp.targetCx - lp.fromCx) * k
+                    invalidate()
+                }
+                addListener(object : android.animation.AnimatorListenerAdapter() {
+                    override fun onAnimationEnd(a: android.animation.Animator) {
+                        if (rowAnim === a) {
+                            rowAnim = null
+                            for (lp in landPills) { lp.fromCx = lp.targetCx; lp.curCx = lp.targetCx }
+                            invalidate()
+                        }
+                    }
+                })
+                start()
+            }
+        }
+
+        private fun openLandPill(lp: LandPill) {
+            lp.hold?.let { removeCallbacks(it) }; lp.hold = null
+            lp.anim?.cancel()
+            lp.opening = true; lp.closing = false
+            lp.readableAt = System.currentTimeMillis() + 300
+            val from = lp.s
+            lp.anim = ValueAnimator.ofFloat(0f, 1f).apply {
+                duration = (springSec * 1000).toLong()
+                interpolator = android.view.animation.LinearInterpolator()
+                addUpdateListener { lp.s = from + (1 - from) * spring((it.animatedValue as Float) * springSec); invalidate() }
+                addListener(object : android.animation.AnimatorListenerAdapter() {
+                    override fun onAnimationEnd(a: android.animation.Animator) {
+                        if (lp.anim === a && !removed) {
+                            lp.anim = null
+                            lp.s = 1f; lp.opening = false; invalidate()
+                            scheduleLandHold(lp)
+                        }
+                    }
+                })
+                start()
+            }
+        }
+
+        private fun scheduleLandHold(lp: LandPill) {
+            lp.hold?.let { removeCallbacks(it) }; lp.hold = null
+            if (lp.still || lp.closing || removed) return
+            val head = landPills.firstOrNull { !it.closing && !it.still }
+            val delay = if (landOverflow.isNotEmpty() && lp === head) {
+                maxOf(0L, minShow - (System.currentTimeMillis() - lp.readableAt))
+            } else {
+                3500L
+            }
+            val r = Runnable { closeLandPill(lp) }
+            lp.hold = r
+            postDelayed(r, delay)
+        }
+
+        private fun nudgeOldestForOverflow() {
+            val head = landPills.firstOrNull { !it.closing && !it.still } ?: return
+            if (!head.opening) scheduleLandHold(head)
+        }
+
+        private fun closeLandPill(lp: LandPill) {
+            lp.hold?.let { removeCallbacks(it) }; lp.hold = null
+            lp.anim?.cancel()
+            lp.opening = false; lp.closing = true
+            val from = lp.s
+            lp.anim = ValueAnimator.ofFloat(0f, 1f).apply {
+                duration = 550
+                interpolator = android.view.animation.LinearInterpolator()
+                addUpdateListener { lp.s = from * (1 - ease(it.animatedValue as Float)); invalidate() }
+                addListener(object : android.animation.AnimatorListenerAdapter() {
+                    override fun onAnimationEnd(a: android.animation.Animator) {
+                        if (lp.anim === a && !removed) {
+                            lp.anim = null
+                            landPills.remove(lp)
+                            val spawned = drainLandOverflow()
+                            if (landPills.isEmpty() && landOverflow.isEmpty()) {
+                                removed = true
+                                onGone(this@PillView)
+                            } else if (!spawned) {
+                                relayoutLandPills(animate = true)
+                            }
+                        }
+                    }
+                })
+                start()
+            }
+        }
+
+        private fun drainLandOverflow(): Boolean {
+            var any = false
+            while (landOverflow.isNotEmpty()) {
+                val (t, o, st) = landOverflow.first()
+                val w = fullWidth(t, landSingleMaxW)
+                val needed = landPills.sumOf { it.w.toDouble() }.toFloat() + pillGap * landPills.size + w
+                if (landPills.isEmpty() || needed <= landAvailW) {
+                    landOverflow.removeFirst()
+                    val lp = LandPill(t, o, st, w)
+                    landPills.add(lp)
+                    relayoutLandPills(animate = landPills.size > 1, newlyAdded = lp)
+                    openLandPill(lp)
+                    any = true
+                } else {
+                    nudgeOldestForOverflow()
+                    break
+                }
+            }
+            return any
         }
 
         /** The current text is out: wait, then the next queued one, or go back in. */
@@ -382,12 +742,21 @@ object Island {
 
         override fun onDetachedFromWindow() {
             super.onDetachedFromWindow()
-            removeCallbacks(hold); removeCallbacks(next); swapAnim?.cancel()
+            removed = true
+            removeCallbacks(hold); removeCallbacks(next)
+            anim?.cancel(); anim = null
+            swapAnim?.cancel(); swapAnim = null
+            rowAnim?.cancel(); rowAnim = null
+            landPills.forEach { lp ->
+                lp.hold?.let { removeCallbacks(it) }; lp.hold = null
+                lp.anim?.cancel(); lp.anim = null
+            }
         }
 
         private fun ease(x: Float) = x * x * (3 - 2 * x)
 
         override fun onDraw(c: Canvas) {
+            if (isLandMulti) { drawLandMulti(c); return }
             if (s <= 0.001f) return
             if (g.dropIn) { drawLand(c); return }
             c.translate(-offX, 0f)
@@ -443,7 +812,29 @@ object Island {
             rimAndText(c, p, r, by, true)
         }
 
-        private fun rimAndText(c: Canvas, p: Float, r: Float, by: Float, showRim: Boolean) {
+        /** Landscape multi-pill row: independent non-overlapping capsules centered across the status bar. */
+        private fun drawLandMulti(c: Canvas) {
+            for (lp in landPills) {
+                if (lp.s <= 0.001f) continue
+                val p = lp.s.coerceAtLeast(0f)
+                val h = g.pillH * (0.6f + 0.4f * (p / 0.6f).coerceIn(0f, 1f))
+                val r = h / 2f
+                val by = -g.pillH + (g.pillY + g.pillH) * p
+                val w = h + (lp.w - h) * ((p - 0.08f) / 0.72f).coerceIn(0f, 1f)
+                rect.set(lp.curCx - w / 2f, by - r, lp.curCx + w / 2f, by + r)
+                c.drawRoundRect(rect, r, r, bg)
+                drawRim(c, p, r, true)
+                val ta = ((p - 0.62f) / 0.3f).coerceIn(0f, 1f)
+                if (ta > 0f) {
+                    c.save()
+                    c.clipRect(rect)
+                    content(c, lp.text, lp.ok, ta, by, landSingleMaxW)
+                    c.restore()
+                }
+            }
+        }
+
+        private fun drawRim(c: Canvas, p: Float, r: Float, showRim: Boolean) {
             val ra = ((p - 0.62f) / 0.3f).coerceIn(0f, 1f)
             if (showRim && ra > 0f) {
                 rim.color = Color.argb((0x33 * ra).toInt(), 255, 255, 255)
@@ -451,6 +842,10 @@ object Island {
                 rimRect.set(rect.left + hw, rect.top + hw, rect.right - hw, rect.bottom - hw)
                 c.drawRoundRect(rimRect, r - hw, r - hw, rim)
             }
+        }
+
+        private fun rimAndText(c: Canvas, p: Float, r: Float, by: Float, showRim: Boolean) {
+            drawRim(c, p, r, showRim)
 
             val ta = ((p - 0.62f) / 0.3f).coerceIn(0f, 1f)
             if (ta <= 0f) return
@@ -465,7 +860,7 @@ object Island {
             c.restore()
         }
 
-        private fun content(c: Canvas, t: String, good: Boolean, alpha: Float, by: Float) {
+        private fun content(c: Canvas, t: String, good: Boolean, alpha: Float, by: Float, limitW: Float = maxW) {
             if (alpha <= 0f) return
             val a = (alpha * 255).toInt()
             val left = rect.left + pad
@@ -482,7 +877,7 @@ object Island {
             txt.textSize = g.textPx
             txt.alpha = a
             val fm = txt.fontMetrics
-            c.drawText(shown(t), left + ic + iconGap, by - (fm.ascent + fm.descent) / 2, txt)
+            c.drawText(shown(t, limitW), left + ic + iconGap, by - (fm.ascent + fm.descent) / 2, txt)
         }
 
         /**
@@ -520,6 +915,126 @@ object Island {
             path.cubicTo(qx - ux * l1, qy - uy * l1, bx + ux * l1, by + uy * l1, bx, by)
             path.close()
             c.drawPath(path, bg)
+        }
+    }
+}
+
+/**
+ * Authenticated localhost server (127.0.0.1:47322) that lets SolCube's shell-side services
+ * display status pills directly when ROM broadcast restrictions (e.g. OriginOS install_broadcast_control)
+ * drop shell `am broadcast` intents.
+ */
+object NoticeHost {
+    const val PORT = 47322
+    private const val TAG = "SolCube"
+    @Volatile private var running = false
+    @Volatile private var server: java.net.ServerSocket? = null
+    @Volatile private var appCtx: Context? = null
+    private var gen = 0
+
+    @Synchronized fun start(ctx: Context) {
+        appCtx = ctx.applicationContext
+        if (running) return
+        running = true
+        val myGen = ++gen
+        Thread({ serve(myGen) }, "notice-server").apply { isDaemon = true }.start()
+    }
+
+    @Synchronized fun stop() {
+        running = false
+        gen++
+        runCatching { server?.close() }
+        server = null
+    }
+
+    private fun serve(myGen: Int) {
+        while (running && gen == myGen) {
+            try {
+                val ss = java.net.ServerSocket()
+                ss.reuseAddress = true
+                ss.bind(java.net.InetSocketAddress(java.net.InetAddress.getByName("127.0.0.1"), PORT), 8)
+                synchronized(this) {
+                    if (!running || gen != myGen) { runCatching { ss.close() }; return }
+                    server = ss
+                }
+                Log.i(TAG, "notice host listening on $PORT")
+                while (running && gen == myGen && !ss.isClosed) {
+                    val s = ss.accept()
+                    Thread { runCatching { handle(s) } }.start()
+                }
+            } catch (e: Exception) {
+                if (running && gen == myGen) {
+                    Log.w(TAG, "notice server: ${e.message}")
+                    runCatching { Thread.sleep(3000) }
+                }
+            }
+        }
+    }
+
+    private fun handle(s: java.net.Socket) {
+        val ctx = appCtx ?: return
+        s.use { sock ->
+            sock.soTimeout = 6000
+            sock.tcpNoDelay = true
+            val reader = java.io.BufferedReader(java.io.InputStreamReader(sock.getInputStream(), Charsets.UTF_8))
+            val out = sock.getOutputStream()
+            val secret = Ipc.secret(ctx)
+            val ns = Ipc.nonce()
+            out.write("hello $ns\n".toByteArray(Charsets.UTF_8))
+            out.flush()
+            val auth = reader.readLine()?.trim()?.split(" ") ?: return
+            if (auth.size != 3 || auth[0] != "auth" || !Ipc.same(auth[2], Ipc.mac(secret, "client|$ns|${auth[1]}"))) {
+                Log.w(TAG, "notice port: rejected unauthenticated connection")
+                return
+            }
+            out.write("auth ${Ipc.mac(secret, "server|${auth[1]}|$ns")}\n".toByteArray(Charsets.UTF_8))
+            out.flush()
+            val line = reader.readLine() ?: return
+            val o = org.json.JSONObject(line)
+            val reply = when (o.optString("cmd")) {
+                "broadcast" -> {
+                    val action = o.optString("action")
+                    if (action == "android.media.action.OPEN_AUDIO_EFFECT_CONTROL_SESSION") {
+                        val comp = android.content.ComponentName.unflattenFromString(o.optString("component"))
+                        if (comp != null) {
+                            ctx.sendBroadcast(
+                                Intent(action)
+                                    .setComponent(comp)
+                                    .addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES or Intent.FLAG_RECEIVER_FOREGROUND)
+                                    .putExtra("android.media.extra.AUDIO_SESSION", o.optInt("audioSession", 0))
+                                    .putExtra("android.media.extra.PACKAGE_NAME", o.optString("pkg"))
+                            )
+                        }
+                    }
+                    "ok"
+                }
+                "get_feature" -> "ok:${TestReceiver.getFeature(ctx, o.optString("feature"))}"
+                "set_feature" -> {
+                    val value = if (o.has("value") && !o.isNull("value")) o.optString("value") else null
+                    val on = if (value != null) value == "on" else o.optBoolean("on", false)
+                    TestReceiver.setFeature(ctx, o.optString("feature"), value, on)
+                    "ok"
+                }
+                "trigger_cts" -> "ok:${TestReceiver.triggerCts(ctx)}"
+                "rt_run" -> {
+                    val id = o.optString("id")
+                    if (id.isNotEmpty()) Thread { runCatching { Shell.command(ctx, Shell.Kind.ROUTINES, "run $id") } }.start()
+                    "ok"
+                }
+                "rt_trigger" -> {
+                    val trig = o.optString("trigger")
+                    val matched = trig.isNotEmpty() && Routines.trigger(ctx, trig)
+                    "ok:${if (matched) "matched" else "none"}"
+                }
+                else -> {
+                    val text = o.optString("text")
+                    val ok = o.optBoolean("ok", true)
+                    if (text.isNotEmpty()) Island.show(ctx, text, ok)
+                    "ok"
+                }
+            }
+            out.write("$reply\n".toByteArray(Charsets.UTF_8))
+            out.flush()
         }
     }
 }

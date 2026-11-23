@@ -144,7 +144,12 @@ object Shell {
             val until = System.currentTimeMillis() + 8000
             while (s == null && System.currentTimeMillis() < until) { Thread.sleep(100); s = service(k) }
         }
-        return s?.let { runCatching { it.command(cmd) }.getOrElse { e -> e.toString() } }
+        return s?.let {
+            if (k == Kind.UTIL || k == Kind.NFC) {
+                runCatching { it.configure(org.json.JSONObject().put("secret", Ipc.secret(ctx.applicationContext)).toString()) }
+            }
+            runCatching { it.command(cmd) }.getOrElse { e -> e.toString() }
+        }
     }
 
     /** Shizuku went away (e.g. reboot pending, server restarted): forget the binders. */
