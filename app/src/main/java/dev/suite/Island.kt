@@ -114,9 +114,9 @@ object Island {
                 val minY = holeR + 2f * dens
                 val maxY = (maxOf(statusBarH, topRect.bottom.toFloat()) - holeR).coerceAtLeast(minY)
                 val holeY = rawY.coerceIn(minY, maxY)
-                val minPillH = minOf(22f * dens, statusBarH * 0.72f)
-                val maxPillH = maxOf(minPillH, minOf(statusBarH * 0.85f, 29f * dens))
-                val pillH = maxOf(holeR * 2f * 1.18f, minPillH).coerceAtMost(maxPillH)
+                val minPillH = minOf(23f * dens, statusBarH * 0.72f)
+                val maxPillH = maxOf(minPillH, minOf(statusBarH * 0.85f, 30f * dens))
+                val pillH = maxOf(holeR * 2f * 1.21f, minPillH).coerceAtMost(maxPillH)
                 val pillY = maxOf(holeY, pillH / 2f + 2f * dens)
                 val gap = maxOf(holeR * 0.50f, 4f * dens)
                 val leftLimit = maxOf(8f * dens, (2f * holeR + gap) * 0.25f + 2f * dens)
@@ -130,7 +130,7 @@ object Island {
                         gap = gap,
                         pillY = pillY,
                         pillH = pillH,
-                        textPx = pillH * 0.55f,
+                        textPx = pillH * 0.606f,
                         leftLimit = leftLimit,
                         dropIn = false,
                         screenW = screenW,
@@ -157,11 +157,16 @@ object Island {
                 }
             }
         }
-        val minPillH = 22f * dens
-        val maxPillH = maxOf(minPillH, minOf(statusBarH * 0.85f, 28f * dens))
-        val pillH = (26f * dens).coerceIn(minPillH, maxPillH)
-        val pillY = maxOf(statusBarH * 0.5f, pillH * 0.5f + 8f * dens)
-        val winH = maxOf((pillY * 1.35f + pillH * 0.9f).toInt(), (statusBarH * 1.8f).toInt(), (72f * dens).toInt())
+        val pillH = if (land) {
+            28.5f * dens
+        } else {
+            val minPillH = 23f * dens
+            val maxPillH = maxOf(minPillH, minOf(statusBarH * 0.85f, 30f * dens))
+            (25f * dens).coerceIn(minPillH, maxPillH)
+        }
+        val textPx = pillH * (if (land) 0.59f else 0.606f)
+        val pillY = maxOf(statusBarH * 0.5f, pillH * 0.5f + (if (land) 9f else 8f) * dens)
+        val winH = maxOf((pillY * 1.35f + pillH * 1.0f).toInt(), (statusBarH * 1.8f).toInt(), (72f * dens).toInt())
         return Geo(
             holeX = screenW / 2f,
             holeY = pillY,
@@ -169,7 +174,7 @@ object Island {
             gap = 0f,
             pillY = pillY,
             pillH = pillH,
-            textPx = pillH * 0.55f,
+            textPx = textPx,
             leftLimit = 0f,
             dropIn = true,
             screenW = screenW,
@@ -215,7 +220,7 @@ object Island {
         fun calcOffX(g: Geo) = if (narrow && !g.dropIn) (g.leftLimit - 20f * dens).coerceAtLeast(0f) else 0f
         fun calcW(g: Geo, off: Float) = when {
             !narrow -> WindowManager.LayoutParams.MATCH_PARENT
-            g.dropIn -> minOf((g.screenW * 0.85f).toInt(), (360f * dens).toInt())
+            g.dropIn -> minOf((g.screenW * 0.85f).toInt(), (440f * dens).toInt())
             else -> (g.holeX + g.holeR + 4f * dens - off).toInt().coerceAtLeast(1)
         }
         fun calcGravity(g: Geo) = android.view.Gravity.TOP or
@@ -304,7 +309,7 @@ object Island {
         }
         private val mark = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
-            strokeWidth = (g.pillH * 0.085f).coerceAtLeast(1.5f * dens)
+            strokeWidth = (g.pillH * 0.088f).coerceAtLeast(1.5f * dens)
             strokeCap = Paint.Cap.ROUND
             strokeJoin = Paint.Join.ROUND
         }
@@ -342,16 +347,16 @@ object Island {
         private val isLandMulti get() = g.dropIn && allowMulti
         private val pad get() = g.pillH * 0.42f
         private val icon get() = g.pillH * 0.46f
-        private val iconGap get() = g.pillH * 0.20f
+        private val iconGap get() = g.pillH * 0.24f
         private val right get() = g.holeX - g.holeR - g.gap
         /** The widest the pill may get: up to the left margin in portrait (may cover the clock), capped per pill in landscape. */
-        private val maxW get() = if (g.dropIn) minOf(width.toFloat().takeIf { it > 0f } ?: g.screenW.toFloat(), 360f * dens) * 0.9f else (right - g.leftLimit).coerceAtLeast(g.pillH)
-        private val pillGap get() = 8f * dens
+        private val maxW get() = if (g.dropIn) minOf(width.toFloat().takeIf { it > 0f } ?: g.screenW.toFloat(), 440f * dens) * 0.9f else (right - g.leftLimit).coerceAtLeast(g.pillH)
+        private val pillGap get() = g.pillH * 0.30f
         private val landViewW get() = width.toFloat().takeIf { it > 0f } ?: g.screenW.toFloat()
         private val landBarLeft get() = g.safeLeft.coerceAtMost(landViewW * 0.25f)
         private val landBarRight get() = (landViewW - g.safeRight).coerceAtLeast(landBarLeft + g.pillH * 2f)
         private val landAvailW get() = (landBarRight - landBarLeft).coerceAtLeast(g.pillH)
-        private val landSingleMaxW get() = minOf(landAvailW, 324f * dens)
+        private val landSingleMaxW get() = minOf(landAvailW, 420f * dens)
 
         init {
             if (isLandMulti) addLandPill(text, ok, still) else open()
@@ -362,7 +367,7 @@ object Island {
             if (ng == g) return
             val wasMulti = isLandMulti
             g = ng
-            mark.strokeWidth = (g.pillH * 0.085f).coerceAtLeast(1.5f * dens)
+            mark.strokeWidth = (g.pillH * 0.088f).coerceAtLeast(1.5f * dens)
             onGeoChanged(this, ng)
             val nowMulti = isLandMulti
             when {
