@@ -40,8 +40,11 @@ public class CtsListener {
     static volatile long navHoldMs = 450;
     static final float NAV_STRIP = 0.035f;          // bottom 3.5 % of the height (~110 px; vivo's bar window is 72 px)
     static final float NAV_SIDE = 0.2f;             // not the outer 20 % on each side (games' corner buttons)
-    static final long NAV_SETTLE_MS = 160;          // vivo waits up to 150 ms for RecentsAnimation finish callback
-    static final long NAV_LIFT_WAIT_MS = 600;       // fallback wait for finger lift if SolCubeA11y is unavailable
+    // The launcher finishes its RecentsAnimation on the real ACTION_UP; it then posts disableInputProxy() 200 ms later
+    // (plus a 100 ms post), so let that settle before the ripple / Circle to Search.
+    static final long NAV_SETTLE_MS = 350;
+    static final long NAV_LIFT_WAIT_MS = 3000;      // max wait for the finger to lift after a recognised hold; abort if exceeded
+    static boolean navWait = false, navAbort = false;   // guarded by lock
 
     /** End-to-end test (shell-only hook): fresh screenshot, then ripple + CTS with the given freeze. */
     static void test(long freeze) {
@@ -157,9 +160,10 @@ public class CtsListener {
                 if (fire) {
                     if (isNav) {
                         if (navRoutine) {
-                            settleNavTouch(cap);
-                            if (triggerRoutine("nav_hold")) pop();
-                            else if (navCts) fire(fx, fy, fingers, cap, false);
+                            if (!Haptics.bluelmTrigger()) pop();
+                            if (settleNavTouch(cap)) {
+                                if (!triggerRoutine("nav_hold") && navCts) fire(fx, fy, fingers, cap, false);
+                            }
                         } else if (navCts) {
                             fire(fx, fy, fingers, cap, true);
                         }
@@ -210,7 +214,7 @@ public class CtsListener {
         // instant feedback: the hold was recognised (BlueLM's own trigger vibration)
         if (!Haptics.bluelmTrigger()) pop();
         try {
-            if (isNav) settleNavTouch(cap);
+            if (isNav && !settleNavTouch(cap)) return;
             if (!animate) {
                 launch();
                 return;
@@ -243,6 +247,13 @@ public class CtsListener {
         long t = now();
         synchronized (lock) {
             fingersDown = count;
+            if (navWait && count > 0) {
+                int nt2 = navTol() * 2;
+                if (count != 1 || navSlot < 0 || id[navSlot] < 0
+                        || Math.abs(x[navSlot] - nsx) > nt2 || Math.abs(y[navSlot] - nsy) > nt2) {
+                    navAbort = true; lock.notifyAll();
+                }
+            }
             if (count == 0 || (!touchEnabled && !navEnabled)) {
                 firstDown = 0; twoSince = 0; navSince = 0; navSlot = -1; spent = false; capture = null;
                 if (count == 0) lock.notifyAll();
@@ -355,44 +366,27 @@ public class CtsListener {
         return true;
     }
 
-    static boolean cancelNavTouch() {
-        String key = secret;
-        if (key == null || key.isEmpty()) {
-            L.i("nav cancel skipped: no secret from SolCube yet");
-            return false;
-        }
-        try (java.net.Socket s = new java.net.Socket()) {
-            s.setTcpNoDelay(true);
-            s.connect(new java.net.InetSocketAddress("127.0.0.1", 47321), 80);
-            s.setSoTimeout(150);
-            OutputStream out = s.getOutputStream();
-            InputStream in = s.getInputStream();
-            if (!handshake(in, out)) return false;
-            out.write("cancel\n".getBytes());
-            out.flush();
-            return "ok".equals(readLine(in));
-        } catch (Exception e) {
-            L.i("nav cancel skipped: " + e);
-            return false;
-        }
-    }
-
-    static void settleNavTouch(Capture cap) {
+    static boolean settleNavTouch(Capture cap) {
         long t0 = now();
-        boolean canceled = cancelNavTouch();
-        if (canceled) {
-            L.i("nav touch canceled " + (now() - t0) + "ms");
-        } else {
-            long deadline = now() + NAV_LIFT_WAIT_MS;
-            synchronized (lock) {
-                while (fingersDown > 0) {
+        long deadline = t0 + NAV_LIFT_WAIT_MS;
+        boolean lifted, aborted;
+        synchronized (lock) {
+            navWait = true;
+            navAbort = false;
+            try {
+                while (fingersDown > 0 && !navAbort) {
                     long left = deadline - now();
                     if (left <= 0) break;
                     try { lock.wait(left); } catch (InterruptedException e) { break; }
                 }
+                lifted = fingersDown == 0 && !navAbort;
+                aborted = navAbort;
+            } finally {
+                navWait = false;
             }
-            L.i("nav lift wait " + (now() - t0) + "ms down=" + fingersDown);
         }
+        L.i("nav lift wait " + (now() - t0) + "ms lifted=" + lifted + " abort=" + aborted);
+        if (!lifted) return false;
         long settleFrom = now();
         if (cap != null) {
             try { cap.join(400); } catch (InterruptedException ignored) {}
@@ -401,6 +395,7 @@ public class CtsListener {
         if (rem > 0) {
             try { Thread.sleep(rem); } catch (InterruptedException ignored) {}
         }
+        return true;
     }
 
     /**
