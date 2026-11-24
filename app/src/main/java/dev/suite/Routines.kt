@@ -168,65 +168,96 @@ object Routines {
         else -> emptyList()
     }
 
-    fun conditionValueText(type: String, v: String): String = when (v) {
-        "charging" -> "Charging"
-        "not_charging" -> "Not charging"
-        "connected" -> "Connected"
-        "disconnected" -> "Disconnected"
-        "unlocked" -> "Unlocked"
-        "locked" -> "Locked"
-        "screen_on" -> "Screen on"
-        "screen_off" -> "Screen off"
-        "playing" -> "Playing"
-        "not_playing" -> "Not playing"
-        "in_call" -> "In call"
-        "not_in_call" -> "Not in call"
-        else -> v.replaceFirstChar { it.uppercase() }
+    fun conditionValueText(type: String, v: String): String {
+        val raw = when (v) {
+            "charging" -> "Charging"
+            "not_charging" -> "Not charging"
+            "connected" -> "Connected"
+            "disconnected" -> "Disconnected"
+            "unlocked" -> "Unlocked"
+            "locked" -> "Locked"
+            "screen_on" -> "Screen on"
+            "screen_off" -> "Screen off"
+            "playing" -> "Playing"
+            "not_playing" -> "Not playing"
+            "in_call" -> "In call"
+            "not_in_call" -> "Not in call"
+            else -> v.replaceFirstChar { it.uppercase() }
+        }
+        return I18n.t(raw)
     }
 
     fun conditionText(c: JSONObject, appName: (String) -> String = { it }): String {
         val type = c.optString("type")
+        val ru = I18n.current() == I18n.LANG_RU
+        val pt = I18n.current() == I18n.LANG_PT
         return when (type) {
             "battery" -> {
                 val op = if (c.optString("op", "below") == "above") "≥" else "≤"
-                "Battery $op ${c.optInt("value", 25)}%"
+                val lbl = when { ru -> "Заряд"; pt -> "Bateria"; else -> "Battery" }
+                "$lbl $op ${c.optInt("value", 25)}%"
             }
             "charging" -> {
                 val base = conditionValueText(type, c.optString("value", "charging"))
                 val mode = c.optString("mode", "any")
-                if (c.optString("value", "charging") == "charging" && mode != "any" && mode.isNotEmpty()) "$base (${mode.uppercase()})" else base
+                if (c.optString("value", "charging") == "charging" && mode != "any" && mode.isNotEmpty()) "$base (${I18n.t(mode.uppercase())})" else base
             }
             "wifi_network" -> {
                 val ssids = strList(c.optJSONArray("ssids"))
                 val not = c.optString("op") == "not_connected"
                 when {
-                    ssids.isEmpty() -> if (not) "Not on any Wi-Fi" else "On any Wi-Fi"
-                    not -> "Not on ${ssids.joinToString("/")}"
-                    else -> "On ${ssids.joinToString("/")}"
+                    ssids.isEmpty() -> when {
+                        ru -> if (not) "Не подключён к Wi-Fi" else "В любой сети Wi-Fi"
+                        pt -> if (not) "Sem Wi-Fi" else "Em qualquer Wi-Fi"
+                        else -> if (not) "Not on any Wi-Fi" else "On any Wi-Fi"
+                    }
+                    not -> when {
+                        ru -> "Не в ${ssids.joinToString("/")}"
+                        pt -> "Fora de ${ssids.joinToString("/")}"
+                        else -> "Not on ${ssids.joinToString("/")}"
+                    }
+                    else -> when {
+                        ru -> "В ${ssids.joinToString("/")}"
+                        pt -> "Em ${ssids.joinToString("/")}"
+                        else -> "On ${ssids.joinToString("/")}"
+                    }
                 }
             }
             "bt_device" -> {
                 val devs = strList(c.optJSONArray("devices"))
                 val not = c.optString("op") == "not_connected"
                 when {
-                    devs.isEmpty() -> if (not) "No BT connected" else "Any BT connected"
-                    not -> "${devs.joinToString("/")} disconnected"
-                    else -> "${devs.joinToString("/")} connected"
+                    devs.isEmpty() -> when {
+                        ru -> if (not) "Bluetooth не подключён" else "Любое устройство Bluetooth"
+                        pt -> if (not) "Nenhum Bluetooth" else "Qualquer Bluetooth"
+                        else -> if (not) "No BT connected" else "Any BT connected"
+                    }
+                    not -> "${devs.joinToString("/")} " + when { ru -> "откл."; pt -> "desconectado"; else -> "disconnected" }
+                    else -> "${devs.joinToString("/")} " + when { ru -> "подкл."; pt -> "conectado"; else -> "connected" }
                 }
             }
             "app" -> {
                 val apps = strList(c.optJSONArray("apps")).map(appName)
                 val not = c.optString("op") == "not_in"
-                if (apps.isEmpty()) "App condition"
-                else if (not) "Not in ${apps.joinToString("/")}"
-                else "In ${apps.joinToString("/")}"
+                if (apps.isEmpty()) when { ru -> "Текущее приложение"; pt -> "App atual"; else -> "App condition" }
+                else if (not) when {
+                    ru -> "Не в ${apps.joinToString("/")}"
+                    pt -> "Fora de ${apps.joinToString("/")}"
+                    else -> "Not in ${apps.joinToString("/")}"
+                }
+                else when {
+                    ru -> "В ${apps.joinToString("/")}"
+                    pt -> "Em ${apps.joinToString("/")}"
+                    else -> "In ${apps.joinToString("/")}"
+                }
             }
             "temp" -> {
                 val op = if (c.optString("op", "above") == "below") "≤" else "≥"
-                "Temp $op ${c.optInt("value", 40)} °C"
+                val lbl = when { ru -> "Темп."; pt -> "Temp."; else -> "Temp" }
+                "$lbl $op ${c.optInt("value", 40)} °C"
             }
             else -> {
-                val name = CONDITIONS[type] ?: type
+                val name = I18n.t(CONDITIONS[type] ?: type)
                 val v = c.optString("value")
                 if (v.isEmpty()) name else "$name: ${conditionValueText(type, v)}"
             }
@@ -357,65 +388,127 @@ object Routines {
         if (t.has("seconds")) t.optInt("seconds", 600).coerceAtLeast(30)
         else t.optInt("minutes", 10).coerceAtLeast(1) * 60
 
-    fun wifiGoneDurationText(sec: Int): String =
-        if (sec < 60) "$sec sec" else "${sec / 60} min"
+    fun wifiGoneDurationText(sec: Int): String {
+        val ru = I18n.current() == I18n.LANG_RU
+        return if (sec < 60) "$sec " + (if (ru) "с" else "sec").let { if (I18n.current() == I18n.LANG_PT) "s" else it }
+        else "${sec / 60} " + if (ru) "мин" else "min"
+    }
 
     fun summary(r: JSONObject, all: List<JSONObject>, appName: (String) -> String = { it },
-                gestureName: (String) -> String = { dev.suite.shell.Gestures.builtinName(it) ?: "custom gesture" }): String {
+                gestureName: (String) -> String = { dev.suite.shell.Gestures.builtinName(it)?.let { g -> I18n.t(g) } ?: I18n.t("custom gesture") }): String {
         val t = r.optJSONObject("trigger") ?: JSONObject()
+        val ru = I18n.current() == I18n.LANG_RU
+        val pt = I18n.current() == I18n.LANG_PT
+        val orWord = when { ru -> " или "; pt -> " ou "; else -> " or " }
         val ssids = strList(t.optJSONArray("ssids"))
-        val nets = if (ssids.isEmpty()) "(no network)" else ssids.joinToString(" or ")
+        val nets = if (ssids.isEmpty()) when { ru -> "(сеть не задана)"; pt -> "(sem rede)"; else -> "(no network)" } else ssids.joinToString(orWord)
         val devs = strList(t.optJSONArray("devices"))
-        val devText = if (devs.isEmpty()) "any Bluetooth" else devs.joinToString(" or ")
+        val devText = if (devs.isEmpty()) when { ru -> "любой Bluetooth"; pt -> "qualquer Bluetooth"; else -> "any Bluetooth" } else devs.joinToString(orWord)
         val apps = strList(t.optJSONArray("apps")).map(appName)
-        val appText = if (apps.isEmpty()) "(no app)" else apps.joinToString(" or ")
+        val appText = if (apps.isEmpty()) when { ru -> "(не выбрано)"; pt -> "(sem app)"; else -> "(no app)" } else apps.joinToString(orWord)
         val head = when (t.optString("type")) {
-            "wifi_connect" -> if (t.optBoolean("any")) "Connects to any Wi-Fi" else "Connects to $nets"
-            "wifi_disconnect" -> if (ssids.isEmpty()) "Wi-Fi disconnects" else "Disconnects from $nets"
-            "wifi_gone" -> "$nets out of range for ${wifiGoneDurationText(wifiGoneSeconds(t))}"
-            "time" -> "At ${t.optString("at", "?")}"
-            "wifi_off" -> "Wi-Fi is off (checked every ${t.optInt("minutes", 3)} min)"
-            "bt_connect" -> "$devText connects"
-            "bt_disconnect" -> "$devText disconnects"
+            "wifi_connect" -> when {
+                ru -> if (t.optBoolean("any")) "Подключение к любому Wi-Fi" else "Подключение к $nets"
+                pt -> if (t.optBoolean("any")) "Conecta a qualquer Wi-Fi" else "Conecta a $nets"
+                else -> if (t.optBoolean("any")) "Connects to any Wi-Fi" else "Connects to $nets"
+            }
+            "wifi_disconnect" -> when {
+                ru -> if (ssids.isEmpty()) "Отключение от Wi-Fi" else "Отключение от $nets"
+                pt -> if (ssids.isEmpty()) "Wi-Fi desconecta" else "Desconecta de $nets"
+                else -> if (ssids.isEmpty()) "Wi-Fi disconnects" else "Disconnects from $nets"
+            }
+            "wifi_gone" -> when {
+                ru -> "$nets вне зоны ${wifiGoneDurationText(wifiGoneSeconds(t))}"
+                pt -> "$nets fora de alcance por ${wifiGoneDurationText(wifiGoneSeconds(t))}"
+                else -> "$nets out of range for ${wifiGoneDurationText(wifiGoneSeconds(t))}"
+            }
+            "time" -> (when { ru -> "В "; pt -> "Às "; else -> "At " }) + t.optString("at", "?")
+            "wifi_off" -> when {
+                ru -> "Wi-Fi выкл. (каждые ${t.optInt("minutes", 3)} мин)"
+                pt -> "Wi-Fi desl. (a cada ${t.optInt("minutes", 3)} min)"
+                else -> "Wi-Fi is off (checked every ${t.optInt("minutes", 3)} min)"
+            }
+            "bt_connect" -> when { ru -> "$devText подключается"; pt -> "$devText conecta"; else -> "$devText connects" }
+            "bt_disconnect" -> when { ru -> "$devText отключается"; pt -> "$devText desconecta"; else -> "$devText disconnects" }
             "charging_on" -> {
                 val m = t.optString("mode", "any")
-                if (m == "any" || m.isEmpty()) "Charger connected" else "Charger (${m.uppercase()}) connected"
+                val base = I18n.t("Charger connected")
+                if (m == "any" || m.isEmpty()) base else "$base (${I18n.t(m.uppercase())})"
             }
             "charging_off" -> {
                 val m = t.optString("mode", "any")
-                if (m == "any" || m.isEmpty()) "Charger disconnected" else "Charger (${m.uppercase()}) disconnected"
+                val base = I18n.t("Charger disconnected")
+                if (m == "any" || m.isEmpty()) base else "$base (${I18n.t(m.uppercase())})"
             }
-            "battery_below" -> "Battery ≤ ${t.optInt("percent", 20)}%"
-            "battery_above" -> "Battery ≥ ${t.optInt("percent", 80)}%"
-            "temp_above" -> "Battery temp ≥ ${t.optInt("temp", 42)} °C"
-            "temp_below" -> "Battery temp ≤ ${t.optInt("temp", 38)} °C"
-            "screen_off_for" -> "Screen off for ${t.optInt("minutes", 10)} min"
-            "app_open" -> "When $appText opens"
-            "app_close" -> "When $appText closes"
+            "battery_below" -> when {
+                ru -> "Заряд ≤ ${t.optInt("percent", 20)}%"
+                pt -> "Bateria ≤ ${t.optInt("percent", 20)}%"
+                else -> "Battery ≤ ${t.optInt("percent", 20)}%"
+            }
+            "battery_above" -> when {
+                ru -> "Заряд ≥ ${t.optInt("percent", 80)}%"
+                pt -> "Bateria ≥ ${t.optInt("percent", 80)}%"
+                else -> "Battery ≥ ${t.optInt("percent", 80)}%"
+            }
+            "temp_above" -> when {
+                ru -> "Темп. батареи ≥ ${t.optInt("temp", 42)} °C"
+                pt -> "Temp. bateria ≥ ${t.optInt("temp", 42)} °C"
+                else -> "Battery temp ≥ ${t.optInt("temp", 42)} °C"
+            }
+            "temp_below" -> when {
+                ru -> "Темп. батареи ≤ ${t.optInt("temp", 38)} °C"
+                pt -> "Temp. bateria ≤ ${t.optInt("temp", 38)} °C"
+                else -> "Battery temp ≤ ${t.optInt("temp", 38)} °C"
+            }
+            "screen_off_for" -> when {
+                ru -> "Экран выкл. ${t.optInt("minutes", 10)} мин"
+                pt -> "Tela desl. por ${t.optInt("minutes", 10)} min"
+                else -> "Screen off for ${t.optInt("minutes", 10)} min"
+            }
+            "app_open" -> when {
+                ru -> "При открытии $appText"
+                pt -> "Quando $appText abrir"
+                else -> "When $appText opens"
+            }
+            "app_close" -> when {
+                ru -> "При закрытии $appText"
+                pt -> "Quando $appText fechar"
+                else -> "When $appText closes"
+            }
             "gesture" -> t.optString("gesture").takeIf { it.isNotEmpty() }?.let { gestureName(it) }
-                ?.let { "Gesture: $it (${if (t.optInt("fingers", 2) == 1) "1 finger" else "2 fingers"})" } ?: "Gesture (none picked)"
-            else -> TRIGGERS[t.optString("type")] ?: "?"
+                ?.let { g ->
+                    val fStr = I18n.t(if (t.optInt("fingers", 2) == 1) "one finger" else "two fingers")
+                    val lbl = when { ru -> "Жест"; pt -> "Gesto"; else -> "Gesture" }
+                    "$lbl: $g ($fStr)"
+                } ?: when { ru -> "Жест (не выбран)"; pt -> "Gesto (nenhum)"; else -> "Gesture (none picked)" }
+            else -> TRIGGERS[t.optString("type")]?.let { I18n.t(it) } ?: "?"
         }
         val parts = mutableListOf(head)
         days(r).takeIf { it.isNotEmpty() && it.size < 7 }?.let { parts += dayText(it) }
         val from = r.optString("from"); val to = r.optString("to")
         if (from.isNotEmpty() && to.isNotEmpty()) parts += "$from–$to"
         r.optJSONArray("conditions")?.takeIf { it.length() > 0 }?.let { cs ->
-            val joiner = if (r.optString("conditionsMode") == "any") " OR " else ", "
-            parts += "if " + (0 until cs.length()).joinToString(joiner) { conditionText(cs.getJSONObject(it), appName) }
+            val joiner = if (r.optString("conditionsMode") == "any") when { ru -> " ИЛИ "; pt -> " OU "; else -> " OR " } else ", "
+            val ifW = when { ru -> "если "; pt -> "se "; else -> "if " }
+            parts += ifW + (0 until cs.length()).joinToString(joiner) { conditionText(cs.getJSONObject(it), appName) }
         }
         r.optString("after").takeIf { it.isNotEmpty() }?.let { id ->
-            parts += "after " + (all.firstOrNull { it.optString("id") == id }?.optString("name") ?: "?")
+            val pfx = when { ru -> "после "; pt -> "após "; else -> "after " }
+            parts += pfx + (all.firstOrNull { it.optString("id") == id }?.optString("name") ?: "?")
         }
         r.optString("unless").takeIf { it.isNotEmpty() }?.let { id ->
-            parts += "until " + (all.firstOrNull { it.optString("id") == id }?.optString("name") ?: "?") + " runs"
+            val nm = all.firstOrNull { it.optString("id") == id }?.optString("name") ?: "?"
+            parts += when { ru -> "пока не сработает $nm"; pt -> "até $nm rodar"; else -> "until $nm runs" }
         }
         r.optJSONObject("between")?.let { b ->
             fun name(id: String) = all.firstOrNull { it.optString("id") == id }?.optString("name") ?: "?"
             val s = b.optString("start"); val e = b.optString("end")
-            if (s.isNotEmpty() || e.isNotEmpty())
-                parts += listOfNotNull(s.takeIf { it.isNotEmpty() }?.let { "after ${name(it)}" },
-                    e.takeIf { it.isNotEmpty() }?.let { "before ${name(it)}" }).joinToString(" ")
+            if (s.isNotEmpty() || e.isNotEmpty()) {
+                val pA = when { ru -> "после "; pt -> "após "; else -> "after " }
+                val pB = when { ru -> "до "; pt -> "antes de "; else -> "before " }
+                parts += listOfNotNull(s.takeIf { it.isNotEmpty() }?.let { pA + name(it) },
+                    e.takeIf { it.isNotEmpty() }?.let { pB + name(it) }).joinToString(" ")
+            }
         }
         return parts.joinToString(" · ")
     }
@@ -424,9 +517,9 @@ object Routines {
 
     fun dayText(d: List<Int>): String {
         val s = d.sorted()
-        if (s == listOf(1, 2, 3, 4, 5)) return "Mon–Fri"
-        if (s == listOf(6, 7)) return "Weekends"
-        return s.joinToString(", ") { DAY[it - 1] }
+        if (s == listOf(1, 2, 3, 4, 5)) return I18n.t("Mon–Fri")
+        if (s == listOf(6, 7)) return I18n.t("Weekends")
+        return s.joinToString(", ") { I18n.t(DAY[it - 1]) }
     }
 
     fun actionsText(
@@ -445,65 +538,137 @@ object Routines {
         r: JSONObject,
         all: List<JSONObject>,
         appName: (String) -> String = { it },
-        gestureName: (String) -> String = { dev.suite.shell.Gestures.builtinName(it) ?: "custom gesture" },
+        gestureName: (String) -> String = { dev.suite.shell.Gestures.builtinName(it)?.let { g -> I18n.t(g) } ?: I18n.t("custom gesture") },
         routineName: (String) -> String = { rid -> all.firstOrNull { it.optString("id") == rid }?.optString("name") ?: "?" },
     ): Pair<String, String> {
         val t = r.optJSONObject("trigger") ?: JSONObject()
+        val ru = I18n.current() == I18n.LANG_RU
+        val pt = I18n.current() == I18n.LANG_PT
+        val orWord = when { ru -> " или "; pt -> " ou "; else -> " or " }
+        val andWord = when { ru -> " и "; pt -> " e "; else -> " and " }
         val ssids = strList(t.optJSONArray("ssids"))
-        val nets = if (ssids.isEmpty()) "(no network)" else ssids.joinToString(" or ")
+        val nets = if (ssids.isEmpty()) when { ru -> "(сеть не задана)"; pt -> "(sem rede)"; else -> "(no network)" } else ssids.joinToString(orWord)
         val devs = strList(t.optJSONArray("devices"))
-        val devText = if (devs.isEmpty()) "any Bluetooth device" else devs.joinToString(" or ")
+        val devText = if (devs.isEmpty()) when { ru -> "любое устройство Bluetooth"; pt -> "qualquer dispositivo Bluetooth"; else -> "any Bluetooth device" } else devs.joinToString(orWord)
         val apps = strList(t.optJSONArray("apps")).map(appName)
-        val appText = if (apps.isEmpty()) "(no app)" else apps.joinToString(" or ")
+        val appText = if (apps.isEmpty()) when { ru -> "(приложение не выбрано)"; pt -> "(nenhum app)"; else -> "(no app)" } else apps.joinToString(orWord)
         val type = t.optString("type")
         val head = when (type) {
-            "wifi_connect" -> if (t.optBoolean("any")) "connecting to any Wi-Fi" else "connecting to $nets"
-            "wifi_disconnect" -> if (ssids.isEmpty()) "Wi-Fi disconnects" else "disconnecting from $nets"
-            "wifi_gone" -> "$nets is out of range for ${wifiGoneDurationText(wifiGoneSeconds(t))}"
-            "time" -> "it's ${t.optString("at", "?")}"
-            "wifi_off" -> "Wi-Fi is off (checked every ${t.optInt("minutes", 3)} min)"
-            "bt_connect" -> "$devText connects"
-            "bt_disconnect" -> "$devText disconnects"
+            "wifi_connect" -> when {
+                ru -> if (t.optBoolean("any")) "телефон подключается к любому Wi-Fi" else "телефон подключается к $nets"
+                pt -> if (t.optBoolean("any")) "conectar a qualquer Wi-Fi" else "conectar a $nets"
+                else -> if (t.optBoolean("any")) "connecting to any Wi-Fi" else "connecting to $nets"
+            }
+            "wifi_disconnect" -> when {
+                ru -> if (ssids.isEmpty()) "Wi-Fi отключается" else "Wi-Fi отключается от $nets"
+                pt -> if (ssids.isEmpty()) "o Wi-Fi desconectar" else "desconectar de $nets"
+                else -> if (ssids.isEmpty()) "Wi-Fi disconnects" else "disconnecting from $nets"
+            }
+            "wifi_gone" -> when {
+                ru -> "сеть $nets недоступна в течение ${wifiGoneDurationText(wifiGoneSeconds(t))}"
+                pt -> "$nets ficar fora de alcance por ${wifiGoneDurationText(wifiGoneSeconds(t))}"
+                else -> "$nets is out of range for ${wifiGoneDurationText(wifiGoneSeconds(t))}"
+            }
+            "time" -> when {
+                ru -> "время достигает ${t.optString("at", "?")}"
+                pt -> "for ${t.optString("at", "?")}"
+                else -> "it's ${t.optString("at", "?")}"
+            }
+            "wifi_off" -> when {
+                ru -> "Wi-Fi выключен (проверка каждые ${t.optInt("minutes", 3)} мин)"
+                pt -> "o Wi-Fi estiver desligado (checando a cada ${t.optInt("minutes", 3)} min)"
+                else -> "Wi-Fi is off (checked every ${t.optInt("minutes", 3)} min)"
+            }
+            "bt_connect" -> when { ru -> "подключается $devText"; pt -> "$devText conectar"; else -> "$devText connects" }
+            "bt_disconnect" -> when { ru -> "отключается $devText"; pt -> "$devText desconectar"; else -> "$devText disconnects" }
             "charging_on" -> {
                 val m = t.optString("mode", "any")
-                if (m == "any" || m.isEmpty()) "charger connects" else "charger (${m.uppercase()}) connects"
+                val ms = if (m == "any" || m.isEmpty()) "" else " (${I18n.t(m.uppercase())})"
+                when { ru -> "подключается зарядка$ms"; pt -> "o carregador$ms conectar"; else -> "charger$ms connects" }
             }
             "charging_off" -> {
                 val m = t.optString("mode", "any")
-                if (m == "any" || m.isEmpty()) "charger disconnects" else "charger (${m.uppercase()}) disconnects"
+                val ms = if (m == "any" || m.isEmpty()) "" else " (${I18n.t(m.uppercase())})"
+                when { ru -> "отключается зарядка$ms"; pt -> "o carregador$ms desconectar"; else -> "charger$ms disconnects" }
             }
-            "battery_below" -> "battery drops to ${t.optInt("percent", 20)}% or below"
-            "battery_above" -> "battery rises to ${t.optInt("percent", 80)}% or above"
-            "temp_above" -> "battery temp reaches ${t.optInt("temp", 42)} °C"
-            "temp_below" -> "battery temp cools to ${t.optInt("temp", 38)} °C"
-            "screen_off_for" -> "screen is off for ${t.optInt("minutes", 10)} min"
-            "app_open" -> "$appText opens"
-            "app_close" -> "$appText closes"
+            "battery_below" -> when {
+                ru -> "заряд опускается до ${t.optInt("percent", 20)}% или ниже"
+                pt -> "a bateria cair para ${t.optInt("percent", 20)}% ou menos"
+                else -> "battery drops to ${t.optInt("percent", 20)}% or below"
+            }
+            "battery_above" -> when {
+                ru -> "заряд поднимается до ${t.optInt("percent", 80)}% или выше"
+                pt -> "a bateria subir para ${t.optInt("percent", 80)}% ou mais"
+                else -> "battery rises to ${t.optInt("percent", 80)}% or above"
+            }
+            "temp_above" -> when {
+                ru -> "температура батареи достигает ${t.optInt("temp", 42)} °C"
+                pt -> "a bateria atingir ${t.optInt("temp", 42)} °C"
+                else -> "battery temp reaches ${t.optInt("temp", 42)} °C"
+            }
+            "temp_below" -> when {
+                ru -> "температура батареи снижается до ${t.optInt("temp", 38)} °C"
+                pt -> "a bateria esfriar para ${t.optInt("temp", 38)} °C"
+                else -> "battery temp cools to ${t.optInt("temp", 38)} °C"
+            }
+            "screen_off_for" -> when {
+                ru -> "экран выключен ${t.optInt("minutes", 10)} мин"
+                pt -> "a tela ficar desligada por ${t.optInt("minutes", 10)} min"
+                else -> "screen is off for ${t.optInt("minutes", 10)} min"
+            }
+            "app_open" -> when { ru -> "открывается $appText"; pt -> "$appText abrir"; else -> "$appText opens" }
+            "app_close" -> when { ru -> "закрывается $appText"; pt -> "$appText fechar"; else -> "$appText closes" }
             "gesture" -> t.optString("gesture").takeIf { it.isNotEmpty() }?.let { gid ->
-                "you draw ${gestureName(gid)} (${if (t.optInt("fingers", 2) == 1) "1 finger" else "2 fingers"})"
-            } ?: "a gesture is drawn (pick one below)"
-            else -> TRIGGERS[type]?.let { s ->
-                if (s.startsWith("Wi-Fi") || s.startsWith("Bluetooth") || s.startsWith("Do Not Disturb")) s
-                else s.replaceFirstChar { it.lowercase() }
-            } ?: "trigger fires"
+                val gName = gestureName(gid)
+                val fStr = I18n.t(if (t.optInt("fingers", 2) == 1) "one finger" else "two fingers")
+                when {
+                    ru -> "вы рисуете «$gName» ($fStr)"
+                    pt -> "você desenhar $gName ($fStr)"
+                    else -> "you draw $gName ($fStr)"
+                }
+            } ?: when {
+                ru -> "нарисован жест (выберите фигуру ниже)"
+                pt -> "um gesto for desenhado (escolha abaixo)"
+                else -> "a gesture is drawn (pick one below)"
+            }
+            else -> TRIGGERS[type]?.let { en ->
+                val tr = I18n.t(en)
+                if (tr.startsWith("Wi-Fi") || tr.startsWith("Bluetooth") || tr.startsWith("Do Not Disturb") || tr.startsWith("Shizuku")) tr
+                else tr.replaceFirstChar { it.lowercase() }
+            } ?: when { ru -> "срабатывает триггер"; pt -> "o gatilho disparar"; else -> "trigger fires" }
         }
 
         val qualifiers = mutableListOf<String>()
-        days(r).takeIf { it.isNotEmpty() && it.size < 7 }?.let { qualifiers += "on ${dayText(it)}" }
-        val from = r.optString("from"); val to = r.optString("to")
-        if (from.isNotEmpty() && to.isNotEmpty()) qualifiers += "between $from and $to"
-        r.optJSONArray("conditions")?.takeIf { it.length() > 0 }?.let { cs ->
-            val joiner = if (r.optString("conditionsMode") == "any") " or " else " and "
-            qualifiers += "if " + (0 until cs.length()).joinToString(joiner) { conditionText(cs.getJSONObject(it), appName) }
+        days(r).takeIf { it.isNotEmpty() && it.size < 7 }?.let { d ->
+            qualifiers += when { ru -> "по ${dayText(d)}"; pt -> "em ${dayText(d)}"; else -> "on ${dayText(d)}" }
         }
-        r.optString("after").takeIf { it.isNotEmpty() }?.let { rid -> qualifiers += "after ${routineName(rid)}" }
-        r.optString("unless").takeIf { it.isNotEmpty() }?.let { rid -> qualifiers += "until ${routineName(rid)} runs" }
+        val from = r.optString("from"); val to = r.optString("to")
+        if (from.isNotEmpty() && to.isNotEmpty()) {
+            qualifiers += when { ru -> "с $from до $to"; pt -> "entre $from e $to"; else -> "between $from and $to" }
+        }
+        r.optJSONArray("conditions")?.takeIf { it.length() > 0 }?.let { cs ->
+            val joiner = if (r.optString("conditionsMode") == "any") orWord else andWord
+            val ifW = when { ru -> "если "; pt -> "se "; else -> "if " }
+            qualifiers += ifW + (0 until cs.length()).joinToString(joiner) { conditionText(cs.getJSONObject(it), appName) }
+        }
+        r.optString("after").takeIf { it.isNotEmpty() }?.let { rid ->
+            val pfx = when { ru -> "после "; pt -> "após "; else -> "after " }
+            qualifiers += "$pfx${routineName(rid)}"
+        }
+        r.optString("unless").takeIf { it.isNotEmpty() }?.let { rid ->
+            val nm = routineName(rid)
+            qualifiers += when { ru -> "пока не сработает $nm"; pt -> "até $nm rodar"; else -> "until $nm runs" }
+        }
         r.optJSONObject("between")?.let { b ->
             val s = b.optString("start"); val e = b.optString("end")
-            if (s.isNotEmpty()) qualifiers += "after ${routineName(s)}"
-            if (e.isNotEmpty()) qualifiers += "before ${routineName(e)}"
+            if (s.isNotEmpty()) qualifiers += (when { ru -> "после "; pt -> "após "; else -> "after " }) + routineName(s)
+            if (e.isNotEmpty()) qualifiers += (when { ru -> "до "; pt -> "antes de "; else -> "before " }) + routineName(e)
         }
-        if (r.optBoolean("once")) qualifiers += "once a day"
+        if (r.optBoolean("once")) qualifiers += when {
+            ru -> "не чаще раза в день"
+            pt -> "no máximo uma vez ao dia"
+            else -> "once a day"
+        }
         val whenClause = if (qualifiers.isEmpty()) head else "$head, ${qualifiers.joinToString(", ")}"
 
         val acts = r.optJSONArray("actions")
@@ -511,10 +676,10 @@ object Routines {
             Actions.describe(acts.getJSONObject(i), appName, routineName)
         }
         val doClause = when (items.size) {
-            0 -> "nothing yet (add an action below)"
+            0 -> I18n.t("nothing yet (add an action below)")
             1 -> items[0]
-            2 -> "${items[0]} and ${items[1]}"
-            else -> "${items.dropLast(1).joinToString(", ")}, and ${items.last()}"
+            2 -> "${items[0]}$andWord${items[1]}"
+            else -> "${items.dropLast(1).joinToString(", ")}$andWord${items.last()}"
         }
         return whenClause to doClause
     }
@@ -538,7 +703,12 @@ object Routines {
     fun guardText(r: JSONObject): String? {
         val g = r.optJSONObject("wifiGuard") ?: return null
         if (!g.optBoolean("on", true)) return null
-        return "Keeps Wi-Fi on ${g.optString("from")}–${g.optString("to")} (checks every ${g.optInt("minutes", 3)} min) until it runs"
+        val from = g.optString("from"); val to = g.optString("to"); val mins = g.optInt("minutes", 3)
+        return when (I18n.current()) {
+            I18n.LANG_RU -> "Держит Wi-Fi вкл. $from–$to (проверка каждые $mins мин) до запуска"
+            I18n.LANG_PT -> "Mantém o Wi-Fi ligado $from–$to (a cada $mins min) até rodar"
+            else -> "Keeps Wi-Fi on $from–$to (checks every $mins min) until it runs"
+        }
     }
 
     private fun defaults(): MutableList<JSONObject> {

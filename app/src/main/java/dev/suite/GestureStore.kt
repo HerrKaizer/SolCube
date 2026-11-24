@@ -43,32 +43,34 @@ object GestureStore {
     }
 
     fun name(ctx: Context, id: String): String =
-        Gestures.builtinName(id) ?: custom(ctx).firstOrNull { it.first == id }?.second ?: "(deleted gesture)"
+        Gestures.builtinName(id)?.let { I18n.t(it) }
+            ?: custom(ctx).firstOrNull { it.first == id }?.second
+            ?: I18n.t("(deleted gesture)")
 
     /** Picker groups for one or two fingers: (header, [(id, name)]). One finger has no swipes. */
     fun groups(ctx: Context, fingers: Int = 2): List<Pair<String, List<Pair<String, String>>>> {
-        fun g(a: Array<Array<String>>) = a.map { it[0] to it[1] }
+        fun g(a: Array<Array<String>>) = a.map { it[0] to I18n.t(it[1]) }
         val out = mutableListOf<Pair<String, List<Pair<String, String>>>>()
-        if (fingers == 2) out += "Swipes" to g(Gestures.SWIPES)
-        out += "Shapes" to g(Gestures.SHAPES)
-        out += "Digits" to g(Gestures.DIGITS)
+        if (fingers == 2) out += I18n.t("Swipes") to g(Gestures.SWIPES)
+        out += I18n.t("Shapes") to g(Gestures.SHAPES)
+        out += I18n.t("Digits") to g(Gestures.DIGITS)
         val c = custom(ctx)
-        if (c.isNotEmpty()) out += "Custom" to c
+        if (c.isNotEmpty()) out += I18n.t("Custom") to c
         return out
     }
 
-    fun fingersText(f: Int) = if (f == 1) "one finger" else "two fingers"
+    fun fingersText(f: Int) = I18n.t(if (f == 1) "one finger" else "two fingers")
 
     /** Why this gesture can't be drawn with one finger (null = it can). */
     fun oneFingerWhy(ctx: Context, id: String): String? {
-        if (Gestures.builtinName(id) != null) return Gestures.oneFingerWhy(id)
+        if (Gestures.builtinName(id) != null) return Gestures.oneFingerWhy(id)?.let { I18n.t(it) }
         val a = samples(ctx)
         val mine = (0 until a.length()).mapNotNull { a.optJSONObject(it) }.filter { it.optString("id") == id }
         val ok = mine.isNotEmpty() && mine.all { o ->
             val p = o.optJSONArray("p") ?: return@all false
             Gestures.closedSample(FloatArray(p.length()) { p.optDouble(it).toFloat() }, o.optInt("s", 1))
         }
-        return if (ok) null else "With one finger only closed shapes are allowed (one stroke that ends where it started), because ordinary scrolls and swipes never do that. This custom gesture isn't drawn that way."
+        return if (ok) null else I18n.t("With one finger only closed shapes are allowed (one stroke that ends where it started), because ordinary scrolls and swipes never do that. This custom gesture isn't drawn that way.")
     }
 
     /** Routines using this gesture with the given number of fingers. */

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="a11y_label">Эффект SolCube</string>
+    <string name="a11y_description">Позволяет SolCube отображать эффект Circle to Search поверх строки состояния. Не читает содержимое экрана.</string>
+</resources>

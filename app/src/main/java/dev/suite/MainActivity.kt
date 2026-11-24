@@ -147,6 +147,7 @@ class MainActivity : Activity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        I18n.init(this)
         setTheme(if (Look.isDark(this)) android.R.style.Theme_DeviceDefault_NoActionBar else android.R.style.Theme_DeviceDefault_Light_NoActionBar)
         super.onCreate(savedInstanceState)
         RenderTest.rebuild = { runOnUiThread { recreate() } }
@@ -369,12 +370,13 @@ class MainActivity : Activity() {
         )
 
         fun setGroup(g: GroupCard, active: Boolean, text: String) {
+            val localized = I18n.t(text)
             val statusPill = g.summary.parent as? View
-            val changed = g.summary.text?.toString() != text
+            val changed = g.summary.text?.toString() != localized
             if (changed && statusPill != null && statusPill.isLaidOut && statusPill.isShown) {
                 headerPillAnims.remove(statusPill)?.cancel()
                 val startW = statusPill.width
-                g.summary.put(text)
+                g.summary.put(localized)
                 val lp = statusPill.layoutParams
                 val maxW = ((g.card.parent as? View)?.width?.takeIf { it > 0 }
                     ?: resources.displayMetrics.widthPixels) - 32.dp
@@ -787,6 +789,45 @@ class MainActivity : Activity() {
         return themeCard
     }
 
+    private fun buildLanguageCard(inner: Boolean): LinearLayout {
+        val langCard = if (inner) innerCard() else card()
+        val langHeader = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        langHeader.addView(label("Language", if (inner) 15.5f else 17f, p.fg, bold = true),
+            LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        langHeader.addView(label(I18n.displaySummary(this), 13f, p.sub, localize = false))
+        langCard.addView(langHeader)
+
+        val savedCode = I18n.saved(this)
+        val options = listOf(
+            I18n.LANG_SYSTEM to I18n.t("System"),
+            I18n.LANG_EN to "English",
+            I18n.LANG_RU to "Русский",
+            I18n.LANG_PT to "Português",
+        )
+        langCard.addView(hScroll(*options.map { (code, title) ->
+            chip(title, savedCode == code, localize = false) {
+                if (I18n.saved(this) != code) {
+                    I18n.setLang(this, code)
+                    recreate()
+                    @Suppress("DEPRECATION")
+                    overridePendingTransition(android.R.anim.fade_in, android.R.anim.fade_out)
+                }
+            }
+        }.toTypedArray()), LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 10.dp })
+
+        langCard.addView(View(this).apply { setBackgroundColor(p.stroke) },
+            LinearLayout.LayoutParams(MATCH_PARENT, 1.dp).apply { topMargin = 12.dp; bottomMargin = 10.dp })
+
+        langCard.addView(pillButton("Request a language", filled = false) { languageRequest() }.apply {
+            textSize = 13.5f
+            setPadding(12.dp, 0, 12.dp, 0)
+        }, LinearLayout.LayoutParams(MATCH_PARENT, 38.dp))
+        return langCard
+    }
+
     private fun buildPowerCard(inner: Boolean): LinearLayout {
         val radius = if (inner) 18.dp else 24.dp
         return (if (inner) innerCard() else card()).apply {
@@ -1170,6 +1211,7 @@ class MainActivity : Activity() {
                 headerCardParams(),
             )
             addView(buildThemeCard(inner = false), cardParams())
+            addView(buildLanguageCard(inner = false), cardParams())
             addView(buildPowerCard(inner = false), cardParams())
             addView(buildDiagCard(inner = false), cardParams())
             addView(buildSettingsActions(), LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 4.dp })
@@ -1177,19 +1219,19 @@ class MainActivity : Activity() {
                 gravity = Gravity.CENTER_HORIZONTAL
                 topMargin = 18.dp
             })
-            addView(label("SolCube ${Updates.current(this@MainActivity)}", 12f, p.sub).apply { gravity = Gravity.CENTER },
+            addView(label("SolCube ${Updates.current(this@MainActivity)}", 12f, p.sub, localize = false).apply { gravity = Gravity.CENTER },
                 LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 10.dp })
         }
 
         root.addView(pageHost, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
 
         val tabs = listOf(
-            BottomTab("shortcuts", "Shortcuts", BottomNavPill.ICON_SHORTCUTS),
-            BottomTab("automation", "Automation", BottomNavPill.ICON_AUTOMATION),
-            BottomTab("gestures", "Gestures", BottomNavPill.ICON_GESTURES),
-            BottomTab("gaming", "Gaming", BottomNavPill.ICON_GAMING),
-            BottomTab("audio", "Audio", BottomNavPill.ICON_AUDIO),
-            BottomTab("settings", "Settings", BottomNavPill.ICON_SETTINGS),
+            BottomTab("shortcuts", I18n.t("Shortcuts"), BottomNavPill.ICON_SHORTCUTS),
+            BottomTab("automation", I18n.t("Automation"), BottomNavPill.ICON_AUTOMATION),
+            BottomTab("gestures", I18n.t("Gestures"), BottomNavPill.ICON_GESTURES),
+            BottomTab("gaming", I18n.t("Gaming"), BottomNavPill.ICON_GAMING),
+            BottomTab("audio", I18n.t("Audio"), BottomNavPill.ICON_AUDIO),
+            BottomTab("settings", I18n.t("Settings"), BottomNavPill.ICON_SETTINGS),
         )
         val bottomPill = BottomNavPill(this, p, fontMedium, isDark()).also { activeBottomPill = it }
         val pillLp = FrameLayout.LayoutParams(MATCH_PARENT, 54.dp).apply {
@@ -1683,7 +1725,7 @@ class MainActivity : Activity() {
         }.getOrDefault(pkg)
     }
 
-    private fun mono(size: Float) = label("", size, p.sub).apply {
+    private fun mono(size: Float) = label("", size, p.sub, localize = false).apply {
         typeface = Typeface.MONOSPACE
         setTextIsSelectable(true)
     }
@@ -1700,7 +1742,7 @@ class MainActivity : Activity() {
         // add a game by package name
         val addRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         val field = android.widget.EditText(this).apply {
-            hint = "package name, e.g. com.game.app"
+            hint = I18n.t("package name, e.g. com.game.app")
             setSingleLine()
             textSize = 14f
             setTextColor(p.fg)
@@ -1729,8 +1771,8 @@ class MainActivity : Activity() {
         renderGames()
     }
 
-    private fun chip(t: String, selected: Boolean, onClick: () -> Unit) =
-        label(t, 13f, if (selected) p.onAccent else p.fg, bold = true).apply {
+    private fun chip(t: String, selected: Boolean, localize: Boolean = true, onClick: () -> Unit) =
+        label(t, 13f, if (selected) p.onAccent else p.fg, bold = true, localize = localize).apply {
             gravity = Gravity.CENTER
             setPadding(12.dp, 0, 12.dp, 0)
             background = ripple(if (selected) accentGradient(16.dp) else glass(16.dp), 16.dp)
@@ -1768,8 +1810,8 @@ class MainActivity : Activity() {
         list.forEachIndexed { i, g ->
             val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
             val names = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-            names.addView(label(appName(g.pkg), 14f, p.fg).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END })
-            names.addView(label(g.pkg, 10.5f, p.sub).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.MIDDLE })
+            names.addView(label(appName(g.pkg), 14f, p.fg, localize = false).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END })
+            names.addView(label(g.pkg, 10.5f, p.sub, localize = false).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.MIDDLE })
             row.addView(names, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
             fun update(ng: Components.Game?) {
                 val nl = list.toMutableList()
@@ -1925,7 +1967,7 @@ class MainActivity : Activity() {
         body.addView(streamAppList)
         val addRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         val field = android.widget.EditText(this).apply {
-            hint = "package name, e.g. com.game.app"
+            hint = I18n.t("package name, e.g. com.game.app")
             setSingleLine()
             textSize = 14f
             setTextColor(p.fg)
@@ -1961,8 +2003,8 @@ class MainActivity : Activity() {
         list.forEach { pkg ->
             val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
             val names = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-            names.addView(label(appName(pkg), 14f, p.fg).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END })
-            names.addView(label(pkg, 10.5f, p.sub).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.MIDDLE })
+            names.addView(label(appName(pkg), 14f, p.fg, localize = false).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END })
+            names.addView(label(pkg, 10.5f, p.sub, localize = false).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.MIDDLE })
             row.addView(names, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
             row.addView(label("✕", 15f, p.sub).apply {
                 gravity = Gravity.CENTER
@@ -2545,7 +2587,7 @@ class MainActivity : Activity() {
         }
 
         val searchField = android.widget.EditText(this).apply {
-            hint = "Search apps"
+            hint = I18n.t("Search apps")
             setSingleLine()
             textSize = 14.5f
             setTextColor(p.fg)
@@ -2627,7 +2669,7 @@ class MainActivity : Activity() {
                         setPadding(12.dp, 10.dp, 12.dp, 10.dp)
                         background = ripple(null, 12.dp)
                     }
-                    val nameTv = label("", 14.5f, p.fg).apply {
+                    val nameTv = label("", 14.5f, p.fg, localize = false).apply {
                         maxLines = 1
                         ellipsize = android.text.TextUtils.TruncateAt.END
                     }
@@ -2903,36 +2945,24 @@ class MainActivity : Activity() {
 
             val d = resources.displayMetrics.density
             val gearBtn = object : View(this) {
-                private val strokeP = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                private val ip = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
                     style = android.graphics.Paint.Style.STROKE
-                    strokeWidth = 1.6f * d
+                    strokeWidth = 1.65f * d
                     strokeCap = android.graphics.Paint.Cap.ROUND
                     strokeJoin = android.graphics.Paint.Join.ROUND
                     color = p.fg
                 }
-                private val toothP = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-                    style = android.graphics.Paint.Style.STROKE
-                    strokeWidth = 1.9f * d
-                    strokeCap = android.graphics.Paint.Cap.ROUND
+                private val ifp = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                    style = android.graphics.Paint.Style.FILL
                     color = p.fg
                 }
+                private val iPath = android.graphics.Path()
+                private val iRect = android.graphics.RectF()
                 override fun onDraw(canvas: android.graphics.Canvas) {
-                    val cx = width * 0.5f
-                    val cy = height * 0.5f
-                    val innerR = 2.4f * d
-                    val bodyR = 5.0f * d
-                    val tipR = 6.9f * d
-                    canvas.drawCircle(cx, cy, innerR, strokeP)
-                    canvas.drawCircle(cx, cy, bodyR, strokeP)
-                    for (k in 0 until 8) {
-                        val ang = k * (Math.PI / 4.0)
-                        val cos = kotlin.math.cos(ang).toFloat()
-                        val sin = kotlin.math.sin(ang).toFloat()
-                        canvas.drawLine(cx + bodyR * cos, cy + bodyR * sin, cx + tipR * cos, cy + tipR * sin, toothP)
-                    }
+                    BottomNavPill.drawTabIcon(canvas, BottomNavPill.ICON_SETTINGS, width * 0.5f, height * 0.5f, 15.5f * d, d, ip, ifp, iPath, iRect)
                 }
             }.apply {
-                contentDescription = "Gesture settings"
+                contentDescription = I18n.t("Gesture settings")
                 background = ripple(glass(16.dp), 16.dp)
                 isClickable = true
                 isFocusable = true
@@ -3247,7 +3277,7 @@ class MainActivity : Activity() {
             box.addView(label("Experimental: custom gestures haven't been tested much. They may not be recognised reliably, and some two-finger actions in apps (scrolling, moving a map) may set one off by mistake. Shapes with a few clear turns work best.",
                 12.5f, p.sub).apply { setLineSpacing(2.dp.toFloat(), 1f) })
             nameField = android.widget.EditText(this).apply {
-                hint = "Name, e.g. Heart"
+                hint = I18n.t("Name, e.g. Heart")
                 setSingleLine()
                 textSize = 15f
                 setTextColor(p.fg)
@@ -3474,7 +3504,7 @@ class MainActivity : Activity() {
     private fun promptText(title: String, initial: String, hint: String, onDone: (String) -> Unit) {
         val field = android.widget.EditText(this).apply {
             setText(initial)
-            this.hint = hint
+            this.hint = I18n.t(hint)
             setSingleLine()
             textSize = 15f
             setTextColor(p.fg)
@@ -3722,8 +3752,8 @@ class MainActivity : Activity() {
                 val pkg = appArr.getString(i)
                 val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
                 val names = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-                names.addView(label(appName(pkg), 14.5f, p.fg).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END })
-                names.addView(label(pkg, 10.5f, p.sub).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.MIDDLE })
+                names.addView(label(appName(pkg), 14.5f, p.fg, localize = false).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END })
+                names.addView(label(pkg, 10.5f, p.sub, localize = false).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.MIDDLE })
                 row.addView(names, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
                 row.addView(label("✕", 15f, p.sub).apply {
                     gravity = Gravity.CENTER
@@ -3911,9 +3941,10 @@ class MainActivity : Activity() {
                 sb.setSpan(android.text.style.StyleSpan(android.graphics.Typeface.BOLD), s, sb.length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
                 sb.setSpan(android.text.style.ForegroundColorSpan(p.link), s, sb.length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
             }
-            appendAccent("When")
+            val (whenWord, doWord) = I18n.summaryKeywords()
+            appendAccent(whenWord)
             sb.append(" ").append(whenClause).append(", ")
-            appendAccent("do")
+            appendAccent(doWord)
             sb.append(" ").append(doClause).append(".")
             summaryText.text = sb
         }
@@ -4540,6 +4571,26 @@ class MainActivity : Activity() {
             .show()
     }
 
+    private fun languageRequest() {
+        val opts = arrayOf(
+            I18n.t("Open an issue on GitHub"),
+            I18n.t("DM on Reddit (u/HerrKaizer__)"),
+        )
+        SolCubeDialog.Builder(this)
+            .setTitle("Request a language")
+            .setMessage("Want SolCube in your language? Open an issue on GitHub or send me a DM on Reddit.")
+            .setItems(opts) { _, which ->
+                val url = if (which == 0) {
+                    "https://github.com/HerrKaizer/SolCube/issues/new?title=Language+request"
+                } else {
+                    "https://www.reddit.com/user/HerrKaizer__/"
+                }
+                runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
+            }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
     private fun openOverlaySettings() {
         startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
     }
@@ -4579,12 +4630,20 @@ class MainActivity : Activity() {
 
     private fun innerCardParams() = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = 12.dp }
 
-    private fun label(t: String, size: Float, color: Int, bold: Boolean = false) = TextView(this).apply {
-        text = t
-        textSize = size
-        setTextColor(color)
-        typeface = if (bold) fontMedium else fontRegular
+    private inner class LocalizedTextView(ctx: android.content.Context) : TextView(ctx) {
+        override fun setText(text: CharSequence?, type: BufferType?) {
+            val out = if (text is String) I18n.t(text) else text
+            super.setText(out, type)
+        }
     }
+
+    private fun label(t: String, size: Float, color: Int, bold: Boolean = false, localize: Boolean = true): TextView =
+        (if (localize) LocalizedTextView(this) else TextView(this)).apply {
+            text = t
+            textSize = size
+            setTextColor(color)
+            typeface = if (bold) fontMedium else fontRegular
+        }
 
     /** Card title with a small "BETA" tag after it. */
     private fun betaTitle(t: String, size: Float = 18f) = LinearLayout(this).apply {
@@ -4623,6 +4682,7 @@ class MainActivity : Activity() {
      * buttons) with a round white knob. Replaces the stock Material thumb and track.
      */
     private fun styleSwitch(sw: Switch) {
+        sw.text?.toString()?.takeIf { it.isNotEmpty() }?.let { sw.text = I18n.t(it) }
         val trackW = 50.dp; val trackH = 30.dp; val knob = 24.dp; val inset = (trackH - knob) / 2
         fun track(on: Boolean): Drawable = if (on && p.halo != 0)
             GlowPill(p.fill or 0xFF000000.toInt(), p.fill or 0xFF000000.toInt(), p.fillStroke, p.halo, resources.displayMetrics.density, trackW, trackH)
@@ -4692,9 +4752,12 @@ class MainActivity : Activity() {
         Color.argb((a * 255).toInt(), Color.red(color), Color.green(color), Color.blue(color))
 
     /** Sets the text only when it changed (a new text re-lays out the whole page). */
-    private fun TextView.put(s: CharSequence) { if (text?.toString() != s.toString()) text = s }
+    private fun TextView.put(s: CharSequence) {
+        val target = if (s is String && this is LocalizedTextView) I18n.t(s) else s
+        if (text?.toString() != target.toString()) text = target
+    }
 
-    private fun toast(t: String) = Toast.makeText(this, t, Toast.LENGTH_SHORT).show()
+    private fun toast(t: String) = Toast.makeText(this, I18n.t(t), Toast.LENGTH_SHORT).show()
 
     private val Int.dp: Int get() = (this * resources.displayMetrics.density).toInt()
 
@@ -4745,7 +4808,7 @@ class MainActivity : Activity() {
         initialMode: Int,
         private val onModeSelected: (Int) -> Unit,
     ) : View(this) {
-        private val labels = arrayOf("Light", "System", "Dark")
+        private val labels = arrayOf(I18n.t("Light"), I18n.t("System"), I18n.t("Dark"))
         private val d = resources.displayMetrics.density
         private var mode = initialMode.coerceIn(0, 2)
         private var pos = mode.toFloat()

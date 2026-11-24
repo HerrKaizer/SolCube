@@ -92,10 +92,11 @@ object Updates {
     }.trim()
 
     fun dialog(act: Activity, r: Release, onDone: () -> Unit = {}) {
-        val notes = plain(r.notes).ifEmpty { "No release notes." }
+        I18n.init(act)
+        val notes = plain(r.notes).ifEmpty { I18n.t("No release notes.") }
         SolCubeDialog.Builder(act)
-            .setTitle("Update available: ${r.version}")
-            .setMessage("You have ${current(act)}.\n\n$notes\n\nInstall the new APK over this one — your settings stay.")
+            .setTitle(I18n.t("Update available: ${r.version}"))
+            .setMessage(I18n.t("You have ${current(act)}.\n\n$notes\n\nInstall the new APK over this one — your settings stay."))
             .setPositiveButton("Open GitHub") { _, _ ->
                 runCatching { act.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(RELEASES))) }
             }

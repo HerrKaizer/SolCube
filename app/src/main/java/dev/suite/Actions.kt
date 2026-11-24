@@ -118,36 +118,39 @@ object Actions {
         return if (allowRestore && type in STATEFUL) withToggle + "restore" else withToggle
     }
 
-    fun valueText(type: String, v: String): String = when {
-        v == "toggle" -> "Toggle"
-        v == "restore" -> "Back to before"
-        type == "stream_laptop" && v == "wide" -> "16:10 screen"
-        type == "rotation" && v == "portrait" -> "Portrait lock"
-        type == "rotation" && v == "auto" -> "Auto-rotate"
-        type == "rotation" && v == "landscape" -> "Landscape"
-        type == "dark_mode" && v == "auto" -> "Auto"
-        type == "screen_timeout" -> when (v) {
-            "15000" -> "15 s"
-            "30000" -> "30 s"
-            "60000" -> "1 min"
-            "120000" -> "2 min"
-            "300000" -> "5 min"
-            "600000" -> "10 min"
-            "1800000" -> "30 min"
-            else -> "${(v.toLongOrNull() ?: 60_000L) / 1000} s"
-        }
-        type == "media_control" -> when (v) {
-            "play_pause" -> "Play / Pause"
-            "play" -> "Play"
-            "pause" -> "Pause"
-            "next" -> "Next"
-            "prev" -> "Previous"
-            "stop" -> "Stop"
+    fun valueText(type: String, v: String): String {
+        val raw = when {
+            v == "toggle" -> "Toggle"
+            v == "restore" -> "Back to before"
+            type == "stream_laptop" && v == "wide" -> "16:10 screen"
+            type == "rotation" && v == "portrait" -> "Portrait lock"
+            type == "rotation" && v == "auto" -> "Auto-rotate"
+            type == "rotation" && v == "landscape" -> "Landscape"
+            type == "dark_mode" && v == "auto" -> "Auto"
+            type == "screen_timeout" -> when (v) {
+                "15000" -> if (I18n.current() == I18n.LANG_RU) "15 с" else "15 s"
+                "30000" -> if (I18n.current() == I18n.LANG_RU) "30 с" else "30 s"
+                "60000" -> if (I18n.current() == I18n.LANG_RU) "1 мин" else "1 min"
+                "120000" -> if (I18n.current() == I18n.LANG_RU) "2 мин" else "2 min"
+                "300000" -> if (I18n.current() == I18n.LANG_RU) "5 мин" else "5 min"
+                "600000" -> if (I18n.current() == I18n.LANG_RU) "10 мин" else "10 min"
+                "1800000" -> if (I18n.current() == I18n.LANG_RU) "30 мин" else "30 min"
+                else -> "${(v.toLongOrNull() ?: 60_000L) / 1000} " + if (I18n.current() == I18n.LANG_RU) "с" else "s"
+            }
+            type == "media_control" -> when (v) {
+                "play_pause" -> "Play / Pause"
+                "play" -> "Play"
+                "pause" -> "Pause"
+                "next" -> "Next"
+                "prev" -> "Previous"
+                "stop" -> "Stop"
+                else -> v.replaceFirstChar { it.uppercase() }
+            }
+            type in setOf("media", "ring_vol", "notif_vol", "alarm_vol", "brightness") -> return "$v%"
+            type == "wait" -> return "$v " + if (I18n.current() == I18n.LANG_RU) "с" else "s"
             else -> v.replaceFirstChar { it.uppercase() }
         }
-        type in setOf("media", "ring_vol", "notif_vol", "alarm_vol", "brightness") -> "$v%"
-        type == "wait" -> "$v s"
-        else -> v.replaceFirstChar { it.uppercase() }
+        return I18n.t(raw)
     }
 
     fun defaultAction(type: String, allowRestore: Boolean, allowToggle: Boolean = false): JSONObject = JSONObject().put("type", type).apply {
@@ -170,65 +173,106 @@ object Actions {
         routineName: (String) -> String = { it },
     ): String {
         val type = o.optString("type")
-        val name = ALL[type] ?: type
+        val name = I18n.t(ALL[type] ?: type)
+        val ru = I18n.current() == I18n.LANG_RU
+        val pt = I18n.current() == I18n.LANG_PT
         return when {
             type == "open_app" -> {
                 val pkg = o.optString("pkg")
-                if (pkg.isEmpty()) "Open app" else "Open ${appName(pkg)}"
+                if (pkg.isEmpty()) I18n.t("Open app")
+                else when {
+                    ru -> "Открыть ${appName(pkg)}"
+                    pt -> "Abrir ${appName(pkg)}"
+                    else -> "Open ${appName(pkg)}"
+                }
             }
             type == "close_app" -> {
                 val apps = o.optJSONArray("apps")
                 when (val n = apps?.length() ?: 0) {
-                    0 -> "Close specific apps"
-                    1 -> "Close ${appName(apps!!.getString(0))}"
-                    else -> "Close $n apps"
+                    0 -> I18n.t("Close specific apps")
+                    1 -> when {
+                        ru -> "Закрыть ${appName(apps!!.getString(0))}"
+                        pt -> "Fechar ${appName(apps!!.getString(0))}"
+                        else -> "Close ${appName(apps!!.getString(0))}"
+                    }
+                    else -> I18n.t("Close $n apps")
                 }
             }
             type == "close_apps" -> {
                 val ex = o.optJSONArray("except")?.length() ?: 0
-                if (ex > 0) "Close all apps (keep $ex)" else "Close all apps"
+                if (ex > 0) I18n.t("Close all apps (keep $ex)") else I18n.t("Close all apps")
             }
-            type == "revive" -> "Revive ${o.optJSONArray("apps")?.length() ?: 0} apps"
+            type == "revive" -> I18n.t("Revive ${o.optJSONArray("apps")?.length() ?: 0} apps")
             type == "launch_bg" -> {
                 val targets = o.optJSONArray("apps")
                 when (val n = targets?.length() ?: 0) {
-                    0 -> "Launch in background"
-                    1 -> "Launch ${appName(targets!!.getString(0))} in bg"
-                    else -> "Launch $n apps in bg"
+                    0 -> I18n.t("Launch in background")
+                    1 -> when {
+                        ru -> "Запустить ${appName(targets!!.getString(0))} в фоне"
+                        pt -> "Abrir ${appName(targets!!.getString(0))} em 2º plano"
+                        else -> "Launch ${appName(targets!!.getString(0))} in bg"
+                    }
+                    else -> I18n.t("Launch $n apps in bg")
                 }
             }
             type == "notice" -> {
                 val t = o.optString("text").trim()
-                if (t.isEmpty()) "Show status pill" else "Pill “${t.take(24)}”"
+                if (t.isEmpty()) I18n.t("Show status pill")
+                else when {
+                    ru -> "Островок «${t.take(24)}»"
+                    pt -> "Pílula “${t.take(24)}”"
+                    else -> "Pill “${t.take(24)}”"
+                }
             }
             type == "open_url" -> {
                 val u = o.optString("url").trim()
-                if (u.isEmpty()) "Open link" else "Open ${u.removePrefix("https://").removePrefix("http://").take(28)}"
+                if (u.isEmpty()) I18n.t("Open link")
+                else {
+                    val shortU = u.removePrefix("https://").removePrefix("http://").take(28)
+                    when {
+                        ru -> "Открыть $shortU"
+                        pt -> "Abrir $shortU"
+                        else -> "Open $shortU"
+                    }
+                }
             }
             type == "shell_cmd" -> {
                 val c = o.optString("cmd").trim()
-                if (c.isEmpty()) "Run shell command" else "Shell: ${c.take(24)}"
+                if (c.isEmpty()) I18n.t("Run shell command") else "Shell: ${c.take(24)}"
             }
             type == "run_routine" -> {
                 val id = o.optString("routineId")
-                if (id.isEmpty()) "Run routine" else "Run ${routineName(id)}"
+                if (id.isEmpty()) I18n.t("Run routine")
+                else when {
+                    ru -> "Запустить ${routineName(id)}"
+                    pt -> "Executar ${routineName(id)}"
+                    else -> "Run ${routineName(id)}"
+                }
             }
-            o.optString("value") == "toggle" -> "Toggle $name"
-            type == "media_control" -> "Media: ${valueText(type, o.optString("value", "play_pause"))}"
-            type == "stream_laptop" -> when (o.optString("value")) {
+            o.optString("value") == "toggle" -> when {
+                ru -> "Переключить: $name"
+                pt -> "Alternar $name"
+                else -> "Toggle $name"
+            }
+            type == "media_control" -> when {
+                ru -> "Медиа: ${valueText(type, o.optString("value", "play_pause"))}"
+                pt -> "Mídia: ${valueText(type, o.optString("value", "play_pause"))}"
+                else -> "Media: ${valueText(type, o.optString("value", "play_pause"))}"
+            }
+            type == "stream_laptop" -> I18n.t(when (o.optString("value")) {
                 "wide" -> "Laptop 16:10 screen"
                 "on" -> "Stream to laptop on"
                 "off" -> "Stream to laptop off"
                 else -> "Stream to laptop back to before"
-            }
+            })
             type == "rotation" && o.optString("value") != "restore" -> valueText(type, o.optString("value"))
-            type == "keep_awake" -> when (o.optString("value")) {
+            type == "keep_awake" -> I18n.t(when (o.optString("value")) {
                 "on" -> "Keep screen on"
                 "off" -> "Normal screen timeout"
                 else -> "Screen timeout back to before"
-            }
+            })
             values(type, allowRestore = false).isEmpty() -> name
-            else -> "$name ${valueText(type, o.optString("value")).lowercase()}"
+            else -> if (ru || pt) "$name: ${valueText(type, o.optString("value")).lowercase()}" else "$name ${valueText(type, o.optString("value")).lowercase()}"
         }
     }
 }

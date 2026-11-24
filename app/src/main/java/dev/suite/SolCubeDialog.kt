@@ -185,12 +185,14 @@ object SolCubeDialog {
         }
 
         fun show(): Dialog {
+            I18n.init(ctx)
             val p = Look.palette(ctx)
             val dark = Look.isDark(ctx)
             val d = Dialog(ctx)
             dlg = d
             fun text(t: CharSequence, size: Float, color: Int, weight: Int) = TextView(ctx).apply {
-                text = t; textSize = size; setTextColor(color); typeface = Look.font(ctx, weight)
+                text = if (t is String) I18n.t(t) else t
+                textSize = size; setTextColor(color); typeface = Look.font(ctx, weight)
             }
             fun glass(radius: Int, tint: Int, level: Int = 1, shine: Float = 1f, shadow: Boolean = false, halo: Int = 0, stroke: Int = 0) =
                 LiquidGlass(p, radius * dens, dark, dens, level = level, tint = tint, shine = shine, shadow = shadow, halo = halo, stroke = stroke)
@@ -306,7 +308,7 @@ object SolCubeDialog {
                 for ((hdr, entries) in groups) {
                     if (entries.isEmpty()) continue
                     val secCard = listCard()
-                    secCard.addView(text(hdr.uppercase(), 11.5f, p.link, 660).apply {
+                    secCard.addView(text(I18n.t(hdr).uppercase(), 11.5f, p.link, 660).apply {
                         letterSpacing = 0.08f
                         setPadding(14.dp, 11.dp, 14.dp, 5.dp)
                     })

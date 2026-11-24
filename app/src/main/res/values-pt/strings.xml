@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="a11y_label">Efeito SolCube</string>
+    <string name="a11y_description">Permite que o SolCube desenhe o efeito do Circle to Search acima da barra de status. Não lê nada na tela.</string>
+</resources>
