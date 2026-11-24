@@ -175,4 +175,12 @@ object GestureStore {
         if (s != null && runCatching { s.command("gestures " + config(ctx)) }.getOrNull() == "ok") return
         Routines.save(ctx, Routines.load(ctx))
     }
+
+    /** Temporarily pause or resume live gesture listening in the shell without changing saved prefs. */
+    fun pushPaused(ctx: Context, paused: Boolean) {
+        val s = Shell.service(Shell.Kind.ROUTINES) ?: return
+        val cfg = config(ctx)
+        if (paused) cfg.put("on", false)
+        runCatching { s.command("gestures $cfg") }
+    }
 }

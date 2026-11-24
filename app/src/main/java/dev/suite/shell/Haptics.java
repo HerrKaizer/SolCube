@@ -26,7 +26,7 @@ final class Haptics {
         0, 0, -15, 40, 10, -15, 280, 30, -15, 480, 0, -15,
     };
 
-    private static Object service, combined, popCombined, attrs, doneAttrs;
+    private static Object service, combined, popCombined, gestureCombined, attrs, doneAttrs;
     private static Method vibrate;
     private static boolean broken;
 
@@ -43,6 +43,10 @@ final class Haptics {
             // the pop: a 30 ms full-strength step, which vivo plays as CLICK(STRONG)
             Object pop = ve.getMethod("createOneShot", long.class, int.class).invoke(null, 30L, 255);
             popCombined = cv.getMethod("createParallel", ve).invoke(null, pop);
+            // 60 ms full-strength pulse: long enough that vivo plays a real Step buzz instead of
+            // substituting Prebaked=CLICK, matching DoublePress.vibrateOnce
+            Object gest = ve.getMethod("createOneShot", long.class, int.class).invoke(null, 60L, 255);
+            gestureCombined = cv.getMethod("createParallel", ve).invoke(null, gest);
 
             Class<?> va = Class.forName("android.os.VibrationAttributes");
             Class<?> vab = Class.forName("android.os.VibrationAttributes$Builder");
@@ -113,10 +117,10 @@ final class Haptics {
         return true;
     }
 
-    /** Just the short pop (a gesture was recognised). Falls back to cmd vibrator when the effect isn't available. */
+    /** Just the short pulse (a gesture was recognised). Falls back to cmd vibrator when the effect isn't available. */
     static void pop() {
-        if (init() && play(popCombined, attrs)) return;
-        SysSettings.exec("cmd", "vibrator_manager", "synced", "-f", "oneshot", "30");
+        if (init() && play(gestureCombined, doneAttrs)) return;
+        SysSettings.exec("cmd", "vibrator_manager", "synced", "-f", "oneshot", "60");
     }
 
     /**

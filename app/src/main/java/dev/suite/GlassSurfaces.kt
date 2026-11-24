@@ -197,10 +197,17 @@ class LiquidGlass(
             else -> Color.argb(56, 255, 255, 255)
         }
 
-        /** Screens built on a GlassBackdrop: content → FrameLayout → [GlassBackdrop, …]. */
+        /** Screens built on a GlassBackdrop: find the backdrop inside the root content subtree. */
         private fun findBackdrop(content: View): GlassBackdrop? {
-            val frame = (content as? ViewGroup)?.getChildAt(0) as? ViewGroup ?: return null
-            return if (frame.childCount > 0) frame.getChildAt(0) as? GlassBackdrop else null
+            fun search(v: View, depth: Int): GlassBackdrop? {
+                if (v is GlassBackdrop) return v
+                if (depth <= 0 || v !is ViewGroup) return null
+                for (i in 0 until v.childCount) {
+                    search(v.getChildAt(i), depth - 1)?.let { return it }
+                }
+                return null
+            }
+            return search(content, 3)
         }
 
         private val tracked = WeakHashMap<View, Boolean>()

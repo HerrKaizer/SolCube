@@ -108,6 +108,38 @@ class MainActivity : Activity() {
     private lateinit var diagLiveText: TextView
     private var lastDiagReport: String = ""
     private var mainScroll: ScrollView? = null
+    private var scrollTopClearPx = 0
+    private var scrollBottomInsetPx = 0
+    private val appNameCache = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private var activeTab = 0
+    private val pageScrollY = IntArray(6)
+    private var activeBottomPill: BottomNavPill? = null
+    private var backdropRef: GlassBackdrop? = null
+    private var gesturesGroup: GroupCard? = null
+    private val headerPillAnims = java.util.WeakHashMap<View, android.animation.ValueAnimator>()
+    private var gestActiveList: LinearLayout? = null
+    private var gesturePauseDepth = 0
+
+    private fun pauseLiveGestures() {
+        val first = gesturePauseDepth == 0
+        gesturePauseDepth++
+        if (first && GestureStore.on(this)) {
+            io.execute { GestureStore.pushPaused(this, true) }
+            main.post { render() }
+        }
+    }
+
+    private fun resumeLiveGestures() {
+        if (gesturePauseDepth <= 0) return
+        gesturePauseDepth--
+        if (gesturePauseDepth == 0) {
+            io.execute { GestureStore.pushPaused(this, false) }
+            main.post {
+                render()
+                poll()
+            }
+        }
+    }
 
     private val permListener = Shizuku.OnRequestPermissionResultListener { _, _ ->
         io.execute { Components.reconcile(this) }
@@ -129,6 +161,8 @@ class MainActivity : Activity() {
         Components.ctsTouch(this)   // one-time split of the old single Circle to Search switch
         actionBar?.hide()
         styleSystemBars()
+        activeTab = (savedInstanceState?.getInt("active_tab", uiPrefs().getInt("active_tab", 0))
+            ?: uiPrefs().getInt("active_tab", 0)).coerceIn(0, 5)
         setContentView(build(savedInstanceState?.getInt("scroll_y", 0) ?: 0))
         Shizuku.addRequestPermissionResultListener(permListener)
     }
@@ -136,9 +170,15 @@ class MainActivity : Activity() {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         mainScroll?.let { outState.putInt("scroll_y", it.scrollY) }
+        outState.putInt("active_tab", activeTab)
     }
 
     override fun onDestroy() {
+        if (gesturePauseDepth > 0) {
+            gesturePauseDepth = 0
+            val appCtx = applicationContext
+            Thread { GestureStore.pushPaused(appCtx, false) }.apply { isDaemon = true }.start()
+        }
         Shizuku.removeRequestPermissionResultListener(permListener)
         io.shutdown()
         super.onDestroy()
@@ -148,7 +188,10 @@ class MainActivity : Activity() {
         super.onResume()
         resumed = true
         SolCubeService.sync(this)   // e.g. overlay permission was just granted
-        io.execute { Components.reconcile(this) }
+        io.execute {
+            Components.reconcile(this)
+            if (gesturePauseDepth > 0 && GestureStore.on(this)) GestureStore.pushPaused(this, true)
+        }
         poll()
         checkUpdates()
         cleanupOldBackup()
@@ -173,6 +216,7 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         runCatching { unregisterReceiver(volReceiver) }
+        if (gesturePauseDepth > 0) io.execute { GestureStore.pushPaused(this, false) }
         resumed = false
         main.removeCallbacksAndMessages(null)
         super.onPause()
@@ -325,7 +369,50 @@ class MainActivity : Activity() {
         )
 
         fun setGroup(g: GroupCard, active: Boolean, text: String) {
-            g.summary.put(text)
+            val statusPill = g.summary.parent as? View
+            val changed = g.summary.text?.toString() != text
+            if (changed && statusPill != null && statusPill.isLaidOut && statusPill.isShown) {
+                headerPillAnims.remove(statusPill)?.cancel()
+                val startW = statusPill.width
+                g.summary.put(text)
+                val lp = statusPill.layoutParams
+                val maxW = ((g.card.parent as? View)?.width?.takeIf { it > 0 }
+                    ?: resources.displayMetrics.widthPixels) - 32.dp
+                lp.width = WRAP_CONTENT
+                statusPill.measure(
+                    View.MeasureSpec.makeMeasureSpec(maxW.coerceAtLeast(1), View.MeasureSpec.AT_MOST),
+                    View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
+                )
+                val targetW = statusPill.measuredWidth.coerceAtLeast(1)
+                if (kotlin.math.abs(targetW - startW) > 2) {
+                    lp.width = startW
+                    statusPill.layoutParams = lp
+                    var cancelled = false
+                    headerPillAnims[statusPill] = android.animation.ValueAnimator.ofInt(startW, targetW).apply {
+                        duration = 260L
+                        interpolator = android.view.animation.PathInterpolator(0.2f, 0f, 0f, 1f)
+                        addUpdateListener { a ->
+                            lp.width = a.animatedValue as Int
+                            statusPill.requestLayout()
+                        }
+                        addListener(object : android.animation.AnimatorListenerAdapter() {
+                            override fun onAnimationCancel(animation: android.animation.Animator) { cancelled = true }
+                            override fun onAnimationEnd(animation: android.animation.Animator) {
+                                if (!cancelled) {
+                                    lp.width = WRAP_CONTENT
+                                    statusPill.requestLayout()
+                                    headerPillAnims.remove(statusPill)
+                                }
+                            }
+                        })
+                        start()
+                    }
+                    g.summary.alpha = 0.35f
+                    g.summary.animate().alpha(1f).setDuration(180L).start()
+                }
+            } else {
+                g.summary.put(text)
+            }
             (g.dot.background as GradientDrawable).setColor(if (active) p.ok else alpha(p.sub, 0.5f))
         }
 
@@ -336,7 +423,7 @@ class MainActivity : Activity() {
         setGroup(shortcutsGroup, ctsActive || DoublePress.ready(this) || enabled(holdSec),
             if (scParts.isEmpty()) "All off" else scParts.joinToString(" · "))
 
-        val rtAll = Routines.load(this)
+        val rtAll = Routines.load(this).filterNot(::isGestureRoutine)
         val rtOn = rtAll.count { it.optBoolean("on", true) }
         val prAll = Profiles.load(this)
         val prOn = prAll.count { it.optBoolean("on", true) && Profiles.apps(it).isNotEmpty() }
@@ -363,7 +450,21 @@ class MainActivity : Activity() {
         setGroup(audioGroup, mixOn,
             (if (mixOn) "Mixing · " else "") + "Volume ${FineVolume.percent(this)}%")
 
+        gesturesGroup?.let { gg ->
+            val usedG = usedGestures()
+            val gestPaused = gesturePauseDepth > 0 && enabled(gestSec)
+            val gestActive = enabled(gestSec) && !gestPaused && s.routines?.optBoolean("gestures") == true
+            val gestSummary = when {
+                !enabled(gestSec) -> "Off"
+                gestPaused -> "Paused while testing"
+                usedG.isEmpty() -> "No gestures assigned"
+                else -> "${usedG.size} gesture${if (usedG.size == 1) "" else "s"} active"
+            }
+            setGroup(gg, gestActive, gestSummary)
+        }
+
         renderDiagnostics(s, rawOverlay)
+        activeBottomPill?.invalidateBackdrop()
     }
 
     private fun renderDiagnostics(s: Components.Status, canDraw: Boolean) {
@@ -558,34 +659,27 @@ class MainActivity : Activity() {
 
     // ================================================================== layout
 
-    private fun build(initialScrollY: Int = 0): View {
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            clipChildren = false
-            clipToPadding = false
-            setPadding(16.dp, 28.dp, 16.dp, 24.dp)
-            // keep focus off the package field so the page opens at the top
-            isFocusableInTouchMode = true
-            descendantFocusability = android.view.ViewGroup.FOCUS_BEFORE_DESCENDANTS
-        }
-        val suiteTitle = label("SolCube", 42f, p.fg).apply {
-            typeface = fontBold
-            letterSpacing = -0.02f
-        }
+    private fun build(initialScrollY: Int = 0): View = buildTabbed(initialScrollY)
 
+    private fun buildHeaderTitle() = label("SolCube", 42f, p.fg).apply {
+        typeface = fontBold
+        letterSpacing = -0.02f
+    }
+
+    private fun buildUpdateLink(): TextView {
         updateLink = textButton("") { Updates.available(this)?.let { Updates.dialog(this, it) } }.apply { visibility = View.GONE }
-        root.addView(updateLink, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { bottomMargin = 8.dp; leftMargin = (-6).dp })
+        return updateLink
+    }
 
-        // small glass pill, lined up with the title and set a little apart from it
-        root.addView(label("Can't find a feature?", 13f, p.link, bold = true).apply {
-            gravity = Gravity.CENTER
-            maxLines = 1
-            setPadding(14.dp, 0, 14.dp, 0)
-            background = ripple(glass(15.dp, level = 0), 15.dp)
-            setOnClickListener { featureRequest() }
-        }, LinearLayout.LayoutParams(WRAP_CONTENT, 30.dp).apply { topMargin = 52.dp; leftMargin = 4.dp; bottomMargin = 18.dp })
+    private fun buildFeatureRequestPill(): TextView = label("Can't find a feature?", 13f, p.link, bold = true).apply {
+        gravity = Gravity.CENTER
+        maxLines = 1
+        setPadding(14.dp, 0, 14.dp, 0)
+        background = ripple(glass(15.dp, level = 0), 15.dp)
+        setOnClickListener { featureRequest() }
+    }
 
-        // Shizuku notice
+    private fun buildShizukuCard(): LinearLayout {
         shizukuCard = card()
         shizukuText = label("", 14.5f, p.fg)
         shizukuCard.addView(shizukuText)
@@ -598,25 +692,27 @@ class MainActivity : Activity() {
             }
         }
         shizukuCard.addView(shizukuButton, LinearLayout.LayoutParams(MATCH_PARENT, 46.dp).apply { topMargin = 14.dp })
-        root.addView(shizukuCard, cardParams())
+        return shizukuCard
+    }
 
-        // Overlay permission notice
+    private fun buildOverlayCard(): LinearLayout {
         overlayCard = card()
         overlayCard.addView(label("Allow “Display over other apps” for the ripple and the temperature pill.", 14.5f, p.fg))
         overlayCard.addView(pillButton("Allow", filled = true) { openOverlaySettings() },
             LinearLayout.LayoutParams(MATCH_PARENT, 46.dp).apply { topMargin = 14.dp })
-        root.addView(overlayCard, cardParams())
+        return overlayCard
+    }
 
-        // 1. Shortcuts big card (collapsed by default)
-        shortcutsGroup = groupCard("shortcuts", "Shortcuts", defaultOpen = false)
-        val ctsCard = innerCard()
+    private fun buildCtsCard(inner: Boolean): LinearLayout {
+        val ctsCard = if (inner) innerCard() else card()
         val ctsHeader = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             clipChildren = false
             clipToPadding = false
         }
-        ctsHeader.addView(label("Circle to Search", 16.5f, p.fg, bold = true), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        ctsHeader.addView(label("Circle to Search", if (inner) 16.5f else 18f, p.fg, bold = true),
+            LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
         val ctsChevron = chevronBadge(false)
         ctsHeader.addView(ctsChevron, LinearLayout.LayoutParams(30.dp, 30.dp).apply { leftMargin = 8.dp })
         ctsCard.addView(ctsHeader)
@@ -663,74 +759,17 @@ class MainActivity : Activity() {
             LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = 8.dp; leftMargin = (-12).dp })
         ctsCard.addView(ctsBody)
         makeCollapsible("cts", ctsCard, listOf(ctsHeader, ctsStatusRow, ctsNote), ctsChevron, ctsBody, defaultOpen = false)
-        shortcutsGroup.body.addView(ctsCard, innerCardParams())
-        shortcutsGroup.body.addView(buildDoubleCard(inner = true), innerCardParams())
-        shortcutsGroup.body.addView(buildHoldCard(inner = true))
-        root.addView(shortcutsGroup.card, cardParams())
+        return ctsCard
+    }
 
-        // 2. Automation big card (expanded by default): Routines + Profiles
-        automationGroup = groupCard("automation", "Automation", defaultOpen = true)
-        automationGroup.body.addView(buildRoutinesCard(inner = true), innerCardParams())
-        automationGroup.body.addView(buildProfilesCard(inner = true))
-        root.addView(automationGroup.card, cardParams())
-
-        // 3. Gestures (standalone card): two-finger drawings that trigger routines
-        gestSec = section(GestureStore.KEY, "Gestures", compact = true)
-        addGestureSettings(gestSec.body)
-        root.addView(gestSec.card, cardParams())
-
-        // 4. Gaming big card (collapsed by default)
-        gamingGroup = groupCard("gaming", "Gaming", defaultOpen = false)
-        fpsSec = section(Components.KEY_FPS, "FPS counter", collapsible = false, inner = true)
-        gamingGroup.body.addView(fpsSec.card, innerCardParams())
-
-        temp = section(Components.KEY_TEMP, "Temperature overlay", inner = true)
-        addTempSettings(temp.body)
-        gamingGroup.body.addView(temp.card, innerCardParams())
-
-        game = section(Components.KEY_GAME, "Frame interpolation", inner = true)
-        addGameControls(game.body)
-        qsHint(game.body, FiTile::class.java, "Frame interpolation", R.drawable.ic_tile_fi)
-        gamingGroup.body.addView(game.card, innerCardParams())
-
-        srSec = section(Components.KEY_SR, "Super resolution", collapsible = false, inner = true)
-        qsHint(srSec.body, SrTile::class.java, "Super resolution", R.drawable.ic_tile_sr)
-        gamingGroup.body.addView(srSec.card, innerCardParams())
-
-        gamingGroup.body.addView(buildStreamCard(inner = true))
-        root.addView(gamingGroup.card, cardParams())
-
-        // 5. Audio big card: Play together (mixing) + Fine volume
-        audioGroup = groupCard("audio", "Audio", defaultOpen = false)
-        mixSec = section(Components.KEY_MIX, "Play together", collapsible = false, inner = true)
-        qsHint(mixSec.body, MixTile::class.java, "Play together", R.drawable.ic_tile_mix)
-        audioGroup.body.addView(mixSec.card, innerCardParams())
-        audioGroup.body.addView(buildFineVolumeCard())
-        root.addView(audioGroup.card, cardParams())
-
-        // 5. Settings big card, separated below with open space
-        val settingsCard = card().apply {
-            setPadding(16.dp, 18.dp, 16.dp, 18.dp)
-        }
-        settingsCard.addView(label("Settings", 20f, p.fg, bold = true))
-
-        val settingsHost = FloatingCardHost().apply {
-            orientation = LinearLayout.VERTICAL
-            clipChildren = false
-            clipToPadding = false
-            setPadding(16.dp, 12.dp, 16.dp, 4.dp)
-        }
-        settingsCard.addView(settingsHost, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply {
-            leftMargin = (-16).dp
-            rightMargin = (-16).dp
-        })
-
-        val themeCard = innerCard()
+    private fun buildThemeCard(inner: Boolean): LinearLayout {
+        val themeCard = if (inner) innerCard() else card()
         val themeHeader = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        themeHeader.addView(label("Theme", 15.5f, p.fg, bold = true), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        themeHeader.addView(label("Theme", if (inner) 15.5f else 17f, p.fg, bold = true),
+            LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
         val modeNames = arrayOf("Light", "System", "Dark")
         val themeVal = label(modeNames[Look.themeMode(this)], 13f, p.sub)
         themeHeader.addView(themeVal)
@@ -745,12 +784,13 @@ class MainActivity : Activity() {
                 overridePendingTransition(android.R.anim.fade_in, android.R.anim.fade_out)
             }
         }, LinearLayout.LayoutParams(MATCH_PARENT, 44.dp).apply { topMargin = 12.dp })
-        settingsHost.addView(themeCard, innerCardParams())
+        return themeCard
+    }
 
-
-        val powerCard = innerCard().apply {
-            val baseBg = background
-            background = ripple(baseBg, 18.dp)
+    private fun buildPowerCard(inner: Boolean): LinearLayout {
+        val radius = if (inner) 18.dp else 24.dp
+        return (if (inner) innerCard() else card()).apply {
+            background = ripple(glass(radius, level = if (inner) 1 else 0), radius)
             isClickable = true
             isFocusable = true
             setOnClickListener {
@@ -760,27 +800,30 @@ class MainActivity : Activity() {
                     startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
                 }
             }
+            val powerRow = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            powerRow.addView(label("vivo background power settings", if (inner) 15f else 16f, p.link, bold = true),
+                LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            powerRow.addView(label("›", 18f, p.sub))
+            addView(powerRow)
+            addView(label("Allow SolCube to use power in the background, or vivo freezes it.", 12.5f, p.sub).apply {
+                setPadding(0, 4.dp, 0, 0)
+            })
         }
-        val powerRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        powerRow.addView(label("vivo background power settings", 15f, p.link, bold = true), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-        powerRow.addView(label("›", 18f, p.sub))
-        powerCard.addView(powerRow)
-        powerCard.addView(label("Allow SolCube to use power in the background, or vivo freezes it.", 12.5f, p.sub).apply {
-            setPadding(0, 4.dp, 0, 0)
-        })
-        settingsHost.addView(powerCard, innerCardParams())
+    }
 
-        val diagCard = innerCard()
+    private fun buildDiagCard(inner: Boolean): LinearLayout {
+        val diagCard = if (inner) innerCard() else card()
         val diagHeader = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             clipChildren = false
             clipToPadding = false
         }
-        diagHeader.addView(label("Diagnostics", 15.5f, p.fg, bold = true), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        diagHeader.addView(label("Diagnostics", if (inner) 15.5f else 17f, p.fg, bold = true),
+            LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
         val diagChevron = chevronBadge(false)
         diagHeader.addView(diagChevron, LinearLayout.LayoutParams(30.dp, 30.dp).apply { leftMargin = 8.dp })
         diagCard.addView(diagHeader)
@@ -826,8 +869,10 @@ class MainActivity : Activity() {
         }, LinearLayout.LayoutParams(MATCH_PARENT, 38.dp).apply { topMargin = 12.dp })
         diagCard.addView(diagBody)
         makeCollapsible("settings_diag", diagCard, listOf(diagHeader, diagStatusRow), diagChevron, diagBody, defaultOpen = false)
-        settingsHost.addView(diagCard, innerCardParams())
+        return diagCard
+    }
 
+    private fun buildSettingsActions(): LinearLayout {
         val settingsActions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         val updateBtn = pillButton("Check for updates", filled = false) { checkUpdates(manual = true) }.apply {
             textSize = 13.5f
@@ -840,23 +885,428 @@ class MainActivity : Activity() {
         }
         settingsActions.addView(updateBtn, LinearLayout.LayoutParams(0, 42.dp, 1f))
         settingsActions.addView(restartBtn, LinearLayout.LayoutParams(0, 42.dp, 1f).apply { leftMargin = 10.dp })
-        settingsCard.addView(settingsActions, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 4.dp })
+        return settingsActions
+    }
 
-        root.addView(settingsCard, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply {
-            topMargin = 56.dp
-            bottomMargin = 12.dp
+    private fun tabSectionHeader(title: String, icon: Int, initialSummary: String = "", showDot: Boolean = true): GroupCard {
+        val outer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.END
+            clipChildren = false
+            clipToPadding = false
+        }
+        val d = resources.displayMetrics.density
+        val titlePill = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(16.dp, 8.dp, 18.dp, 8.dp)
+            background = accentGradient(20.dp)
+        }
+        val iconView = object : View(this) {
+            private val ip = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                style = android.graphics.Paint.Style.STROKE
+                strokeWidth = 2.0f * d
+                strokeCap = android.graphics.Paint.Cap.ROUND
+                strokeJoin = android.graphics.Paint.Join.ROUND
+                color = p.onAccent
+            }
+            private val ifp = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                style = android.graphics.Paint.Style.FILL
+                color = p.onAccent
+            }
+            private val iPath = android.graphics.Path()
+            private val iRect = android.graphics.RectF()
+            override fun onDraw(canvas: android.graphics.Canvas) {
+                BottomNavPill.drawTabIcon(canvas, icon, width * 0.5f, height * 0.5f, 20f * d, d, ip, ifp, iPath, iRect)
+            }
+        }
+        titlePill.addView(iconView, LinearLayout.LayoutParams(22.dp, 22.dp).apply { rightMargin = 10.dp })
+        titlePill.addView(label(title, 26f, p.onAccent, bold = true).apply {
+            maxLines = 1
         })
-        root.addView(label("SolCube ${Updates.current(this)}", 12f, p.sub).apply { gravity = Gravity.CENTER },
-            LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 8.dp })
 
-        return pinnedBackdropLayout(
+        val statusPill = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(12.dp, 6.dp, 12.dp, 6.dp)
+            background = glass(15.dp, level = 0)
+        }
+        val dot = View(this).apply {
+            background = GradientDrawable().apply { shape = GradientDrawable.OVAL }
+            visibility = if (showDot) View.VISIBLE else View.GONE
+        }
+        statusPill.addView(dot, LinearLayout.LayoutParams(7.dp, 7.dp).apply { rightMargin = 7.dp })
+        val summary = label(initialSummary, 12.5f, p.sub).apply {
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }
+        statusPill.addView(summary)
+
+        outer.addView(titlePill, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
+        outer.addView(statusPill, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = 8.dp })
+        return GroupCard(outer, dot, summary, LinearLayout(this))
+    }
+
+    private inner class SwipeTabFrame(
+        ctx: android.content.Context,
+        private val canSwipeAt: (MotionEvent) -> Boolean,
+        private val onSwipe: (delta: Int) -> Unit,
+    ) : FrameLayout(ctx) {
+        private var downX = 0f
+        private var downY = 0f
+        private var tracking = false
+        private val minSwipePx = 52.dp.toFloat()
+
+        override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
+            when (ev.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    tracking = canSwipeAt(ev)
+                    downX = ev.x
+                    downY = ev.y
+                }
+                MotionEvent.ACTION_MOVE -> if (tracking) {
+                    val dx = ev.x - downX
+                    val dy = ev.y - downY
+                    if (kotlin.math.abs(dx) > minSwipePx && kotlin.math.abs(dx) > kotlin.math.abs(dy) * 1.8f) {
+                        return true
+                    }
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> tracking = false
+            }
+            return super.onInterceptTouchEvent(ev)
+        }
+
+        override fun onTouchEvent(ev: MotionEvent): Boolean {
+            when (ev.actionMasked) {
+                MotionEvent.ACTION_UP -> if (tracking) {
+                    tracking = false
+                    val dx = ev.x - downX
+                    val dy = ev.y - downY
+                    if (kotlin.math.abs(dx) > minSwipePx && kotlin.math.abs(dx) > kotlin.math.abs(dy) * 1.5f) {
+                        onSwipe(if (dx < 0f) 1 else -1)
+                    }
+                    return true
+                }
+                MotionEvent.ACTION_CANCEL -> tracking = false
+            }
+            return super.onTouchEvent(ev)
+        }
+    }
+
+    private fun buildTabbed(initialScrollY: Int = 0): View {
+        activeBottomPill = null
+        backdropRef = null
+        gesturesGroup = null
+        gestActiveList = null
+        pageScrollY.fill(0)
+        pageScrollY[activeTab] = initialScrollY
+
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            clipChildren = false
+            clipToPadding = false
+            setPadding(16.dp, 28.dp, 16.dp, 92.dp)
+            isFocusableInTouchMode = true
+            descendantFocusability = android.view.ViewGroup.FOCUS_BEFORE_DESCENDANTS
+        }
+        val suiteTitle = buildHeaderTitle()
+
+        root.addView(buildUpdateLink(), LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply {
+            bottomMargin = 8.dp; leftMargin = (-6).dp
+        })
+        root.addView(buildShizukuCard(), cardParams())
+        root.addView(buildOverlayCard(), cardParams())
+
+        val pageHost = FrameLayout(this).apply {
+            clipChildren = false
+            clipToPadding = false
+        }
+        val pageViews = ArrayList<LinearLayout>(6)
+
+        fun newPage(): LinearLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            clipChildren = false
+            clipToPadding = false
+            visibility = if (pageViews.size == activeTab) View.VISIBLE else View.GONE
+        }.also {
+            pageViews.add(it)
+            pageHost.addView(it, FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        }
+
+        fun headerCardParams() = LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply {
+            gravity = Gravity.END
+            bottomMargin = 12.dp
+        }
+
+        // Page 0: Shortcuts
+        newPage().apply {
+            shortcutsGroup = tabSectionHeader("Shortcuts", BottomNavPill.ICON_SHORTCUTS)
+            addView(shortcutsGroup.card, headerCardParams())
+            addView(buildCtsCard(inner = false), cardParams())
+            addView(buildDoubleCard(inner = false), cardParams())
+            addView(buildHoldCard(inner = false), cardParams())
+        }
+
+        // Page 1: Automation
+        newPage().apply {
+            automationGroup = tabSectionHeader("Automation", BottomNavPill.ICON_AUTOMATION)
+            addView(automationGroup.card, headerCardParams())
+            addView(buildRoutinesCard(inner = false), cardParams())
+            addView(buildProfilesCard(inner = false), cardParams())
+        }
+
+        // Page 2: Gestures
+        newPage().apply {
+            gesturesGroup = tabSectionHeader("Gestures", BottomNavPill.ICON_GESTURES)
+            addView(gesturesGroup!!.card, headerCardParams())
+
+            gestSec = section(GestureStore.KEY, "Screen gestures", collapsible = false, inner = false, compact = false)
+            val actRow = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.HORIZONTAL }
+            actRow.addView(pillButton("+ Add gesture", filled = true) { addGestureWizard() }.apply {
+                textSize = 14f
+            }, LinearLayout.LayoutParams(0, 42.dp, 1.35f))
+            actRow.addView(pillButton("Test pad", filled = false) { tryGestures() }.apply {
+                textSize = 14f
+            }, LinearLayout.LayoutParams(0, 42.dp, 1f).apply { leftMargin = 10.dp })
+            gestSec.body.addView(actRow, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 12.dp })
+
+            gestActiveList = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                clipChildren = false
+                clipToPadding = false
+            }
+            gestSec.body.addView(gestActiveList, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 10.dp })
+            addView(gestSec.card, cardParams())
+
+            val gestSettingsCard = card()
+            gestSettingsCard.addView(label("Gesture settings", 17f, p.fg, bold = true))
+            gestSettingsCard.addView(label("Sensitivity", 14f, p.fg, bold = true).apply { setPadding(0, 12.dp, 0, 0) })
+            gestSensRow = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL }
+            gestSettingsCard.addView(gestSensRow)
+            renderGestureSens()
+
+            gestSettingsCard.addView(Switch(this@MainActivity).apply {
+                text = "Vibrate when recognised"
+                textSize = 14f
+                setTextColor(p.fg)
+                typeface = fontRegular
+                styleSwitch(this)
+                isChecked = GestureStore.vibrate(this@MainActivity)
+                setOnCheckedChangeListener { _, c -> io.execute { GestureStore.setVibrate(this@MainActivity, c) } }
+            }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 12.dp })
+
+            gestSettingsCard.addView(View(this@MainActivity).apply { setBackgroundColor(p.stroke) },
+                LinearLayout.LayoutParams(MATCH_PARENT, 1.dp).apply { topMargin = 14.dp; bottomMargin = 12.dp })
+
+            val pauseHead = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                clipChildren = false
+                clipToPadding = false
+            }
+            val pauseTextCol = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL }
+            pauseTextCol.addView(label("Paused in apps", 14.5f, p.fg, bold = true))
+            pauseTextCol.addView(label("Gestures won't trigger while these apps are open.", 12f, p.sub).apply {
+                setPadding(0, 2.dp, 0, 0)
+            })
+            pauseHead.addView(pauseTextCol, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply { rightMargin = 10.dp })
+            pauseHead.addView(chip("Choose", false) {
+                val a = GestureStore.ignore(this@MainActivity)
+                pickMultiApps("Paused in apps", a, userOnly = false) {
+                    io.execute { GestureStore.setIgnore(this@MainActivity, a); main.post { renderGestureIgnore() } }
+                }
+            }, LinearLayout.LayoutParams(WRAP_CONTENT, 32.dp))
+            gestSettingsCard.addView(pauseHead)
+
+            gestIgnoreWrap = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                clipChildren = false
+                clipToPadding = false
+            }
+            gestSettingsCard.addView(gestIgnoreWrap, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 10.dp })
+            renderGestureIgnore()
+            renderActiveGesturesList()
+            addView(gestSettingsCard, cardParams())
+        }
+
+        // Page 3: Gaming
+        newPage().apply {
+            gamingGroup = tabSectionHeader("Gaming", BottomNavPill.ICON_GAMING)
+            addView(gamingGroup.card, headerCardParams())
+            fpsSec = section(Components.KEY_FPS, "FPS counter", collapsible = false, inner = false)
+            addView(fpsSec.card, cardParams())
+            temp = section(Components.KEY_TEMP, "Temperature overlay", inner = false)
+            addTempSettings(temp.body)
+            addView(temp.card, cardParams())
+            game = section(Components.KEY_GAME, "Frame interpolation", inner = false)
+            addGameControls(game.body)
+            qsHint(game.body, FiTile::class.java, "Frame interpolation", R.drawable.ic_tile_fi)
+            addView(game.card, cardParams())
+            srSec = section(Components.KEY_SR, "Super resolution", collapsible = false, inner = false)
+            qsHint(srSec.body, SrTile::class.java, "Super resolution", R.drawable.ic_tile_sr)
+            addView(srSec.card, cardParams())
+            addView(buildStreamCard(inner = false), cardParams())
+        }
+
+        // Page 4: Audio
+        newPage().apply {
+            audioGroup = tabSectionHeader("Audio", BottomNavPill.ICON_AUDIO)
+            addView(audioGroup.card, headerCardParams())
+            mixSec = section(Components.KEY_MIX, "Play together", collapsible = false, inner = false)
+            qsHint(mixSec.body, MixTile::class.java, "Play together", R.drawable.ic_tile_mix)
+            addView(mixSec.card, cardParams())
+            addView(buildFineVolumeCard(inner = false), cardParams())
+        }
+
+        // Page 5: Settings
+        newPage().apply {
+            addView(
+                tabSectionHeader(
+                    "Settings",
+                    BottomNavPill.ICON_SETTINGS,
+                    initialSummary = "SolCube ${Updates.current(this@MainActivity)}",
+                    showDot = false,
+                ).card,
+                headerCardParams(),
+            )
+            addView(buildThemeCard(inner = false), cardParams())
+            addView(buildPowerCard(inner = false), cardParams())
+            addView(buildDiagCard(inner = false), cardParams())
+            addView(buildSettingsActions(), LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 4.dp })
+            addView(buildFeatureRequestPill(), LinearLayout.LayoutParams(WRAP_CONTENT, 30.dp).apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+                topMargin = 18.dp
+            })
+            addView(label("SolCube ${Updates.current(this@MainActivity)}", 12f, p.sub).apply { gravity = Gravity.CENTER },
+                LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 10.dp })
+        }
+
+        root.addView(pageHost, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+
+        val tabs = listOf(
+            BottomTab("shortcuts", "Shortcuts", BottomNavPill.ICON_SHORTCUTS),
+            BottomTab("automation", "Automation", BottomNavPill.ICON_AUTOMATION),
+            BottomTab("gestures", "Gestures", BottomNavPill.ICON_GESTURES),
+            BottomTab("gaming", "Gaming", BottomNavPill.ICON_GAMING),
+            BottomTab("audio", "Audio", BottomNavPill.ICON_AUDIO),
+            BottomTab("settings", "Settings", BottomNavPill.ICON_SETTINGS),
+        )
+        val bottomPill = BottomNavPill(this, p, fontMedium, isDark()).also { activeBottomPill = it }
+        val pillLp = FrameLayout.LayoutParams(MATCH_PARENT, 54.dp).apply {
+            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+            leftMargin = 14.dp
+            rightMargin = 14.dp
+            bottomMargin = 14.dp
+        }
+        var tabAnim: android.animation.ValueAnimator? = null
+        val tabInterp = android.view.animation.PathInterpolator(0.16f, 1f, 0.30f, 1f)
+
+        fun resetPage(v: View) {
+            v.translationX = 0f
+            v.alpha = 1f
+            v.scaleX = 1f
+            v.scaleY = 1f
+        }
+
+        fun selectTab(newIdx: Int, animate: Boolean = true) {
+            val target = newIdx.coerceIn(0, pageViews.lastIndex)
+            if (target == activeTab) return
+            val oldIdx = activeTab
+            mainScroll?.let { pageScrollY[oldIdx] = it.scrollY }
+            activeTab = target
+            uiPrefs().edit().putInt("active_tab", target).apply()
+
+            tabAnim?.cancel()
+            tabAnim = null
+            pageViews.forEachIndexed { idx, v ->
+                v.animate().cancel()
+                if (idx != target && (!animate || idx != oldIdx)) {
+                    v.visibility = View.GONE
+                    resetPage(v)
+                }
+            }
+
+            val outPage = pageViews[oldIdx]
+            val inPage = pageViews[target]
+            inPage.visibility = View.VISIBLE
+
+            if (!animate || !android.animation.ValueAnimator.areAnimatorsEnabled()) {
+                outPage.visibility = View.GONE
+                resetPage(outPage)
+                resetPage(inPage)
+            } else {
+                val dir = if (target > oldIdx) 1f else -1f
+                val travel = 48.dp.toFloat()
+                outPage.visibility = View.VISIBLE
+                var cancelled = false
+                tabAnim = android.animation.ValueAnimator.ofFloat(0f, 1f).apply {
+                    duration = 440L
+                    interpolator = tabInterp
+                    addUpdateListener { a ->
+                        val f = a.animatedValue as Float
+                        inPage.translationX = dir * travel * (1f - f)
+                        inPage.alpha = f
+                        val inScale = 0.97f + 0.03f * f
+                        inPage.scaleX = inScale
+                        inPage.scaleY = inScale
+
+                        val outF = (f * 1.15f).coerceIn(0f, 1f)
+                        outPage.translationX = -dir * travel * 0.7f * outF
+                        outPage.alpha = 1f - outF
+                        val outScale = 1f - 0.03f * outF
+                        outPage.scaleX = outScale
+                        outPage.scaleY = outScale
+                        bottomPill.invalidateBackdrop()
+                    }
+                    addListener(object : android.animation.AnimatorListenerAdapter() {
+                        override fun onAnimationCancel(animation: android.animation.Animator) { cancelled = true }
+                        override fun onAnimationEnd(animation: android.animation.Animator) {
+                            if (!cancelled) {
+                                outPage.visibility = View.GONE
+                                resetPage(outPage)
+                                resetPage(inPage)
+                                tabAnim = null
+                                bottomPill.invalidateBackdrop()
+                            }
+                        }
+                    })
+                    start()
+                }
+            }
+
+            mainScroll?.post {
+                val s = mainScroll ?: return@post
+                s.scrollTo(0, pageScrollY[target])
+                backdropRef?.setScroll(s.scrollY, s)
+                bottomPill.invalidateBackdrop()
+            }
+        }
+
+        bottomPill.bind(tabs, activeTab) { idx ->
+            selectTab(idx, animate = true)
+        }
+
+        val swipeContainer = SwipeTabFrame(
+            this,
+            canSwipeAt = { ev -> bottomPill.height == 0 || ev.y < bottomPill.top },
+            onSwipe = { delta ->
+                val next = (activeTab + delta).coerceIn(0, tabs.lastIndex)
+                if (next != activeTab) {
+                    selectTab(next, animate = true)
+                    bottomPill.select(next)
+                }
+            },
+        )
+
+        val screen = pinnedBackdropLayout(
             titleView = suiteTitle,
             body = root,
             titleLeftPx = 22.dp,
             titleTopPx = 28.dp,
-            titleBottomGapPx = 22.dp,
+            titleBottomGapPx = 96.dp,
             bodySidePadPx = 16.dp,
-            bodyBottomPadPx = 24.dp,
+            bodyRightPadPx = 16.dp,
+            bodyBottomPadPx = 92.dp,
             blurBelowTitlePx = 12.dp,
             fadeBelowTitlePx = 0,
             edgeToEdge = true,
@@ -864,8 +1314,26 @@ class MainActivity : Activity() {
             liftStartPx = 44.dp,
             liftSpanPx = 110.dp,
             initialScrollY = initialScrollY,
+            container = swipeContainer,
             onScrollReady = { mainScroll = it },
+            onScrollChange = { bottomPill.invalidateBackdrop() },
+            onLayersReady = { bd, sw ->
+                backdropRef = bd
+                bd.register(bottomPill)
+                bottomPill.setBackdropSources { listOf(bd, sw) }
+            },
+            onInsetsChange = { topClear, bottomInset ->
+                scrollTopClearPx = topClear
+                scrollBottomInsetPx = bottomInset
+                val wantBottom = bottomInset + 14.dp
+                if (pillLp.bottomMargin != wantBottom) {
+                    pillLp.bottomMargin = wantBottom
+                    bottomPill.layoutParams = pillLp
+                }
+            },
         )
+        screen.addView(bottomPill, pillLp)
+        return screen
     }
 
     /** "Hold  350 ms   −  +" row for a trigger's hold time (50 ms steps). */
@@ -1020,6 +1488,7 @@ class MainActivity : Activity() {
                 body.clipChildren = restClipChildren
                 body.clipToPadding = restClipToPadding
                 body.requestLayout()
+                activeBottomPill?.invalidateBackdrop()
                 anim = null
             }
 
@@ -1044,6 +1513,31 @@ class MainActivity : Activity() {
                 body.alpha = startFrac
                 body.visibility = View.VISIBLE
                 body.requestLayout()
+
+                val sv = mainScroll
+                var startScrollY = 0
+                var targetScrollY = 0
+                var autoScroll = false
+                var lastAutoY = 0
+                if (sv != null && sv.height > 0 && sv.childCount > 0) {
+                    val content = sv.getChildAt(0)
+                    var cardTop = 0
+                    var cur: View? = card
+                    while (cur != null && cur !== content) {
+                        cardTop += cur.top
+                        cur = cur.parent as? View
+                    }
+                    startScrollY = sv.scrollY
+                    val safeTop = (scrollTopClearPx.takeIf { it > 0 } ?: 96.dp) + 8.dp
+                    val safeBottom = (activeBottomPill?.height?.takeIf { it > 0 } ?: 54.dp) + scrollBottomInsetPx + 28.dp
+                    val expandedCardBottom = cardTop + (card.height - startH + targetH + restTopMargin + restBottomMargin)
+                    val fitBottomY = expandedCardBottom - (sv.height - safeBottom)
+                    val headerTopY = cardTop - safeTop
+                    targetScrollY = minOf(fitBottomY, headerTopY).coerceAtLeast(startScrollY)
+                    autoScroll = targetScrollY > startScrollY
+                    lastAutoY = startScrollY
+                }
+
                 var cancelled = false
                 anim = android.animation.ValueAnimator.ofInt(startH, targetH).apply {
                     duration = dur
@@ -1056,11 +1550,28 @@ class MainActivity : Activity() {
                         lp.bottomMargin = (restBottomMargin * frac).toInt()
                         body.alpha = frac
                         body.requestLayout()
+                        if (autoScroll && sv != null) {
+                            if (kotlin.math.abs(sv.scrollY - lastAutoY) > 16.dp) {
+                                autoScroll = false
+                            } else {
+                                val wantY = (startScrollY + (targetScrollY - startScrollY) * frac).toInt()
+                                sv.scrollTo(0, wantY)
+                                lastAutoY = sv.scrollY
+                            }
+                        }
+                        activeBottomPill?.invalidateBackdrop()
                     }
                     addListener(object : android.animation.AnimatorListenerAdapter() {
                         override fun onAnimationCancel(animation: android.animation.Animator) { cancelled = true }
                         override fun onAnimationEnd(animation: android.animation.Animator) {
-                            if (!cancelled) restoreAndFinish(visible = true)
+                            if (!cancelled) {
+                                restoreAndFinish(visible = true)
+                                if (autoScroll && sv != null) {
+                                    sv.post {
+                                        if (sv.scrollY < targetScrollY) sv.smoothScrollTo(0, targetScrollY)
+                                    }
+                                }
+                            }
                         }
                     })
                     start()
@@ -1085,6 +1596,7 @@ class MainActivity : Activity() {
                         lp.bottomMargin = (restBottomMargin * frac).toInt()
                         body.alpha = frac
                         body.requestLayout()
+                        activeBottomPill?.invalidateBackdrop()
                     }
                     addListener(object : android.animation.AnimatorListenerAdapter() {
                         override fun onAnimationCancel(animation: android.animation.Animator) { cancelled = true }
@@ -1098,89 +1610,6 @@ class MainActivity : Activity() {
         }
         chevron.setOnClickListener(toggleOpen)
         headerClickTargets.forEach { it.setOnClickListener(toggleOpen) }
-    }
-
-    private inner class FloatingCardHost : LinearLayout(this) {
-        private val d = resources.displayMetrics.density
-        private val cardRadius = 18f * d
-        private val dy1 = 3f * d
-        private val dy2 = 1.5f * d
-        private val cardRect = android.graphics.RectF()
-        private val shadowRect = android.graphics.RectF()
-        private val cardPath = android.graphics.Path()
-        private val dark = isDark()
-        private val ambientPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-            style = android.graphics.Paint.Style.FILL
-            color = if (dark) Color.argb(68, 0, 0, 0) else Color.argb(20, 28, 22, 16)
-            maskFilter = android.graphics.BlurMaskFilter(18f * d, android.graphics.BlurMaskFilter.Blur.NORMAL)
-        }
-        private val spotPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-            style = android.graphics.Paint.Style.FILL
-            color = if (dark) Color.argb(24, 0, 0, 0) else Color.argb(7, 28, 22, 16)
-            maskFilter = android.graphics.BlurMaskFilter(9f * d, android.graphics.BlurMaskFilter.Blur.NORMAL)
-        }
-
-        override fun dispatchDraw(canvas: android.graphics.Canvas) {
-            for (i in 0 until childCount) {
-                val c = getChildAt(i)
-                if (c.visibility != View.VISIBLE || c.width <= 0 || c.height <= 0) continue
-                val l = c.left + c.translationX
-                val t = c.top + c.translationY
-                val r = l + c.width
-                val b = t + c.height
-                cardRect.set(l, t, r, b)
-                cardPath.reset()
-                cardPath.addRoundRect(cardRect, cardRadius, cardRadius, android.graphics.Path.Direction.CW)
-                canvas.save()
-                canvas.clipOutPath(cardPath)
-                shadowRect.set(l, t + dy1, r, b + dy1)
-                canvas.drawRoundRect(shadowRect, cardRadius, cardRadius, ambientPaint)
-                shadowRect.set(l, t + dy2, r, b + dy2)
-                canvas.drawRoundRect(shadowRect, cardRadius, cardRadius, spotPaint)
-                canvas.restore()
-            }
-            super.dispatchDraw(canvas)
-        }
-    }
-
-    private fun groupCard(key: String, title: String, defaultOpen: Boolean = false): GroupCard {
-        val card = card()
-        card.setPadding(16.dp, 16.dp, 16.dp, 16.dp)
-        val header = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            clipChildren = false
-            clipToPadding = false
-        }
-        val titleCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        titleCol.addView(label(title, 20f, p.fg, bold = true))
-        val statusRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        val dot = View(this).apply { background = GradientDrawable().apply { shape = GradientDrawable.OVAL } }
-        statusRow.addView(dot, LinearLayout.LayoutParams(7.dp, 7.dp).apply { rightMargin = 7.dp })
-        val summary = label("", 12.5f, p.sub).apply {
-            maxLines = 1
-            ellipsize = android.text.TextUtils.TruncateAt.END
-        }
-        statusRow.addView(summary, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-        titleCol.addView(statusRow, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 4.dp })
-        header.addView(titleCol, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-        val chevron = chevronBadge(defaultOpen)
-        header.addView(chevron, LinearLayout.LayoutParams(30.dp, 30.dp).apply { leftMargin = 10.dp })
-        card.addView(header)
-        val body = FloatingCardHost().apply {
-            orientation = LinearLayout.VERTICAL
-            clipChildren = false
-            clipToPadding = false
-            setPadding(16.dp, 10.dp, 16.dp, 16.dp)
-        }
-        card.addView(body, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply {
-            leftMargin = (-16).dp
-            rightMargin = (-16).dp
-            topMargin = 2.dp
-            bottomMargin = (-14).dp
-        })
-        makeCollapsible("group_$key", card, listOf(header), chevron, body, defaultOpen = defaultOpen)
-        return GroupCard(card, dot, summary, body)
     }
 
     /** A switchable block: its own card, an inner card, or (with [into]) a sub-row inside a card. */
@@ -1248,9 +1677,11 @@ class MainActivity : Activity() {
     private lateinit var gameList: LinearLayout
     private lateinit var thresholds: LinearLayout
 
-    private fun appName(pkg: String): String = runCatching {
-        packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0)).toString()
-    }.getOrDefault(pkg)
+    private fun appName(pkg: String): String = appNameCache.getOrPut(pkg) {
+        runCatching {
+            packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0)).toString()
+        }.getOrDefault(pkg)
+    }
 
     private fun mono(size: Float) = label("", size, p.sub).apply {
         typeface = Typeface.MONOSPACE
@@ -1307,8 +1738,8 @@ class MainActivity : Activity() {
         }
 
     /** Fine volume: media volume in 1 % steps (vivo's stream has 150 steps; the buttons jump 10). */
-    private fun buildFineVolumeCard(): LinearLayout {
-        val c = innerCard()
+    private fun buildFineVolumeCard(inner: Boolean = true): LinearLayout {
+        val c = if (inner) innerCard() else card()
         val head = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         head.addView(label("Fine volume", 16.5f, p.fg, bold = true), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
         val styles = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
@@ -1994,9 +2425,19 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun isGestureRoutine(r: org.json.JSONObject): Boolean =
+        r.optJSONObject("trigger")?.optString("type") == "gesture"
+
     private fun renderRoutineList() {
         rtList.removeAllViews()
         val all = Routines.load(this)
+        val visible = all.filterNot(::isGestureRoutine)
+        if (visible.isEmpty()) {
+            rtList.addView(label("No routines yet. Tap Add routine below to create one.", 12.5f, p.sub).apply {
+                setPadding(0, 8.dp, 0, 4.dp)
+            })
+            return
+        }
         fun addRow(r: org.json.JSONObject, into: LinearLayout) {
             into.addView(View(this).apply { setBackgroundColor(p.stroke) },
                 LinearLayout.LayoutParams(MATCH_PARENT, 1.dp).apply { topMargin = 6.dp })
@@ -2048,30 +2489,11 @@ class MainActivity : Activity() {
             }, LinearLayout.LayoutParams(WRAP_CONTENT, 32.dp).apply { leftMargin = 6.dp })
             into.addView(row)
         }
-        val isGesture = { r: org.json.JSONObject -> r.optJSONObject("trigger")?.optString("type") == "gesture" }
-        all.filterNot(isGesture).forEach { addRow(it, rtList) }
-        val gr = all.filter(isGesture)
-        if (gr.isEmpty()) return
-        // gesture routines in their own box (collapsed by default) so the list stays short
-        rtList.addView(View(this).apply { setBackgroundColor(p.stroke) },
-            LinearLayout.LayoutParams(MATCH_PARENT, 1.dp).apply { topMargin = 6.dp })
-        val box = innerCard()
-        val header = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        val onN = gr.count { it.optBoolean("on", true) }
-        header.addView(label("Gesture routines", 15f, p.fg, bold = true), LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
-        header.addView(label("$onN/${gr.size} on", 12.5f, p.sub).apply { setPadding(10.dp, 0, 0, 0) }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-        val chevron = chevronBadge(false)
-        header.addView(chevron, LinearLayout.LayoutParams(30.dp, 30.dp))
-        box.addView(header)
-        val inner = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        gr.forEach { addRow(it, inner) }
-        box.addView(inner)
-        makeCollapsible("routines_gestures", box, listOf(header), chevron, inner, defaultOpen = false)
-        rtList.addView(box, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 10.dp })
+        visible.forEach { addRow(it, rtList) }
     }
 
     private fun renderRoutines(st: org.json.JSONObject?, shellOk: Boolean) {
-        val all = Routines.load(this)
+        val all = Routines.load(this).filterNot(::isGestureRoutine)
         val total = all.size
         val onCount = all.count { it.optBoolean("on", true) }
         val any = onCount > 0
@@ -2079,12 +2501,13 @@ class MainActivity : Activity() {
         val active = running && any
         rtStatus.put(when {
             !active -> "Not running"
-            onCount == total -> "All running"
+            onCount == total && total > 0 -> "All running"
             else -> "$onCount/$total running"
         })
         rtStatus.setTextColor(if (active) p.ok else p.sub)
         (rtDot.background as GradientDrawable).setColor(if (active) p.ok else alpha(p.sub, 0.5f))
         rtDetail.put(when {
+            total == 0 -> "Tap Add routine to create one (gestures live in the Gestures tab)"
             !any -> "All routines are off"
             !shellOk -> "Waiting for Shizuku"
             st == null -> "Starting…"
@@ -2111,32 +2534,191 @@ class MainActivity : Activity() {
         views.forEach { addView(it, android.view.ViewGroup.LayoutParams(WRAP_CONTENT, 34.dp)) }
     }
 
-    /** Multi-choice list of user-installed (and optional launcher) apps. */
+    /** Multi-choice list of user-installed (and optional launcher) apps, loaded off the UI thread. */
     private fun pickMultiApps(title: String, apps: org.json.JSONArray, userOnly: Boolean = true, done: () -> Unit) {
-        val chosen = (0 until apps.length()).map { apps.getString(it) }.toMutableSet()
-        val launch = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-        val pkgs = packageManager.queryIntentActivities(launch, 0)
-            .map { it.activityInfo.applicationInfo }
-            .filter {
-                !userOnly ||
-                    it.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM == 0 ||
-                    it.flags and android.content.pm.ApplicationInfo.FLAG_UPDATED_SYSTEM_APP != 0
+        val selected = (0 until apps.length()).map { apps.getString(it) }.toMutableSet()
+        val d = resources.displayMetrics.density
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            clipChildren = false
+            clipToPadding = false
+        }
+
+        val searchField = android.widget.EditText(this).apply {
+            hint = "Search apps"
+            setSingleLine()
+            textSize = 14.5f
+            setTextColor(p.fg)
+            setHintTextColor(p.sub)
+            typeface = fontRegular
+            background = glass(14.dp, level = 1)
+            setPadding(12.dp, 10.dp, 12.dp, 10.dp)
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+        }
+        box.addView(searchField, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+
+        val statusRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            clipChildren = false
+            clipToPadding = false
+        }
+        val countLabel = label("", 12.5f, p.sub)
+        lateinit var refreshStatusAndList: () -> Unit
+        val clearBtn = label("Clear all", 12f, p.fg, bold = true).apply {
+            gravity = Gravity.CENTER
+            setPadding(10.dp, 0, 10.dp, 0)
+            background = ripple(glass(14.dp, level = 1), 14.dp)
+            setOnClickListener {
+                selected.clear()
+                refreshStatusAndList()
             }
-            .map { it.packageName }
-            .filter { it != packageName }
-            .toMutableSet()
-        pkgs += chosen   // keep picks that have no launcher icon
-        val list = pkgs.map { it to appName(it) }.sortedWith(compareBy({ it.first !in chosen }, { it.second.lowercase() }))
-        val checked = BooleanArray(list.size) { list[it].first in chosen }
+        }
+        statusRow.addView(countLabel, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        statusRow.addView(clearBtn, LinearLayout.LayoutParams(WRAP_CONTENT, 28.dp))
+        box.addView(statusRow, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 8.dp; bottomMargin = 6.dp })
+
+        val loadingLabel = label("Loading apps…", 13f, p.sub).apply {
+            gravity = Gravity.CENTER
+            setPadding(0, 28.dp, 0, 28.dp)
+        }
+        box.addView(loadingLabel, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+
+        var allApps: List<Pair<String, String>> = emptyList()
+        var filteredApps: List<Pair<String, String>> = emptyList()
+        val fillAccent = Color.rgb(
+            (Color.red(p.accent) + Color.red(p.accent2)) / 2,
+            (Color.green(p.accent) + Color.green(p.accent2)) / 2,
+            (Color.blue(p.accent) + Color.blue(p.accent2)) / 2,
+        )
+
+        class AppRowHolder(val name: TextView, val check: TextView)
+
+        val listView = android.widget.ListView(this).apply {
+            visibility = View.GONE
+            divider = null
+            dividerHeight = 0
+            isVerticalScrollBarEnabled = false
+            background = glass(16.dp, level = 1)
+            setPadding(4.dp, 6.dp, 4.dp, 6.dp)
+            clipToPadding = false
+            setOnTouchListener { v, ev ->
+                if (ev.actionMasked == MotionEvent.ACTION_DOWN || ev.actionMasked == MotionEvent.ACTION_MOVE) {
+                    v.parent?.requestDisallowInterceptTouchEvent(true)
+                }
+                false
+            }
+        }
+
+        val adapter = object : android.widget.BaseAdapter() {
+            override fun getCount() = filteredApps.size
+            override fun getItem(position: Int) = filteredApps[position]
+            override fun getItemId(position: Int) = position.toLong()
+            override fun getView(position: Int, convertView: View?, parent: android.view.ViewGroup): View {
+                val row: LinearLayout
+                val holder: AppRowHolder
+                if (convertView is LinearLayout && convertView.tag is AppRowHolder) {
+                    row = convertView
+                    holder = convertView.tag as AppRowHolder
+                } else {
+                    row = LinearLayout(this@MainActivity).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = Gravity.CENTER_VERTICAL
+                        setPadding(12.dp, 10.dp, 12.dp, 10.dp)
+                        background = ripple(null, 12.dp)
+                    }
+                    val nameTv = label("", 14.5f, p.fg).apply {
+                        maxLines = 1
+                        ellipsize = android.text.TextUtils.TruncateAt.END
+                    }
+                    val checkTv = label("", 12.5f, p.onAccent, bold = true).apply {
+                        gravity = Gravity.CENTER
+                    }
+                    row.addView(nameTv, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply { rightMargin = 10.dp })
+                    row.addView(checkTv, LinearLayout.LayoutParams(22.dp, 22.dp))
+                    holder = AppRowHolder(nameTv, checkTv)
+                    row.tag = holder
+                }
+                val (pkg, appLabel) = filteredApps[position]
+                val checked = pkg in selected
+                holder.name.text = appLabel
+                holder.check.text = if (checked) "✓" else ""
+                holder.check.background = if (checked && p.halo != 0) {
+                    GlowPill(p.fill or 0xFF000000.toInt(), p.fill or 0xFF000000.toInt(), p.fillStroke, p.halo, d)
+                } else {
+                    GradientDrawable().apply {
+                        cornerRadius = 8.dp.toFloat()
+                        if (checked) setColor(fillAccent)
+                        else {
+                            setColor(Color.TRANSPARENT)
+                            setStroke((1.5f * d).toInt().coerceAtLeast(1), Color.argb(120, Color.red(p.sub), Color.green(p.sub), Color.blue(p.sub)))
+                        }
+                    }
+                }
+                return row
+            }
+        }
+        listView.adapter = adapter
+        box.addView(listView, LinearLayout.LayoutParams(MATCH_PARENT, 340.dp))
+
+        fun applyFilter() {
+            val q = searchField.text?.toString()?.trim()?.lowercase().orEmpty()
+            filteredApps = if (q.isEmpty()) allApps
+            else allApps.filter { (pkg, lbl) -> lbl.lowercase().contains(q) || pkg.lowercase().contains(q) }
+            countLabel.text = if (selected.isEmpty()) "None selected" else "${selected.size} selected"
+            clearBtn.visibility = if (selected.isNotEmpty()) View.VISIBLE else View.GONE
+            adapter.notifyDataSetChanged()
+        }
+        refreshStatusAndList = ::applyFilter
+        applyFilter()
+
+        listView.setOnItemClickListener { _, _, position, _ ->
+            val (pkg, _) = filteredApps.getOrNull(position) ?: return@setOnItemClickListener
+            if (pkg in selected) selected.remove(pkg) else selected.add(pkg)
+            applyFilter()
+        }
+        searchField.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) { applyFilter() }
+            override fun afterTextChanged(s: android.text.Editable?) {}
+        })
+
+        var dismissed = false
         SolCubeDialog.Builder(this).setTitle(title)
-            .setMultiChoiceItems(list.map { it.second }.toTypedArray(), checked) { _, i, c -> checked[i] = c }
+            .setView(box)
             .setPositiveButton("Done") { _, _ ->
                 while (apps.length() > 0) apps.remove(0)
-                list.forEachIndexed { i, (pkg, _) -> if (checked[i]) apps.put(pkg) }
+                allApps.forEach { (pkg, _) -> if (pkg in selected) apps.put(pkg) }
+                selected.filter { pkg -> allApps.none { it.first == pkg } }.forEach { apps.put(it) }
                 done()
             }
             .setNegativeButton("Cancel", null)
+            .setOnDismissListener { dismissed = true }
             .show()
+
+        io.execute {
+            val launch = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+            val pkgs = packageManager.queryIntentActivities(launch, 0)
+                .map { it.activityInfo.applicationInfo }
+                .filter {
+                    !userOnly ||
+                        it.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM == 0 ||
+                        it.flags and android.content.pm.ApplicationInfo.FLAG_UPDATED_SYSTEM_APP != 0
+                }
+                .map { it.packageName }
+                .filter { it != packageName }
+                .toMutableSet()
+            pkgs += selected   // keep picks that have no launcher icon
+            val loaded = pkgs.map { it to appName(it) }
+                .sortedWith(compareBy({ it.first !in selected }, { it.second.lowercase() }))
+            main.post {
+                if (dismissed) return@post
+                allApps = loaded
+                loadingLabel.visibility = View.GONE
+                listView.visibility = View.VISIBLE
+                applyFilter()
+            }
+        }
     }
 
     private fun pickReviveApps(apps: org.json.JSONArray, done: () -> Unit) =
@@ -2144,58 +2726,41 @@ class MainActivity : Activity() {
 
     // ------------------------------------------------------------------ gestures (two-finger drawing)
 
-    private lateinit var gestList: LinearLayout
-    private lateinit var gestIgnoreText: TextView
+    private lateinit var gestIgnoreWrap: LinearLayout
     private lateinit var gestSensRow: LinearLayout
     private var gestUsedKey = ""
 
-    private fun addGestureSettings(body: LinearLayout) {
-        body.addView(label("Draw a big shape anywhere on the screen, with one or two fingers.",
-            12.5f, p.sub).apply { setPadding(0, 12.dp, 0, 0); setLineSpacing(2.dp.toFloat(), 1f) })
-        body.addView(label("Tap a gesture below to assign action(s).", 13.5f, p.fg, bold = true)
-            .apply { setPadding(0, 8.dp, 0, 0) })
-        body.addView(label("The app under your finger(s) still feels the touch, so a gesture can also scroll or move what's on screen a little.",
-            12f, p.sub).apply { setPadding(0, 6.dp, 0, 0) })
-        body.addView(pillButton("Try a gesture", filled = false) { tryGestures() },
-            LinearLayout.LayoutParams(MATCH_PARENT, 44.dp).apply { topMargin = 12.dp })
-
-        gestList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        body.addView(gestList)
-
-        body.addView(View(this).apply { setBackgroundColor(p.stroke) },
-            LinearLayout.LayoutParams(MATCH_PARENT, 1.dp).apply { topMargin = 14.dp })
-        body.addView(label("Sensitivity", 13f, p.fg, bold = true).apply { setPadding(0, 12.dp, 0, 0) })
-        gestSensRow = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        body.addView(gestSensRow)
-        renderGestureSens()
-
-        body.addView(Switch(this).apply {
-            text = "Short vibration when a gesture is recognised"
-            textSize = 13.5f
-            setTextColor(p.fg)
-            typeface = fontRegular
-            styleSwitch(this)
-            isChecked = GestureStore.vibrate(this@MainActivity)
-            setOnCheckedChangeListener { _, c -> io.execute { GestureStore.setVibrate(this@MainActivity, c) } }
-        }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 12.dp })
-
-        body.addView(label("Off in these apps", 13f, p.fg, bold = true).apply { setPadding(0, 12.dp, 0, 0) })
-        gestIgnoreText = label("", 12.5f, p.sub)
-        body.addView(gestIgnoreText)
-        body.addView(textButton("Pick apps") {
-            val a = GestureStore.ignore(this)
-            pickMultiApps("Gestures off in", a, userOnly = false) {
-                io.execute { GestureStore.setIgnore(this, a); main.post { renderGestureIgnore() } }
-            }
-        }, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { leftMargin = (-12).dp })
-        renderGestureIgnore()
-        renderGestureList()
-    }
-
     private fun renderGestureIgnore() {
+        gestIgnoreWrap.removeAllViews()
         val a = GestureStore.ignore(this)
-        gestIgnoreText.text = if (a.length() == 0) "None — gestures work everywhere (not on the lock screen)"
-        else (0 until a.length()).joinToString(", ") { appName(a.getString(it)) }
+        if (a.length() == 0) {
+            gestIgnoreWrap.addView(label("Active in all apps (never on lock screen)", 12.5f, p.sub))
+            return
+        }
+        val pkgs = (0 until a.length()).map { a.getString(it) }.sortedBy { appName(it).lowercase() }
+        val chips = pkgs.map { pkg ->
+            label("${appName(pkg)}  ×", 12.5f, p.fg, bold = false).apply {
+                typeface = fontMedium
+                gravity = Gravity.CENTER
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                setPadding(11.dp, 0, 11.dp, 0)
+                background = ripple(glass(15.dp, level = 2), 15.dp)
+                setOnClickListener {
+                    val updated = org.json.JSONArray()
+                    pkgs.filter { it != pkg }.forEach { updated.put(it) }
+                    io.execute {
+                        GestureStore.setIgnore(this@MainActivity, updated)
+                        main.post { renderGestureIgnore() }
+                    }
+                }
+            }
+        }
+        gestIgnoreWrap.addView(hScroll(*chips.toTypedArray()))
+        gestIgnoreWrap.addView(
+            label("${pkgs.size} app${if (pkgs.size == 1) "" else "s"} paused · tap an app to unpause", 11.5f, p.sub)
+                .apply { setPadding(0, 6.dp, 0, 0) },
+        )
     }
 
     private fun renderGestureSens() {
@@ -2230,79 +2795,297 @@ class MainActivity : Activity() {
         return null
     }
 
-    private fun renderGestureList() {
-        gestList.removeAllViews()
-        val used = usedGestures()
-        gestUsedKey = used.sorted().joinToString(",") + "|" + Routines.load(this).joinToString(",") {
-            it.optJSONObject("trigger")?.let { t -> t.optString("gesture") + t.optInt("fingers", 2) } ?: ""
-        }
-        for (fingers in listOf(1, 2)) {
-            val box = innerCard()
-            val header = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                clipChildren = false
-                clipToPadding = false
+    private fun gestureListKey(all: List<org.json.JSONObject> = Routines.load(this)): String {
+        val used = usedGestures().sorted().joinToString(",")
+        val routinesKey = all.mapNotNull { r ->
+            r.optJSONObject("trigger")?.takeIf { it.optString("type") == "gesture" }?.let { t ->
+                "${r.optString("id")}:${t.optString("gesture")}:${t.optInt("fingers", 2)}:${r.optBoolean("on", true)}:${r.optString("name")}:${r.optJSONArray("actions")}"
             }
-            header.addView(
-                label(if (fingers == 1) "One finger" else "Two fingers", 16f, p.fg, bold = true),
-                LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f),
-            )
-            val chevron = chevronBadge(false)
-            header.addView(chevron, LinearLayout.LayoutParams(30.dp, 30.dp).apply { leftMargin = 8.dp })
-            box.addView(header)
-
-            val body = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                clipChildren = false
-                clipToPadding = false
-            }
-            body.addView(label(if (fingers == 1)
-                "Draw anywhere with one finger. Only closed shapes, which ordinary scrolling can't draw. The rest are grayed out: tap one to see why."
-            else "Two fingers down at once, a little apart. Swipes, shapes and digits.",
-                12f, p.sub).apply { setPadding(0, 6.dp, 0, 0) })
-            for ((hdr, items) in GestureStore.groups(this, fingers)) {
-                body.addView(label(hdr, 13f, p.fg, bold = true).apply { setPadding(0, 12.dp, 0, 0) })
-                body.addView(hScroll(*items.map { (id, name) ->
-                    val block = gestureBlock(id, fingers)
-                    val mine = GestureStore.sampleCount(this, id)
-                    val text = if (mine > 0 && Gestures.builtinName(id) != null) "$name  ·  yours" else name
-                    chip(text, block == null && "$fingers:$id" in used) {
-                        if (block != null) gestureBlocked(id, fingers, block) else gestureOptions(id, fingers)
-                    }.apply { if (block != null) alpha = 0.35f }
-                }.toTypedArray()), LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 6.dp })
-            }
-            box.addView(body)
-            makeCollapsible("gestures_f$fingers", box, listOf(header), chevron, body, defaultOpen = false)
-            gestList.addView(box, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 14.dp })
-        }
-        gestList.addView(label("Highlighted = has action(s). Tap a gesture to change them or teach SolCube your way of drawing it.",
-            12f, p.sub).apply { setPadding(0, 8.dp, 0, 0) })
-        gestList.addView(textButton("Record a custom gesture") { recordGesture(null) { renderGestureList() } },
-            LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = 4.dp; leftMargin = (-12).dp })
+        }.joinToString(",")
+        val customKey = GestureStore.custom(this).joinToString(",") { "${it.first}:${it.second}" }
+        return "$used|$routinesKey|$customKey"
     }
 
-    /** A grayed-out gesture was tapped: say why (and offer the routine that holds it). */
-    private fun gestureBlocked(id: String, fingers: Int, why: String) {
-        val other = if (fingers == 1 && GestureStore.oneFingerWhy(this, id) != null) emptyList() else takenElsewhere(id, fingers)
-        val b = SolCubeDialog.Builder(this)
-            .setTitle("${GestureStore.name(this, id)} · ${GestureStore.fingersText(fingers)}")
-            .setMessage(why)
-        if (other.isNotEmpty()) b.setItems(other.map { "Edit “${it.optString("name")}”" }.toTypedArray()) { _, i -> editRoutine(other[i]) }
-        b.setNegativeButton("OK", null).show()
+    private fun deleteRoutines(ids: Set<String>, afterSave: (() -> Unit)? = null) {
+        if (ids.isEmpty()) return
+        val list = Routines.load(this).filter { it.optString("id") !in ids }.onEach {
+            if (it.optString("after") in ids) it.remove("after")
+            if (it.optString("unless") in ids) it.remove("unless")
+            it.optJSONObject("between")?.let { b ->
+                if (b.optString("start") in ids) b.remove("start")
+                if (b.optString("end") in ids) b.remove("end")
+                if (b.length() == 0) it.remove("between")
+            }
+            it.optJSONArray("actions")?.let { actsArr ->
+                for (ai in 0 until actsArr.length()) {
+                    val actObj = actsArr.optJSONObject(ai)
+                    if (actObj != null && actObj.optString("type") == "run_routine" && actObj.optString("routineId") in ids) {
+                        actObj.put("routineId", "")
+                    }
+                }
+            }
+        }
+        io.execute {
+            Routines.save(this, list)
+            afterSave?.invoke()
+            main.post {
+                gestUsedKey = ""
+                renderGestureList()
+                renderRoutineList()
+                render()
+                poll()
+            }
+        }
+    }
+
+    private fun renderGestureList() {
+        renderActiveGesturesList()
+    }
+
+    private fun renderActiveGesturesList() {
+        val listHost = gestActiveList ?: return
+        listHost.removeAllViews()
+        val all = Routines.load(this)
+        val gestureRoutines = all.filter { it.optJSONObject("trigger")?.optString("type") == "gesture" }
+        gestUsedKey = gestureListKey(all)
+        if (gestureRoutines.isEmpty()) {
+            listHost.addView(
+                label("No gestures assigned yet. Tap + Add gesture to pick a shape and choose what it does.", 12.5f, p.sub)
+                    .apply { setPadding(2.dp, 4.dp, 2.dp, 2.dp) },
+            )
+            return
+        }
+        val rtName: (String) -> String = { rid -> all.firstOrNull { it.optString("id") == rid }?.optString("name") ?: "?" }
+        gestureRoutines.forEach { r ->
+            val trig = r.optJSONObject("trigger") ?: return@forEach
+            val gid = trig.optString("gesture")
+            val fingers = trig.optInt("fingers", 2)
+            val on = r.optBoolean("on", true)
+            val name = r.optString("name").ifEmpty { GestureStore.name(this, gid) }
+            val shapeLabel = GestureStore.name(this, gid)
+            val actDesc = Routines.actionsText(r, ::appName, rtName)
+
+            val row = innerCard().apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(12.dp, 10.dp, 10.dp, 10.dp)
+                isClickable = true
+                isFocusable = true
+                setOnClickListener { editRoutine(r) }
+            }
+            val thumbBox = FrameLayout(this).apply {
+                background = glass(12.dp, level = 2)
+            }
+            thumbBox.addView(
+                GestureThumbView(this, gid, if (on) p.link else p.sub, if (on) p.accent else p.sub),
+                FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT),
+            )
+            row.addView(thumbBox, LinearLayout.LayoutParams(40.dp, 40.dp))
+
+            val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            val top = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+            top.addView(label(name, 15f, if (on) p.fg else p.sub, bold = true).apply {
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+            }, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
+            top.addView(label("${fingers}f", 11f, p.sub, bold = true).apply {
+                gravity = Gravity.CENTER
+                setPadding(6.dp, 1.dp, 6.dp, 1.dp)
+                background = glass(8.dp, level = 2)
+            }, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { leftMargin = 8.dp })
+            col.addView(top)
+            col.addView(label("$shapeLabel  →  $actDesc", 12f, p.sub).apply {
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                setPadding(0, 2.dp, 0, 0)
+            })
+            row.addView(col, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply { leftMargin = 12.dp; rightMargin = 8.dp })
+
+            val d = resources.displayMetrics.density
+            val gearBtn = object : View(this) {
+                private val strokeP = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                    style = android.graphics.Paint.Style.STROKE
+                    strokeWidth = 1.6f * d
+                    strokeCap = android.graphics.Paint.Cap.ROUND
+                    strokeJoin = android.graphics.Paint.Join.ROUND
+                    color = p.fg
+                }
+                private val toothP = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                    style = android.graphics.Paint.Style.STROKE
+                    strokeWidth = 1.9f * d
+                    strokeCap = android.graphics.Paint.Cap.ROUND
+                    color = p.fg
+                }
+                override fun onDraw(canvas: android.graphics.Canvas) {
+                    val cx = width * 0.5f
+                    val cy = height * 0.5f
+                    val innerR = 2.4f * d
+                    val bodyR = 5.0f * d
+                    val tipR = 6.9f * d
+                    canvas.drawCircle(cx, cy, innerR, strokeP)
+                    canvas.drawCircle(cx, cy, bodyR, strokeP)
+                    for (k in 0 until 8) {
+                        val ang = k * (Math.PI / 4.0)
+                        val cos = kotlin.math.cos(ang).toFloat()
+                        val sin = kotlin.math.sin(ang).toFloat()
+                        canvas.drawLine(cx + bodyR * cos, cy + bodyR * sin, cx + tipR * cos, cy + tipR * sin, toothP)
+                    }
+                }
+            }.apply {
+                contentDescription = "Gesture settings"
+                background = ripple(glass(16.dp), 16.dp)
+                isClickable = true
+                isFocusable = true
+                setOnClickListener { gestureOptions(r, gid, fingers) }
+            }
+            row.addView(gearBtn, LinearLayout.LayoutParams(32.dp, 32.dp))
+            row.addView(chip(if (on) "On" else "Off", on) {
+                r.put("on", !on)
+                Island.show(this, "$name ${if (!on) "on" else "off"}")
+                io.execute {
+                    Routines.save(this, all)
+                    main.post {
+                        renderActiveGesturesList()
+                        renderRoutineList()
+                        renderRoutines(last?.routines, last?.shell == Shell.State.READY)
+                        poll()
+                    }
+                }
+            }, LinearLayout.LayoutParams(WRAP_CONTENT, 32.dp).apply { leftMargin = 6.dp })
+
+            listHost.addView(row, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 8.dp })
+        }
+    }
+
+    private fun addGestureWizard() {
+        var selectedFingers = 2
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val modeRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val modeHint = label("", 12f, p.sub).apply { setPadding(0, 8.dp, 0, 0) }
+        val gridWrap = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        lateinit var dlg: android.app.Dialog
+
+        fun openForGesture(gid: String, fingers: Int) {
+            if (!enabled(gestSec)) {
+                toggle(gestSec)
+                toast("Screen gestures turned on")
+            }
+            editRoutine(
+                org.json.JSONObject()
+                    .put("id", Routines.newId())
+                    .put("name", GestureStore.name(this, gid))
+                    .put("on", true)
+                    .put("trigger", org.json.JSONObject().put("type", "gesture").put("gesture", gid).put("fingers", fingers))
+                    .put("actions", org.json.JSONArray()),
+                isNew = true,
+            )
+        }
+
+        fun rebuild() {
+            modeRow.removeAllViews()
+            modeRow.addView(chip("Two fingers", selectedFingers == 2) {
+                selectedFingers = 2
+                rebuild()
+            }, LinearLayout.LayoutParams(0, 34.dp, 1f))
+            modeRow.addView(chip("One finger", selectedFingers == 1) {
+                selectedFingers = 1
+                rebuild()
+            }, LinearLayout.LayoutParams(0, 34.dp, 1f).apply { leftMargin = 8.dp })
+
+            modeHint.text = if (selectedFingers == 2) {
+                "Draw anywhere with two fingers — swipes, shapes & digits."
+            } else {
+                "Closed shapes only (circle, square, triangle, 8) so normal scrolling never triggers them."
+            }
+
+            gridWrap.removeAllViews()
+            val used = usedGestures()
+            val activeStroke = if (p.fillStroke != 0) p.fillStroke else p.accent
+            val d = resources.displayMetrics.density
+            for ((hdr, items) in GestureStore.groups(this, selectedFingers)) {
+                val avail = items.filter { gestureBlock(it.first, selectedFingers) == null }
+                if (avail.isEmpty()) continue
+                gridWrap.addView(label(hdr, 13f, p.fg, bold = true).apply { setPadding(0, 12.dp, 0, 4.dp) })
+
+                avail.chunked(3).forEach { rowItems ->
+                    val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                    for (idx in 0 until 3) {
+                        if (idx < rowItems.size) {
+                            val (gid, name) = rowItems[idx]
+                            val isActive = "$selectedFingers:$gid" in used
+                            val tile = LinearLayout(this).apply {
+                                orientation = LinearLayout.VERTICAL
+                                gravity = Gravity.CENTER_HORIZONTAL
+                                setPadding(6.dp, 8.dp, 6.dp, 8.dp)
+                                background = if (isActive) {
+                                    LiquidGlass(p, 14f * d, isDark(), d, level = 1, stroke = activeStroke)
+                                } else {
+                                    glass(14.dp, level = 1)
+                                }
+                                isClickable = true
+                                isFocusable = true
+                                setOnClickListener {
+                                    dlg.dismiss()
+                                    openForGesture(gid, selectedFingers)
+                                }
+                            }
+                            tile.addView(
+                                GestureThumbView(
+                                    this, gid,
+                                    if (isActive) p.link else p.fg,
+                                    if (isActive) p.accent else p.link,
+                                ),
+                                LinearLayout.LayoutParams(34.dp, 34.dp),
+                            )
+                            tile.addView(label(name, 11.5f, if (isActive) p.link else p.fg, bold = isActive).apply {
+                                gravity = Gravity.CENTER
+                                maxLines = 1
+                                ellipsize = android.text.TextUtils.TruncateAt.END
+                            }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 4.dp })
+                            row.addView(tile, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply {
+                                if (idx > 0) leftMargin = 8.dp
+                            })
+                        } else {
+                            row.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f).apply {
+                                if (idx > 0) leftMargin = 8.dp
+                            })
+                        }
+                    }
+                    gridWrap.addView(row, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 8.dp })
+                }
+            }
+        }
+
+        box.addView(pillButton("Draw a custom shape", filled = false) {
+            dlg.dismiss()
+            recordGesture(null) { id ->
+                renderActiveGesturesList()
+                val f = if (gestureBlock(id, selectedFingers) == null) selectedFingers else 2
+                if (gestureBlock(id, f) == null) openForGesture(id, f)
+                else toast("Custom shape saved")
+            }
+        }, LinearLayout.LayoutParams(MATCH_PARENT, 42.dp).apply { bottomMargin = 12.dp })
+        box.addView(modeRow)
+        box.addView(modeHint)
+        box.addView(gridWrap)
+
+        rebuild()
+        dlg = SolCubeDialog.Builder(this).setTitle("Add gesture").setView(box).setNegativeButton("Cancel", null).show()
     }
 
     private fun renderGestures(st: org.json.JSONObject?, shellOk: Boolean) {
         val used = usedGestures()
-        val key = used.sorted().joinToString(",") + "|" + Routines.load(this).joinToString(",") {
-            it.optJSONObject("trigger")?.let { t -> t.optString("gesture") + t.optInt("fingers", 2) } ?: ""
+        val key = gestureListKey()
+        if (key != gestUsedKey) {
+            renderActiveGesturesList()
         }
-        if (key != gestUsedKey) renderGestureList()
         val on = enabled(gestSec)
-        val running = on && st?.optBoolean("gestures") == true
+        val paused = gesturePauseDepth > 0 && on
+        val running = on && !paused && st?.optBoolean("gestures") == true
         // one short line (the card face has room for ~25 characters); the last drawing is in Diagnostics
         showSection(gestSec, running = running, detail = when {
             !on -> "Off"
+            paused -> "Paused while testing"
             !shellOk -> "Waiting for Shizuku"
             used.isEmpty() -> "No gesture has an action"
             st == null -> "Starting…"
@@ -2331,14 +3114,20 @@ class MainActivity : Activity() {
     /** Draw on a pad and see what SolCube makes of it, with one or two fingers. */
     private fun tryGestures() {
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        box.addView(label("Draw like you would on the screen, with one or two fingers.", 12.5f, p.sub))
+        box.addView(label("Draw with one or two fingers — live gestures are paused while this pad is open.", 12.5f, p.sub))
         val pad = gesturePad("Draw a gesture")
         box.addView(pad, LinearLayout.LayoutParams(MATCH_PARENT, 300.dp).apply { topMargin = 10.dp })
         val result = label(" ", 15f, p.fg, bold = true).apply { gravity = Gravity.CENTER }
         box.addView(result, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 10.dp })
         val sub = label(" ", 12.5f, p.sub).apply { gravity = Gravity.CENTER }
         box.addView(sub, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        var pendingAction: (() -> Unit)? = null
+        val assignBtn = pillButton("Assign action", filled = true) { pendingAction?.invoke() }.apply {
+            visibility = View.GONE
+        }
+        box.addView(assignBtn, LinearLayout.LayoutParams(MATCH_PARENT, 42.dp).apply { topMargin = 12.dp })
         val used = usedGestures()
+        lateinit var dlg: android.app.Dialog
         pad.onDrawing = { d, f ->
             val fingers = if (f >= 2) 2 else 1
             val how = GestureStore.fingersText(fingers)
@@ -2348,13 +3137,44 @@ class MainActivity : Activity() {
                 result.text = "${GestureStore.name(this, id)}  ·  $how  ·  ${Math.round(r.score * 100)}%"
                 val block = gestureBlock(id, fingers)
                 result.setTextColor(if (block == null) p.ok else p.sub)
-                val by = GestureStore.routinesFor(this, id, fingers).map { it.optString("name") }
+                val by = GestureStore.routinesFor(this, id, fingers)
                 sub.text = when {
                     block != null -> "Not available with $how"
-                    by.isNotEmpty() -> "Runs: " + by.joinToString(", ") + (if ("$fingers:$id" !in used) " (turned off)" else "")
+                    by.isNotEmpty() -> "Runs: " + by.joinToString(", ") { it.optString("name") } + (if ("$fingers:$id" !in used) " (turned off)" else "")
                     else -> "Nothing assigned to it with $how yet"
                 }
+                if (block == null) {
+                    if (GestureStore.vibrate(this)) DoublePress.vibrateOnce(this)
+                    val existing = by.firstOrNull()
+                    assignBtn.text = if (existing != null) "Edit “${existing.optString("name")}”" else "Assign action"
+                    assignBtn.visibility = View.VISIBLE
+                    pendingAction = {
+                        dlg.dismiss()
+                        if (existing != null) {
+                            editRoutine(existing)
+                        } else {
+                            if (!enabled(gestSec)) {
+                                toggle(gestSec)
+                                toast("Screen gestures turned on")
+                            }
+                            editRoutine(
+                                org.json.JSONObject()
+                                    .put("id", Routines.newId())
+                                    .put("name", GestureStore.name(this, id))
+                                    .put("on", true)
+                                    .put("trigger", org.json.JSONObject().put("type", "gesture").put("gesture", id).put("fingers", fingers))
+                                    .put("actions", org.json.JSONArray()),
+                                isNew = true,
+                            )
+                        }
+                    }
+                } else {
+                    pendingAction = null
+                    assignBtn.visibility = View.GONE
+                }
             } else {
+                pendingAction = null
+                assignBtn.visibility = View.GONE
                 result.setTextColor(p.sub)
                 when {
                     fingers == 1 && !Gestures.closed(d) -> {
@@ -2373,38 +3193,44 @@ class MainActivity : Activity() {
                 }
             }
         }
-        SolCubeDialog.Builder(this).setTitle("Try a gesture").setView(box).setNegativeButton("Close", null).show()
+        pauseLiveGestures()
+        dlg = SolCubeDialog.Builder(this).setTitle("Try a gesture").setView(box)
+            .setNegativeButton("Close", null)
+            .setOnDismissListener { resumeLiveGestures() }
+            .show()
     }
 
-    private fun gestureOptions(id: String, fingers: Int) {
-        val name = GestureStore.name(this, id)
-        val mine = GestureStore.routinesFor(this, id, fingers)
-        val by = GestureStore.usedBy(this, id)
+    private fun gestureOptions(r: org.json.JSONObject, id: String, fingers: Int) {
+        val shapeName = GestureStore.name(this, id)
+        val rId = r.optString("id")
+        val rName = r.optString("name").ifEmpty { shapeName }
         val custom = Gestures.builtinName(id) == null
         val samples = GestureStore.sampleCount(this, id)
+        val all = Routines.load(this)
+        val rtName: (String) -> String = { rid -> all.firstOrNull { it.optString("id") == rid }?.optString("name") ?: "?" }
+        val actDesc = Routines.actionsText(r, ::appName, rtName).ifEmpty { "No actions yet" }
+
         val opts = mutableListOf<Pair<String, () -> Unit>>()
-        opts += (if (mine.isEmpty()) "Assign action(s)" else "Assign more action(s) (new routine)") to {
-            editRoutine(org.json.JSONObject()
-                .put("id", Routines.newId()).put("name", name).put("on", true)
-                .put("trigger", org.json.JSONObject().put("type", "gesture").put("gesture", id).put("fingers", fingers))
-                .put("actions", org.json.JSONArray()), isNew = true)
-        }
-        mine.forEach { r -> opts += "Edit “${r.optString("name")}”" to { editRoutine(r) } }
+        opts += "Edit" to { editRoutine(r) }
         if (!Gestures.isSwipe(id)) {
-            opts += (if (custom) "Add more drawings of it" else "Teach my way of drawing it") to { recordGesture(id) { renderGestureList() } }
-            if (!custom && samples > 0) opts += "Forget my drawings ($samples)" to {
-                io.execute { GestureStore.clearSamples(this, id); main.post { renderGestureList() } }
+            opts += (if (custom) "Add more drawings of it" else "Teach my way of drawing it") to {
+                recordGesture(id) { renderActiveGesturesList() }
+            }
+            if (!custom && samples > 0) {
+                opts += "Forget my drawings ($samples)" to {
+                    io.execute { GestureStore.clearSamples(this, id); main.post { gestUsedKey = ""; renderActiveGesturesList() } }
+                }
             }
         }
-        if (custom) opts += "Delete" to {
-            SolCubeDialog.Builder(this).setTitle("Delete “$name”?")
-                .setMessage(if (by.isEmpty()) "It isn't used by any routine." else "Used by: ${by.joinToString(", ")}. Those routines won't run until you pick another gesture.")
+        opts += "Delete" to {
+            val b = SolCubeDialog.Builder(this).setTitle("Delete “$rName”?")
+            if (custom || samples > 0) b.setMessage("Your saved drawings will be kept.")
+            b.setPositiveButton("Delete") { _, _ -> deleteRoutines(setOf(rId)) }
                 .setNegativeButton("Cancel", null)
-                .setPositiveButton("Delete") { _, _ -> io.execute { GestureStore.deleteCustom(this, id); main.post { renderGestureList() } } }
                 .show()
         }
-        SolCubeDialog.Builder(this).setTitle("$name · ${GestureStore.fingersText(fingers)}")
-            .setMessage(if (mine.isEmpty()) "Nothing assigned yet." else "Runs: " + mine.joinToString(", ") { it.optString("name") })
+        SolCubeDialog.Builder(this).setTitle("$rName · ${GestureStore.fingersText(fingers)}")
+            .setMessage("$shapeName  →  $actDesc")
             .setItems(opts.map { it.first }.toTypedArray()) { _, i -> opts[i].second() }
             .setNegativeButton("Close", null).show()
     }
@@ -2489,8 +3315,12 @@ class MainActivity : Activity() {
                 else -> "Looks distinct from the other gestures. Save it."
             }
         }
+        pauseLiveGestures()
         dlg = SolCubeDialog.Builder(this).setTitle(if (forId == null) "Custom gesture" else "Teach ${GestureStore.name(this, forId)}")
-            .setView(box).setNegativeButton("Cancel", null).show()
+            .setView(box)
+            .setNegativeButton("Cancel", null)
+            .setOnDismissListener { resumeLiveGestures() }
+            .show()
     }
 
     /** Gesture picker for a routine's trigger: one or two fingers, only what's available (plus recording a new one). */
@@ -3053,7 +3883,41 @@ class MainActivity : Activity() {
             if (isDark()) android.R.style.Theme_DeviceDefault_NoActionBar else android.R.style.Theme_DeviceDefault_Light_NoActionBar)
 
         val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        val titleView = label(if (isNew) "New routine" else "Edit routine", 26f, p.fg, bold = true)
+        val isGestInit = r.optJSONObject("trigger")?.optString("type") == "gesture"
+        val titleView = label(
+            if (isNew) (if (isGestInit) "New gesture" else "New routine")
+            else (if (isGestInit) "Edit gesture" else "Edit routine"),
+            26f, p.fg, bold = true,
+        )
+
+        val summaryCard = card()
+        summaryCard.addView(label("SUMMARY", 11.5f, p.link, bold = true).apply { letterSpacing = 0.08f })
+        val summaryText = label("", 14.5f, p.fg).apply { setLineSpacing(3.dp.toFloat(), 1f) }
+        summaryCard.addView(summaryText, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 5.dp })
+        body.addView(summaryCard, cardParams())
+
+        val rtNameMap: (String) -> String = { rid -> all.firstOrNull { it.optString("id") == rid }?.optString("name") ?: "?" }
+        fun updateSummary() {
+            val isGest = r.optJSONObject("trigger")?.optString("type") == "gesture"
+            titleView.text = if (isNew) (if (isGest) "New gesture" else "New routine")
+            else (if (isGest) "Edit gesture" else "Edit routine")
+            val (whenClause, doClause) = Routines.plainSummaryParts(
+                r, all, ::appName, { gid -> GestureStore.name(this, gid) }, rtNameMap,
+            )
+            val sb = android.text.SpannableStringBuilder()
+            fun appendAccent(word: String) {
+                val s = sb.length
+                sb.append(word)
+                sb.setSpan(android.text.style.StyleSpan(android.graphics.Typeface.BOLD), s, sb.length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                sb.setSpan(android.text.style.ForegroundColorSpan(p.link), s, sb.length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+            appendAccent("When")
+            sb.append(" ").append(whenClause).append(", ")
+            appendAccent("do")
+            sb.append(" ").append(doClause).append(".")
+            summaryText.text = sb
+        }
+
         val nameCard = card()
         nameCard.addView(label("Name", 14.5f, p.fg, bold = true))
         val nameField = android.widget.EditText(this).apply {
@@ -3076,6 +3940,7 @@ class MainActivity : Activity() {
 
         lateinit var rebuild: () -> Unit
         rebuild = {
+            updateSummary()
             dynamic.removeAllViews()
             val t = trig()
             val type = t.optString("type")
@@ -3086,8 +3951,10 @@ class MainActivity : Activity() {
             val trigName = if (type == "gesture") Routines.TRIGGERS[if (t.optInt("fingers", 2) == 1) "gesture1" else "gesture"]
                 else Routines.TRIGGERS[type]
             whenCard.addView(hScroll(chip("${trigName ?: "Pick trigger"}  ▾", true) {
-                val flatKeys = Routines.TRIGGER_GROUPS.flatMap { (_, items) -> items.map { it.first } }
-                val groups = Routines.TRIGGER_GROUPS.map { (hdr, items) -> hdr to items.map { it.second } }
+                val trigGroups = if (type == "gesture") Routines.TRIGGER_GROUPS
+                else Routines.TRIGGER_GROUPS.filter { it.first != "Gestures" }
+                val flatKeys = trigGroups.flatMap { (_, items) -> items.map { it.first } }
+                val groups = trigGroups.map { (hdr, items) -> hdr to items.map { it.second } }
                 SolCubeDialog.Builder(this).setTitle("When")
                     .setGroupedItems(groups) { _, w ->
                         val k = flatKeys[w]
@@ -3532,7 +4399,7 @@ class MainActivity : Activity() {
                 typeface = fontRegular
                 styleSwitch(this)
                 isChecked = r.optBoolean("once")
-                setOnCheckedChangeListener { _, c -> r.put("once", c) }
+                setOnCheckedChangeListener { _, c -> r.put("once", c); updateSummary() }
             }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 12.dp })
             dynamic.addView(ifCard, cardParams())
 
@@ -3558,7 +4425,16 @@ class MainActivity : Activity() {
         val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         buttons.addView(pillButton("Save", filled = true) {
             val list = commit()
-            io.execute { Routines.save(this, list); main.post { renderRoutineList(); poll() } }
+            io.execute {
+                Routines.save(this, list)
+                main.post {
+                    gestUsedKey = ""
+                    renderGestureList()
+                    renderRoutineList()
+                    render()
+                    poll()
+                }
+            }
             dlg.dismiss()
         }, LinearLayout.LayoutParams(0, 46.dp, 1f))
         buttons.addView(pillButton("Run now", filled = false) {
@@ -3566,31 +4442,20 @@ class MainActivity : Activity() {
             io.execute {
                 Routines.save(this, list)
                 val ok = routinesCmd("run $id") == "ok"
-                main.post { toast(if (ok) "Running “${r.optString("name")}”" else "Routines engine isn't running (Shizuku?)"); renderRoutineList() }
+                main.post {
+                    toast(if (ok) "Running “${r.optString("name")}”" else "Routines engine isn't running (Shizuku?)")
+                    gestUsedKey = ""
+                    renderGestureList()
+                    renderRoutineList()
+                    render()
+                }
             }
         }, LinearLayout.LayoutParams(0, 46.dp, 1f).apply { leftMargin = 8.dp })
         body.addView(buttons, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 20.dp })
         if (!isNew) body.addView(textButton("Delete routine") {
             SolCubeDialog.Builder(this).setMessage("Delete “${r.optString("name")}”?")
                 .setPositiveButton("Delete") { _, _ ->
-                    val list = all.filter { it.optString("id") != id }.onEach {
-                        if (it.optString("after") == id) it.remove("after")
-                        if (it.optString("unless") == id) it.remove("unless")
-                        it.optJSONObject("between")?.let { b ->
-                            if (b.optString("start") == id) b.remove("start")
-                            if (b.optString("end") == id) b.remove("end")
-                            if (b.length() == 0) it.remove("between")
-                        }
-                        it.optJSONArray("actions")?.let { actsArr ->
-                            for (ai in 0 until actsArr.length()) {
-                                val actObj = actsArr.optJSONObject(ai)
-                                if (actObj != null && actObj.optString("type") == "run_routine" && actObj.optString("routineId") == id) {
-                                    actObj.put("routineId", "")
-                                }
-                            }
-                        }
-                    }
-                    io.execute { Routines.save(this, list); main.post { renderRoutineList(); poll() } }
+                    deleteRoutines(setOf(id))
                     dlg.dismiss()
                 }.setNegativeButton("Cancel", null).show()
         }.apply { gravity = Gravity.CENTER }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 10.dp })
@@ -4025,6 +4890,7 @@ class MainActivity : Activity() {
         titleTopPx: Int,
         titleBottomGapPx: Int,
         bodySidePadPx: Int,
+        bodyRightPadPx: Int = bodySidePadPx,
         bodyBottomPadPx: Int,
         blurBelowTitlePx: Int,
         fadeBelowTitlePx: Int,
@@ -4033,7 +4899,11 @@ class MainActivity : Activity() {
         liftStartPx: Int = 0,
         liftSpanPx: Int = 1,
         initialScrollY: Int = 0,
+        container: FrameLayout? = null,
         onScrollReady: ((ScrollView) -> Unit)? = null,
+        onScrollChange: ((Int) -> Unit)? = null,
+        onLayersReady: ((backdrop: GlassBackdrop, scrollWrap: View) -> Unit)? = null,
+        onInsetsChange: ((topClearPx: Int, bottomInsetPx: Int) -> Unit)? = null,
     ): FrameLayout {
         titleView.measure(
             View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
@@ -4104,6 +4974,7 @@ class MainActivity : Activity() {
             clipToPadding = false
             addView(scroll, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
         }
+        onLayersReady?.invoke(bd, scrollWrap)
         val titleLp = FrameLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply {
             gravity = Gravity.TOP or Gravity.START
             leftMargin = titleLeftPx
@@ -4114,7 +4985,7 @@ class MainActivity : Activity() {
             body.setPadding(
                 bodySidePadPx,
                 topInset + titleTopPx + titleH + titleBottomGapPx,
-                bodySidePadPx,
+                bodyRightPadPx,
                 bodyBottomPadPx + bottomInset,
             )
             val wantTop = topInset + titleTopPx
@@ -4122,6 +4993,7 @@ class MainActivity : Activity() {
                 titleLp.topMargin = wantTop
                 titleView.layoutParams = titleLp
             }
+            onInsetsChange?.invoke(topInset + titleTopPx + titleH + 8.dp, bottomInset)
             val key = "$topInset:$bottomInset:$titleH"
             if (key != lastKey) {
                 lastKey = key
@@ -4148,6 +5020,7 @@ class MainActivity : Activity() {
         }
         scroll.setOnScrollChangeListener { _, _, y, _, _ ->
             bd.setScroll(y, scroll)
+            onScrollChange?.invoke(y)
             val want = if (y > 0 && headerPasses() > 0) headerBlur else null
             if (appliedBlur !== want) {
                 appliedBlur = want
@@ -4168,7 +5041,9 @@ class MainActivity : Activity() {
             }
         }
 
-        return FrameLayout(this).apply {
+        return (container ?: FrameLayout(this)).apply {
+            clipChildren = false
+            clipToPadding = false
             addView(bd, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
             addView(scrollWrap, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
             addView(titleView, titleLp)

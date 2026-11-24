@@ -108,7 +108,9 @@ class GlassBackdrop(context: Context, @Suppress("UNUSED_PARAMETER") base: Int = 
         invalidate()
         // only panes that are on screen: isShown is also true for ones scrolled out of view, and
         // re-drawing every pane on the page each frame cost most of the frame budget
-        for (v in glass.toList()) if (v.isShown && v.getGlobalVisibleRect(visRect)) v.invalidate()
+        for (v in glass.toList()) if (v.isShown && v.getGlobalVisibleRect(visRect)) {
+            if (v is BottomNavPill) v.invalidateBackdrop() else v.invalidate()
+        }
     }
 
     /** Sets the wallpaper uniforms on [s] (backdrop or glass shader). */
@@ -203,7 +205,7 @@ class GlassBackdrop(context: Context, @Suppress("UNUSED_PARAMETER") base: Int = 
         const val PARALLAX = 0.3f
         /** Both photos (grass + satin ribbon, dark and light) are fitted to the screen, then moved
          *  this far up (dp) and zoomed this much around the screen's middle (set by the user). */
-        private const val OFF_DP = 20f
+        private const val OFF_DP = 40f
         private const val ZOOM = 1.10f
         /** Blur (dp) seen through glass at nesting level 0, 1, 2. */
         val LEVEL_BLUR = floatArrayOf(10f, 17f, 24f)

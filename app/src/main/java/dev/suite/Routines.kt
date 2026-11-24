@@ -440,6 +440,85 @@ object Routines {
         }
     }
 
+    /** Human-readable (whenClause, doClause) pair for the routine/gesture editor banner. */
+    fun plainSummaryParts(
+        r: JSONObject,
+        all: List<JSONObject>,
+        appName: (String) -> String = { it },
+        gestureName: (String) -> String = { dev.suite.shell.Gestures.builtinName(it) ?: "custom gesture" },
+        routineName: (String) -> String = { rid -> all.firstOrNull { it.optString("id") == rid }?.optString("name") ?: "?" },
+    ): Pair<String, String> {
+        val t = r.optJSONObject("trigger") ?: JSONObject()
+        val ssids = strList(t.optJSONArray("ssids"))
+        val nets = if (ssids.isEmpty()) "(no network)" else ssids.joinToString(" or ")
+        val devs = strList(t.optJSONArray("devices"))
+        val devText = if (devs.isEmpty()) "any Bluetooth device" else devs.joinToString(" or ")
+        val apps = strList(t.optJSONArray("apps")).map(appName)
+        val appText = if (apps.isEmpty()) "(no app)" else apps.joinToString(" or ")
+        val type = t.optString("type")
+        val head = when (type) {
+            "wifi_connect" -> if (t.optBoolean("any")) "connecting to any Wi-Fi" else "connecting to $nets"
+            "wifi_disconnect" -> if (ssids.isEmpty()) "Wi-Fi disconnects" else "disconnecting from $nets"
+            "wifi_gone" -> "$nets is out of range for ${wifiGoneDurationText(wifiGoneSeconds(t))}"
+            "time" -> "it's ${t.optString("at", "?")}"
+            "wifi_off" -> "Wi-Fi is off (checked every ${t.optInt("minutes", 3)} min)"
+            "bt_connect" -> "$devText connects"
+            "bt_disconnect" -> "$devText disconnects"
+            "charging_on" -> {
+                val m = t.optString("mode", "any")
+                if (m == "any" || m.isEmpty()) "charger connects" else "charger (${m.uppercase()}) connects"
+            }
+            "charging_off" -> {
+                val m = t.optString("mode", "any")
+                if (m == "any" || m.isEmpty()) "charger disconnects" else "charger (${m.uppercase()}) disconnects"
+            }
+            "battery_below" -> "battery drops to ${t.optInt("percent", 20)}% or below"
+            "battery_above" -> "battery rises to ${t.optInt("percent", 80)}% or above"
+            "temp_above" -> "battery temp reaches ${t.optInt("temp", 42)} °C"
+            "temp_below" -> "battery temp cools to ${t.optInt("temp", 38)} °C"
+            "screen_off_for" -> "screen is off for ${t.optInt("minutes", 10)} min"
+            "app_open" -> "$appText opens"
+            "app_close" -> "$appText closes"
+            "gesture" -> t.optString("gesture").takeIf { it.isNotEmpty() }?.let { gid ->
+                "you draw ${gestureName(gid)} (${if (t.optInt("fingers", 2) == 1) "1 finger" else "2 fingers"})"
+            } ?: "a gesture is drawn (pick one below)"
+            else -> TRIGGERS[type]?.let { s ->
+                if (s.startsWith("Wi-Fi") || s.startsWith("Bluetooth") || s.startsWith("Do Not Disturb")) s
+                else s.replaceFirstChar { it.lowercase() }
+            } ?: "trigger fires"
+        }
+
+        val qualifiers = mutableListOf<String>()
+        days(r).takeIf { it.isNotEmpty() && it.size < 7 }?.let { qualifiers += "on ${dayText(it)}" }
+        val from = r.optString("from"); val to = r.optString("to")
+        if (from.isNotEmpty() && to.isNotEmpty()) qualifiers += "between $from and $to"
+        r.optJSONArray("conditions")?.takeIf { it.length() > 0 }?.let { cs ->
+            val joiner = if (r.optString("conditionsMode") == "any") " or " else " and "
+            qualifiers += "if " + (0 until cs.length()).joinToString(joiner) { conditionText(cs.getJSONObject(it), appName) }
+        }
+        r.optString("after").takeIf { it.isNotEmpty() }?.let { rid -> qualifiers += "after ${routineName(rid)}" }
+        r.optString("unless").takeIf { it.isNotEmpty() }?.let { rid -> qualifiers += "until ${routineName(rid)} runs" }
+        r.optJSONObject("between")?.let { b ->
+            val s = b.optString("start"); val e = b.optString("end")
+            if (s.isNotEmpty()) qualifiers += "after ${routineName(s)}"
+            if (e.isNotEmpty()) qualifiers += "before ${routineName(e)}"
+        }
+        if (r.optBoolean("once")) qualifiers += "once a day"
+        val whenClause = if (qualifiers.isEmpty()) head else "$head, ${qualifiers.joinToString(", ")}"
+
+        val acts = r.optJSONArray("actions")
+        val items = if (acts == null) emptyList() else (0 until acts.length()).map { i ->
+            Actions.describe(acts.getJSONObject(i), appName, routineName)
+        }
+        val doClause = when (items.size) {
+            0 -> "nothing yet (add an action below)"
+            1 -> items[0]
+            2 -> "${items[0]} and ${items[1]}"
+            else -> "${items.dropLast(1).joinToString(", ")}, and ${items.last()}"
+        }
+        return whenClause to doClause
+    }
+
     // ------------------------------------------------------------------ the user's routines (2026-11-15)
 
     private fun act(type: String, value: String = "") = JSONObject().put("type", type).apply { if (value.isNotEmpty()) put("value", value) }

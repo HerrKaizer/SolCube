@@ -111,6 +111,13 @@ final class GestureListener {
         minScore = Gestures.minScore(sens);
         vibrate = vib;
         on = enabled && !(u.isEmpty() && u1.isEmpty());
+        if (!on) {
+            drawing = false;
+            solo = false;
+            strokes.clear();
+            gen++;
+            spent = false;
+        }
         L.i("gestures: " + (on ? "listening for 2 fingers " + u + ", 1 finger " + u1 : enabled ? "on, but no routine uses one" : "off"));
         if (on && reader == null) start();
     }
@@ -320,6 +327,7 @@ final class GestureListener {
     }
 
     private static void fire(Gestures.Result r, int fingers, String time) {
+        if (!on) return;
         if (ShellActions.locked()) { L.i("gesture " + r.id + " ignored: locked"); return; }
         String front = ShellActions.frontTask().pkg;
         if (ignore.contains(front)) { L.i("gesture " + r.id + " ignored in " + front); return; }
