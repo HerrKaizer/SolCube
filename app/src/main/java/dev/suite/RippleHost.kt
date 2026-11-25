@@ -138,8 +138,7 @@ class RippleHost(private val ctx: Context) {
             out0.write("auth ${Ipc.mac(secret, "server|${auth[1]}|$ns")}\n".toByteArray()); out0.flush()
             val line = readLine(input) ?: return
             val p = line.trim().split(" ")
-            val isNav = p[0] == "ripple_nav"
-            if (p.size < 3 || (p[0] != "ripple" && !isNav)) return
+            if (p.size < 3 || p[0] != "ripple") return
             val fx = p[1].toFloatOrNull() ?: return
             val fy = p[2].toFloatOrNull() ?: return
             val len = p.getOrNull(3)?.toIntOrNull() ?: 0
@@ -154,14 +153,6 @@ class RippleHost(private val ctx: Context) {
                 input.readFully(data)
                 frame = decodeScreencap(data)
                 Log.i(TAG, "frame ${frame?.width}x${frame?.height} in ${android.os.SystemClock.uptimeMillis() - t0}ms")
-            }
-            if (isNav) {
-                it.soTimeout = 4500
-                val cmd = readLine(input)?.trim()
-                if (cmd != "go") {
-                    frame?.recycle()
-                    return
-                }
             }
             val cts = CountDownLatch(1)
             val start = CountDownLatch(1)
