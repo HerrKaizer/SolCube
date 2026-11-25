@@ -50,12 +50,11 @@ object SolCubeHost {
             val c = appCtx ?: return
             Components.reconcile(c)
             shizukuCheck(false)
-            // daily GitHub release check (Updates.check returns at once until a day has passed);
-            // a new version opens its pop-up once (allowed from the background: SolCube can draw over apps / a11y)
+            // twice-daily GitHub release check (Updates.check returns at once until 12 h have passed)
             runCatching {
                 Updates.check(c)?.let { r ->
-                    if (Updates.firstShow(c, r)) {
-                        c.startActivity(Intent(c, UpdateActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                    if (Updates.shouldNotify(c, r)) {
+                        Updates.notifyUpdate(c, r)
                     }
                 }
             }

@@ -42,7 +42,7 @@ public final class ShellActions {
         String type = a.optString("type");
         switch (type) {
             case "vibrate":
-                Haptics.done();
+                Haptics.routineDone();
                 return true;
             case "lock":
                 SysSettings.exec("input", "keyevent", "223");

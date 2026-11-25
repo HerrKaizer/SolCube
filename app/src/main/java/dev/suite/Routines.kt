@@ -182,20 +182,18 @@ object Routines {
             "not_playing" -> "Not playing"
             "in_call" -> "In call"
             "not_in_call" -> "Not in call"
-            else -> v.replaceFirstChar { it.uppercase() }
+            else -> if (type == "ringer" && v == "normal") "Ring" else v.replaceFirstChar { it.uppercase() }
         }
         return I18n.t(raw)
     }
 
     fun conditionText(c: JSONObject, appName: (String) -> String = { it }): String {
         val type = c.optString("type")
-        val ru = I18n.current() == I18n.LANG_RU
-        val pt = I18n.current() == I18n.LANG_PT
+        val gr = I18n.g()
         return when (type) {
             "battery" -> {
                 val op = if (c.optString("op", "below") == "above") "≥" else "≤"
-                val lbl = when { ru -> "Заряд"; pt -> "Bateria"; else -> "Battery" }
-                "$lbl $op ${c.optInt("value", 25)}%"
+                "${gr.batteryLabel} $op ${c.optInt("value", 25)}%"
             }
             "charging" -> {
                 val base = conditionValueText(type, c.optString("value", "charging"))
@@ -206,55 +204,32 @@ object Routines {
                 val ssids = strList(c.optJSONArray("ssids"))
                 val not = c.optString("op") == "not_connected"
                 when {
-                    ssids.isEmpty() -> when {
-                        ru -> if (not) "Не подключён к Wi-Fi" else "В любой сети Wi-Fi"
-                        pt -> if (not) "Sem Wi-Fi" else "Em qualquer Wi-Fi"
-                        else -> if (not) "Not on any Wi-Fi" else "On any Wi-Fi"
-                    }
-                    not -> when {
-                        ru -> "Не в ${ssids.joinToString("/")}"
-                        pt -> "Fora de ${ssids.joinToString("/")}"
-                        else -> "Not on ${ssids.joinToString("/")}"
-                    }
-                    else -> when {
-                        ru -> "В ${ssids.joinToString("/")}"
-                        pt -> "Em ${ssids.joinToString("/")}"
-                        else -> "On ${ssids.joinToString("/")}"
-                    }
+                    ssids.isEmpty() -> if (not) gr.wifiNotAnyLabel else gr.wifiAnyLabel
+                    not -> "${gr.wifiNotOnPrefix}${ssids.joinToString("/")}"
+                    else -> "${gr.wifiOnPrefix}${ssids.joinToString("/")}"
                 }
             }
             "bt_device" -> {
                 val devs = strList(c.optJSONArray("devices"))
                 val not = c.optString("op") == "not_connected"
                 when {
-                    devs.isEmpty() -> when {
-                        ru -> if (not) "Bluetooth не подключён" else "Любое устройство Bluetooth"
-                        pt -> if (not) "Nenhum Bluetooth" else "Qualquer Bluetooth"
-                        else -> if (not) "No BT connected" else "Any BT connected"
-                    }
-                    not -> "${devs.joinToString("/")} " + when { ru -> "откл."; pt -> "desconectado"; else -> "disconnected" }
-                    else -> "${devs.joinToString("/")} " + when { ru -> "подкл."; pt -> "conectado"; else -> "connected" }
+                    devs.isEmpty() -> if (not) gr.btNoneLabel else gr.btAnyLabel
+                    not -> "${devs.joinToString("/")} ${gr.btDiscSuffix}"
+                    else -> "${devs.joinToString("/")} ${gr.btConnSuffix}"
                 }
             }
             "app" -> {
                 val apps = strList(c.optJSONArray("apps")).map(appName)
                 val not = c.optString("op") == "not_in"
-                if (apps.isEmpty()) when { ru -> "Текущее приложение"; pt -> "App atual"; else -> "App condition" }
-                else if (not) when {
-                    ru -> "Не в ${apps.joinToString("/")}"
-                    pt -> "Fora de ${apps.joinToString("/")}"
-                    else -> "Not in ${apps.joinToString("/")}"
-                }
-                else when {
-                    ru -> "В ${apps.joinToString("/")}"
-                    pt -> "Em ${apps.joinToString("/")}"
-                    else -> "In ${apps.joinToString("/")}"
+                when {
+                    apps.isEmpty() -> gr.appEmptyCond
+                    not -> "${gr.appNotInPrefix}${apps.joinToString("/")}"
+                    else -> "${gr.appInPrefix}${apps.joinToString("/")}"
                 }
             }
             "temp" -> {
                 val op = if (c.optString("op", "above") == "below") "≤" else "≥"
-                val lbl = when { ru -> "Темп."; pt -> "Temp."; else -> "Temp" }
-                "$lbl $op ${c.optInt("value", 40)} °C"
+                "${gr.tempLabel} $op ${c.optInt("value", 40)} °C"
             }
             else -> {
                 val name = I18n.t(CONDITIONS[type] ?: type)
@@ -376,6 +351,7 @@ object Routines {
 
     fun config(ctx: Context): String = JSONObject().put("routines", JSONArray(load(ctx)))
         .put("gestures", GestureStore.config(ctx))
+        .put("haptics", HapticPrefs.toJson(ctx))
         .put("secret", Ipc.secret(ctx)).toString()
 
     fun newId() = "r" + System.currentTimeMillis().toString(36)
@@ -389,47 +365,173 @@ object Routines {
         else t.optInt("minutes", 10).coerceAtLeast(1) * 60
 
     fun wifiGoneDurationText(sec: Int): String {
-        val ru = I18n.current() == I18n.LANG_RU
-        return if (sec < 60) "$sec " + (if (ru) "с" else "sec").let { if (I18n.current() == I18n.LANG_PT) "s" else it }
-        else "${sec / 60} " + if (ru) "мин" else "min"
+        val gr = I18n.g()
+        return if (sec < 60) "$sec ${gr.secWord}" else "${sec / 60} ${gr.minUnit}"
+    }
+
+    fun wifiGoneForText(sec: Int): String {
+        val dur = wifiGoneDurationText(sec)
+        return when (I18n.current()) {
+            I18n.LANG_RU -> "В течение $dur"
+            I18n.LANG_PT -> "Por $dur"
+            I18n.LANG_PL -> "Przez $dur"
+            I18n.LANG_ES -> "Durante $dur"
+            I18n.LANG_DE -> "Für $dur"
+            I18n.LANG_FR -> "Pendant $dur"
+            I18n.LANG_IT -> "Per $dur"
+            I18n.LANG_ZH -> "持续 $dur"
+            else -> "For $dur"
+        }
     }
 
     fun summary(r: JSONObject, all: List<JSONObject>, appName: (String) -> String = { it },
-                gestureName: (String) -> String = { dev.suite.shell.Gestures.builtinName(it)?.let { g -> I18n.t(g) } ?: I18n.t("custom gesture") }): String {
+                gestureName: (String) -> String = { dev.suite.shell.Gestures.builtinName(it)?.let { g -> I18n.t(g) } ?: I18n.g().customGestureName }): String {
         val t = r.optJSONObject("trigger") ?: JSONObject()
-        val ru = I18n.current() == I18n.LANG_RU
-        val pt = I18n.current() == I18n.LANG_PT
-        val orWord = when { ru -> " или "; pt -> " ou "; else -> " or " }
+        val gr = I18n.g()
+        val c = gr.code
         val ssids = strList(t.optJSONArray("ssids"))
-        val nets = if (ssids.isEmpty()) when { ru -> "(сеть не задана)"; pt -> "(sem rede)"; else -> "(no network)" } else ssids.joinToString(orWord)
+        val nets = if (ssids.isEmpty()) when (c) {
+            I18n.LANG_RU -> "(сеть не задана)"
+            I18n.LANG_PT -> "(sem rede)"
+            I18n.LANG_PL -> "(brak sieci)"
+            I18n.LANG_ES -> "(sin red)"
+            I18n.LANG_DE -> "(kein Netzwerk)"
+            I18n.LANG_FR -> "(aucun réseau)"
+            I18n.LANG_IT -> "(nessuna rete)"
+            I18n.LANG_ZH -> "(未指定网络)"
+            else -> "(no network)"
+        } else ssids.joinToString(gr.orWord)
         val devs = strList(t.optJSONArray("devices"))
-        val devText = if (devs.isEmpty()) when { ru -> "любой Bluetooth"; pt -> "qualquer Bluetooth"; else -> "any Bluetooth" } else devs.joinToString(orWord)
+        val devText = if (devs.isEmpty()) when (c) {
+            I18n.LANG_RU -> "любой Bluetooth"
+            I18n.LANG_PT -> "qualquer Bluetooth"
+            I18n.LANG_PL -> "dowolny Bluetooth"
+            I18n.LANG_ES -> "cualquier Bluetooth"
+            I18n.LANG_DE -> "beliebiges Bluetooth"
+            I18n.LANG_FR -> "tout Bluetooth"
+            I18n.LANG_IT -> "qualsiasi Bluetooth"
+            I18n.LANG_ZH -> "任意蓝牙"
+            else -> "any Bluetooth"
+        } else devs.joinToString(gr.orWord)
         val apps = strList(t.optJSONArray("apps")).map(appName)
-        val appText = if (apps.isEmpty()) when { ru -> "(не выбрано)"; pt -> "(sem app)"; else -> "(no app)" } else apps.joinToString(orWord)
+        val appText = if (apps.isEmpty()) when (c) {
+            I18n.LANG_RU -> "(не выбрано)"
+            I18n.LANG_PT -> "(sem app)"
+            I18n.LANG_PL -> "(brak aplikacji)"
+            I18n.LANG_ES -> "(sin app)"
+            I18n.LANG_DE -> "(keine App)"
+            I18n.LANG_FR -> "(aucune app)"
+            I18n.LANG_IT -> "(nessuna app)"
+            I18n.LANG_ZH -> "(未选应用)"
+            else -> "(no app)"
+        } else apps.joinToString(gr.orWord)
         val head = when (t.optString("type")) {
-            "wifi_connect" -> when {
-                ru -> if (t.optBoolean("any")) "Подключение к любому Wi-Fi" else "Подключение к $nets"
-                pt -> if (t.optBoolean("any")) "Conecta a qualquer Wi-Fi" else "Conecta a $nets"
-                else -> if (t.optBoolean("any")) "Connects to any Wi-Fi" else "Connects to $nets"
+            "wifi_connect" -> if (t.optBoolean("any")) when (c) {
+                I18n.LANG_RU -> "Подключается к любому Wi-Fi"
+                I18n.LANG_PT -> "Conecta a qualquer Wi-Fi"
+                I18n.LANG_PL -> "Łączy się z dowolnym Wi-Fi"
+                I18n.LANG_ES -> "Se conecta a cualquier Wi-Fi"
+                I18n.LANG_DE -> "Verbindet mit beliebigem WLAN"
+                I18n.LANG_FR -> "Se connecte à tout Wi-Fi"
+                I18n.LANG_IT -> "Si connette a qualsiasi Wi-Fi"
+                I18n.LANG_ZH -> "连接到任意 Wi-Fi"
+                else -> "Connects to any Wi-Fi"
+            } else when (c) {
+                I18n.LANG_RU -> "Подключается к $nets"
+                I18n.LANG_PT -> "Conecta a $nets"
+                I18n.LANG_PL -> "Łączy się z $nets"
+                I18n.LANG_ES -> "Se conecta a $nets"
+                I18n.LANG_DE -> "Verbindet mit $nets"
+                I18n.LANG_FR -> "Se connecte à $nets"
+                I18n.LANG_IT -> "Si connette a $nets"
+                I18n.LANG_ZH -> "连接到 $nets"
+                else -> "Connects to $nets"
             }
-            "wifi_disconnect" -> when {
-                ru -> if (ssids.isEmpty()) "Отключение от Wi-Fi" else "Отключение от $nets"
-                pt -> if (ssids.isEmpty()) "Wi-Fi desconecta" else "Desconecta de $nets"
-                else -> if (ssids.isEmpty()) "Wi-Fi disconnects" else "Disconnects from $nets"
+            "wifi_disconnect" -> if (ssids.isEmpty()) when (c) {
+                I18n.LANG_RU -> "Wi-Fi отключается"
+                I18n.LANG_PT -> "Wi-Fi desconecta"
+                I18n.LANG_PL -> "Wi-Fi rozłącza się"
+                I18n.LANG_ES -> "El Wi-Fi se desconecta"
+                I18n.LANG_DE -> "WLAN trennt sich"
+                I18n.LANG_FR -> "Le Wi-Fi se déconnecte"
+                I18n.LANG_IT -> "Il Wi-Fi si disconnette"
+                I18n.LANG_ZH -> "Wi-Fi 断开"
+                else -> "Wi-Fi disconnects"
+            } else when (c) {
+                I18n.LANG_RU -> "Отключается от $nets"
+                I18n.LANG_PT -> "Desconecta de $nets"
+                I18n.LANG_PL -> "Rozłącza się z $nets"
+                I18n.LANG_ES -> "Se desconecta de $nets"
+                I18n.LANG_DE -> "Trennt sich von $nets"
+                I18n.LANG_FR -> "Se déconnecte de $nets"
+                I18n.LANG_IT -> "Si disconnette da $nets"
+                I18n.LANG_ZH -> "从 $nets 断开"
+                else -> "Disconnects from $nets"
             }
-            "wifi_gone" -> when {
-                ru -> "$nets вне зоны ${wifiGoneDurationText(wifiGoneSeconds(t))}"
-                pt -> "$nets fora de alcance por ${wifiGoneDurationText(wifiGoneSeconds(t))}"
-                else -> "$nets out of range for ${wifiGoneDurationText(wifiGoneSeconds(t))}"
+            "wifi_gone" -> {
+                val dur = wifiGoneDurationText(wifiGoneSeconds(t))
+                when (c) {
+                    I18n.LANG_RU -> "$nets вне зоны в течение $dur"
+                    I18n.LANG_PT -> "$nets fora de alcance por $dur"
+                    I18n.LANG_PL -> "$nets poza zasięgiem przez $dur"
+                    I18n.LANG_ES -> "$nets fuera de alcance durante $dur"
+                    I18n.LANG_DE -> "$nets außer Reichweite für $dur"
+                    I18n.LANG_FR -> "$nets hors de portée pendant $dur"
+                    I18n.LANG_IT -> "$nets fuori portata per $dur"
+                    I18n.LANG_ZH -> "$nets 离开范围 $dur"
+                    else -> "$nets out of range for $dur"
+                }
             }
-            "time" -> (when { ru -> "В "; pt -> "Às "; else -> "At " }) + t.optString("at", "?")
-            "wifi_off" -> when {
-                ru -> "Wi-Fi выкл. (каждые ${t.optInt("minutes", 3)} мин)"
-                pt -> "Wi-Fi desl. (a cada ${t.optInt("minutes", 3)} min)"
-                else -> "Wi-Fi is off (checked every ${t.optInt("minutes", 3)} min)"
+            "time" -> {
+                val at = t.optString("at", "?")
+                when (c) {
+                    I18n.LANG_RU -> "В $at"
+                    I18n.LANG_PT -> "Às $at"
+                    I18n.LANG_PL -> "O $at"
+                    I18n.LANG_ES -> "A las $at"
+                    I18n.LANG_DE -> "Um $at"
+                    I18n.LANG_FR -> "À $at"
+                    I18n.LANG_IT -> "Alle $at"
+                    I18n.LANG_ZH -> "在 $at"
+                    else -> "At $at"
+                }
             }
-            "bt_connect" -> when { ru -> "$devText подключается"; pt -> "$devText conecta"; else -> "$devText connects" }
-            "bt_disconnect" -> when { ru -> "$devText отключается"; pt -> "$devText desconecta"; else -> "$devText disconnects" }
+            "wifi_off" -> {
+                val mins = t.optInt("minutes", 3)
+                when (c) {
+                    I18n.LANG_RU -> "Wi-Fi выключен (проверка каждые $mins мин)"
+                    I18n.LANG_PT -> "Wi-Fi desativado (a cada $mins min)"
+                    I18n.LANG_PL -> "Wi-Fi wyłączone (co $mins min)"
+                    I18n.LANG_ES -> "Wi-Fi desactivado (cada $mins min)"
+                    I18n.LANG_DE -> "WLAN ist aus (alle $mins Min.)"
+                    I18n.LANG_FR -> "Wi-Fi désactivé (toutes les $mins min)"
+                    I18n.LANG_IT -> "Wi-Fi disattivo (ogni $mins min)"
+                    I18n.LANG_ZH -> "Wi-Fi 已关闭（每 $mins 分钟检查）"
+                    else -> "Wi-Fi is off (checked every $mins min)"
+                }
+            }
+            "bt_connect" -> when (c) {
+                I18n.LANG_RU -> "$devText подключается"
+                I18n.LANG_PT -> "$devText conecta"
+                I18n.LANG_PL -> "$devText łączy się"
+                I18n.LANG_ES -> "$devText se conecta"
+                I18n.LANG_DE -> "$devText verbindet sich"
+                I18n.LANG_FR -> "$devText se connecte"
+                I18n.LANG_IT -> "$devText si connette"
+                I18n.LANG_ZH -> "$devText 连接"
+                else -> "$devText connects"
+            }
+            "bt_disconnect" -> when (c) {
+                I18n.LANG_RU -> "$devText отключается"
+                I18n.LANG_PT -> "$devText desconecta"
+                I18n.LANG_PL -> "$devText rozłącza się"
+                I18n.LANG_ES -> "$devText se desconecta"
+                I18n.LANG_DE -> "$devText trennt sich"
+                I18n.LANG_FR -> "$devText se déconnecte"
+                I18n.LANG_IT -> "$devText si disconnette"
+                I18n.LANG_ZH -> "$devText 断开"
+                else -> "$devText disconnects"
+            }
             "charging_on" -> {
                 val m = t.optString("mode", "any")
                 val base = I18n.t("Charger connected")
@@ -440,47 +542,77 @@ object Routines {
                 val base = I18n.t("Charger disconnected")
                 if (m == "any" || m.isEmpty()) base else "$base (${I18n.t(m.uppercase())})"
             }
-            "battery_below" -> when {
-                ru -> "Заряд ≤ ${t.optInt("percent", 20)}%"
-                pt -> "Bateria ≤ ${t.optInt("percent", 20)}%"
-                else -> "Battery ≤ ${t.optInt("percent", 20)}%"
+            "battery_below" -> "${gr.batteryLabel} ≤ ${t.optInt("percent", 20)}%"
+            "battery_above" -> "${gr.batteryLabel} ≥ ${t.optInt("percent", 80)}%"
+            "temp_above" -> {
+                val tv = t.optInt("temp", 42)
+                when (c) {
+                    I18n.LANG_RU -> "Темп. батареи ≥ $tv °C"
+                    I18n.LANG_PT -> "Temp. da bateria ≥ $tv °C"
+                    I18n.LANG_PL -> "Temp. baterii ≥ $tv °C"
+                    I18n.LANG_ES -> "Temp. de batería ≥ $tv °C"
+                    I18n.LANG_DE -> "Akkutemp. ≥ $tv °C"
+                    I18n.LANG_FR -> "Temp. batterie ≥ $tv °C"
+                    I18n.LANG_IT -> "Temp. batteria ≥ $tv °C"
+                    I18n.LANG_ZH -> "电池温度 ≥ $tv °C"
+                    else -> "Battery temp ≥ $tv °C"
+                }
             }
-            "battery_above" -> when {
-                ru -> "Заряд ≥ ${t.optInt("percent", 80)}%"
-                pt -> "Bateria ≥ ${t.optInt("percent", 80)}%"
-                else -> "Battery ≥ ${t.optInt("percent", 80)}%"
+            "temp_below" -> {
+                val tv = t.optInt("temp", 38)
+                when (c) {
+                    I18n.LANG_RU -> "Темп. батареи ≤ $tv °C"
+                    I18n.LANG_PT -> "Temp. da bateria ≤ $tv °C"
+                    I18n.LANG_PL -> "Temp. baterii ≤ $tv °C"
+                    I18n.LANG_ES -> "Temp. de batería ≤ $tv °C"
+                    I18n.LANG_DE -> "Akkutemp. ≤ $tv °C"
+                    I18n.LANG_FR -> "Temp. batterie ≤ $tv °C"
+                    I18n.LANG_IT -> "Temp. batteria ≤ $tv °C"
+                    I18n.LANG_ZH -> "电池温度 ≤ $tv °C"
+                    else -> "Battery temp ≤ $tv °C"
+                }
             }
-            "temp_above" -> when {
-                ru -> "Темп. батареи ≥ ${t.optInt("temp", 42)} °C"
-                pt -> "Temp. bateria ≥ ${t.optInt("temp", 42)} °C"
-                else -> "Battery temp ≥ ${t.optInt("temp", 42)} °C"
+            "screen_off_for" -> {
+                val mins = t.optInt("minutes", 10)
+                when (c) {
+                    I18n.LANG_RU -> "Экран выключен $mins мин"
+                    I18n.LANG_PT -> "Tela desligada por $mins min"
+                    I18n.LANG_PL -> "Ekran wyłączony przez $mins min"
+                    I18n.LANG_ES -> "Pantalla apagada durante $mins min"
+                    I18n.LANG_DE -> "Bildschirm aus seit $mins Min."
+                    I18n.LANG_FR -> "Écran éteint pendant $mins min"
+                    I18n.LANG_IT -> "Schermo spento per $mins min"
+                    I18n.LANG_ZH -> "熄屏已达 $mins 分钟"
+                    else -> "Screen off for $mins min"
+                }
             }
-            "temp_below" -> when {
-                ru -> "Темп. батареи ≤ ${t.optInt("temp", 38)} °C"
-                pt -> "Temp. bateria ≤ ${t.optInt("temp", 38)} °C"
-                else -> "Battery temp ≤ ${t.optInt("temp", 38)} °C"
-            }
-            "screen_off_for" -> when {
-                ru -> "Экран выкл. ${t.optInt("minutes", 10)} мин"
-                pt -> "Tela desl. por ${t.optInt("minutes", 10)} min"
-                else -> "Screen off for ${t.optInt("minutes", 10)} min"
-            }
-            "app_open" -> when {
-                ru -> "При открытии $appText"
-                pt -> "Quando $appText abrir"
+            "app_open" -> when (c) {
+                I18n.LANG_RU -> "При открытии $appText"
+                I18n.LANG_PT -> "Quando $appText abre"
+                I18n.LANG_PL -> "Gdy otwiera się $appText"
+                I18n.LANG_ES -> "Cuando se abre $appText"
+                I18n.LANG_DE -> "Wenn $appText öffnet"
+                I18n.LANG_FR -> "À l'ouverture de $appText"
+                I18n.LANG_IT -> "Quando si apre $appText"
+                I18n.LANG_ZH -> "打开 $appText 时"
                 else -> "When $appText opens"
             }
-            "app_close" -> when {
-                ru -> "При закрытии $appText"
-                pt -> "Quando $appText fechar"
+            "app_close" -> when (c) {
+                I18n.LANG_RU -> "При закрытии $appText"
+                I18n.LANG_PT -> "Quando $appText fecha"
+                I18n.LANG_PL -> "Gdy zamyka się $appText"
+                I18n.LANG_ES -> "Cuando se cierra $appText"
+                I18n.LANG_DE -> "Wenn $appText schließt"
+                I18n.LANG_FR -> "À la fermeture de $appText"
+                I18n.LANG_IT -> "Quando si chiude $appText"
+                I18n.LANG_ZH -> "关闭 $appText 时"
                 else -> "When $appText closes"
             }
             "gesture" -> t.optString("gesture").takeIf { it.isNotEmpty() }?.let { gestureName(it) }
                 ?.let { g ->
                     val fStr = I18n.t(if (t.optInt("fingers", 2) == 1) "one finger" else "two fingers")
-                    val lbl = when { ru -> "Жест"; pt -> "Gesto"; else -> "Gesture" }
-                    "$lbl: $g ($fStr)"
-                } ?: when { ru -> "Жест (не выбран)"; pt -> "Gesto (nenhum)"; else -> "Gesture (none picked)" }
+                    "${gr.gesturePrefix}: $g ($fStr)"
+                } ?: gr.gestureNone
             else -> TRIGGERS[t.optString("type")]?.let { I18n.t(it) } ?: "?"
         }
         val parts = mutableListOf(head)
@@ -488,26 +620,34 @@ object Routines {
         val from = r.optString("from"); val to = r.optString("to")
         if (from.isNotEmpty() && to.isNotEmpty()) parts += "$from–$to"
         r.optJSONArray("conditions")?.takeIf { it.length() > 0 }?.let { cs ->
-            val joiner = if (r.optString("conditionsMode") == "any") when { ru -> " ИЛИ "; pt -> " OU "; else -> " OR " } else ", "
-            val ifW = when { ru -> "если "; pt -> "se "; else -> "if " }
-            parts += ifW + (0 until cs.length()).joinToString(joiner) { conditionText(cs.getJSONObject(it), appName) }
+            val joiner = if (r.optString("conditionsMode") == "any") " ${gr.orWord.trim().uppercase()} " else ", "
+            parts += gr.ifWord + (0 until cs.length()).joinToString(joiner) { conditionText(cs.getJSONObject(it), appName) }
         }
         r.optString("after").takeIf { it.isNotEmpty() }?.let { id ->
-            val pfx = when { ru -> "после "; pt -> "após "; else -> "after " }
-            parts += pfx + (all.firstOrNull { it.optString("id") == id }?.optString("name") ?: "?")
+            val nm = all.firstOrNull { it.optString("id") == id }?.optString("name") ?: "?"
+            parts += if (c == I18n.LANG_ZH) "$nm 之后" else gr.afterWord + nm
         }
         r.optString("unless").takeIf { it.isNotEmpty() }?.let { id ->
             val nm = all.firstOrNull { it.optString("id") == id }?.optString("name") ?: "?"
-            parts += when { ru -> "пока не сработает $nm"; pt -> "até $nm rodar"; else -> "until $nm runs" }
+            parts += when (c) {
+                I18n.LANG_RU -> "пока не сработает $nm"
+                I18n.LANG_PT -> "até $nm executar"
+                I18n.LANG_PL -> "dopóki nie uruchomi się $nm"
+                I18n.LANG_ES -> "hasta que se ejecute $nm"
+                I18n.LANG_DE -> "bis $nm läuft"
+                I18n.LANG_FR -> "jusqu'à ce que $nm s'exécute"
+                I18n.LANG_IT -> "finché $nm non si avvia"
+                I18n.LANG_ZH -> "直到 $nm 运行"
+                else -> "until $nm runs"
+            }
         }
         r.optJSONObject("between")?.let { b ->
             fun name(id: String) = all.firstOrNull { it.optString("id") == id }?.optString("name") ?: "?"
             val s = b.optString("start"); val e = b.optString("end")
             if (s.isNotEmpty() || e.isNotEmpty()) {
-                val pA = when { ru -> "после "; pt -> "após "; else -> "after " }
-                val pB = when { ru -> "до "; pt -> "antes de "; else -> "before " }
-                parts += listOfNotNull(s.takeIf { it.isNotEmpty() }?.let { pA + name(it) },
-                    e.takeIf { it.isNotEmpty() }?.let { pB + name(it) }).joinToString(" ")
+                val pA = s.takeIf { it.isNotEmpty() }?.let { if (c == I18n.LANG_ZH) "${name(it)} 之后" else gr.afterWord + name(it) }
+                val pB = e.takeIf { it.isNotEmpty() }?.let { if (c == I18n.LANG_ZH) "${name(it)} 之前" else gr.beforeWord + name(it) }
+                parts += listOfNotNull(pA, pB).joinToString(" ")
             }
         }
         return parts.joinToString(" · ")
@@ -538,148 +678,406 @@ object Routines {
         r: JSONObject,
         all: List<JSONObject>,
         appName: (String) -> String = { it },
-        gestureName: (String) -> String = { dev.suite.shell.Gestures.builtinName(it)?.let { g -> I18n.t(g) } ?: I18n.t("custom gesture") },
+        gestureName: (String) -> String = { dev.suite.shell.Gestures.builtinName(it)?.let { g -> I18n.t(g) } ?: I18n.g().customGestureName },
         routineName: (String) -> String = { rid -> all.firstOrNull { it.optString("id") == rid }?.optString("name") ?: "?" },
     ): Pair<String, String> {
         val t = r.optJSONObject("trigger") ?: JSONObject()
-        val ru = I18n.current() == I18n.LANG_RU
-        val pt = I18n.current() == I18n.LANG_PT
-        val orWord = when { ru -> " или "; pt -> " ou "; else -> " or " }
-        val andWord = when { ru -> " и "; pt -> " e "; else -> " and " }
+        val gr = I18n.g()
+        val c = gr.code
         val ssids = strList(t.optJSONArray("ssids"))
-        val nets = if (ssids.isEmpty()) when { ru -> "(сеть не задана)"; pt -> "(sem rede)"; else -> "(no network)" } else ssids.joinToString(orWord)
+        val nets = if (ssids.isEmpty()) when (c) {
+            I18n.LANG_RU -> "(сеть не задана)"
+            I18n.LANG_PT -> "(sem rede)"
+            I18n.LANG_PL -> "(brak sieci)"
+            I18n.LANG_ES -> "(sin red)"
+            I18n.LANG_DE -> "(kein Netzwerk)"
+            I18n.LANG_FR -> "(aucun réseau)"
+            I18n.LANG_IT -> "(nessuna rete)"
+            I18n.LANG_ZH -> "(未指定网络)"
+            else -> "(no network)"
+        } else ssids.joinToString(gr.orWord)
         val devs = strList(t.optJSONArray("devices"))
-        val devText = if (devs.isEmpty()) when { ru -> "любое устройство Bluetooth"; pt -> "qualquer dispositivo Bluetooth"; else -> "any Bluetooth device" } else devs.joinToString(orWord)
+        val devText = if (devs.isEmpty()) when (c) {
+            I18n.LANG_RU -> "любое устройство Bluetooth"
+            I18n.LANG_PT -> "qualquer dispositivo Bluetooth"
+            I18n.LANG_PL -> "dowolne urządzenie Bluetooth"
+            I18n.LANG_ES -> "cualquier dispositivo Bluetooth"
+            I18n.LANG_DE -> "ein beliebiges Bluetooth-Gerät"
+            I18n.LANG_FR -> "n'importe quel appareil Bluetooth"
+            I18n.LANG_IT -> "qualsiasi dispositivo Bluetooth"
+            I18n.LANG_ZH -> "任意蓝牙设备"
+            else -> "any Bluetooth device"
+        } else devs.joinToString(gr.orWord)
         val apps = strList(t.optJSONArray("apps")).map(appName)
-        val appText = if (apps.isEmpty()) when { ru -> "(приложение не выбрано)"; pt -> "(nenhum app)"; else -> "(no app)" } else apps.joinToString(orWord)
+        val appText = if (apps.isEmpty()) when (c) {
+            I18n.LANG_RU -> "(приложение не выбрано)"
+            I18n.LANG_PT -> "(nenhum app)"
+            I18n.LANG_PL -> "(brak aplikacji)"
+            I18n.LANG_ES -> "(ninguna app)"
+            I18n.LANG_DE -> "(keine App)"
+            I18n.LANG_FR -> "(aucune app)"
+            I18n.LANG_IT -> "(nessuna app)"
+            I18n.LANG_ZH -> "(未选应用)"
+            else -> "(no app)"
+        } else apps.joinToString(gr.orWord)
         val type = t.optString("type")
         val head = when (type) {
-            "wifi_connect" -> when {
-                ru -> if (t.optBoolean("any")) "телефон подключается к любому Wi-Fi" else "телефон подключается к $nets"
-                pt -> if (t.optBoolean("any")) "conectar a qualquer Wi-Fi" else "conectar a $nets"
-                else -> if (t.optBoolean("any")) "connecting to any Wi-Fi" else "connecting to $nets"
+            "wifi_connect" -> if (t.optBoolean("any")) when (c) {
+                I18n.LANG_RU -> "телефон подключается к любому Wi-Fi"
+                I18n.LANG_PT -> "o celular conecta a qualquer Wi-Fi"
+                I18n.LANG_PL -> "telefon łączy się z dowolnym Wi-Fi"
+                I18n.LANG_ES -> "el teléfono se conecta a cualquier Wi-Fi"
+                I18n.LANG_DE -> "WLAN sich mit beliebigem Netzwerk verbindet"
+                I18n.LANG_FR -> "le téléphone se connecte à tout Wi-Fi"
+                I18n.LANG_IT -> "il telefono si connette a qualsiasi Wi-Fi"
+                I18n.LANG_ZH -> "连接到任意 Wi-Fi"
+                else -> "connecting to any Wi-Fi"
+            } else when (c) {
+                I18n.LANG_RU -> "телефон подключается к $nets"
+                I18n.LANG_PT -> "o celular conecta a $nets"
+                I18n.LANG_PL -> "telefon łączy się z $nets"
+                I18n.LANG_ES -> "el teléfono se conecta a $nets"
+                I18n.LANG_DE -> "WLAN sich mit $nets verbindet"
+                I18n.LANG_FR -> "le téléphone se connecte à $nets"
+                I18n.LANG_IT -> "il telefono si connette a $nets"
+                I18n.LANG_ZH -> "连接到 $nets"
+                else -> "connecting to $nets"
             }
-            "wifi_disconnect" -> when {
-                ru -> if (ssids.isEmpty()) "Wi-Fi отключается" else "Wi-Fi отключается от $nets"
-                pt -> if (ssids.isEmpty()) "o Wi-Fi desconectar" else "desconectar de $nets"
-                else -> if (ssids.isEmpty()) "Wi-Fi disconnects" else "disconnecting from $nets"
+            "wifi_disconnect" -> if (ssids.isEmpty()) when (c) {
+                I18n.LANG_RU -> "Wi-Fi отключается"
+                I18n.LANG_PT -> "o Wi-Fi desconecta"
+                I18n.LANG_PL -> "Wi-Fi rozłącza się"
+                I18n.LANG_ES -> "el Wi-Fi se desconecta"
+                I18n.LANG_DE -> "WLAN sich trennt"
+                I18n.LANG_FR -> "le Wi-Fi se déconnecte"
+                I18n.LANG_IT -> "il Wi-Fi si disconnette"
+                I18n.LANG_ZH -> "Wi-Fi 断开连接"
+                else -> "Wi-Fi disconnects"
+            } else when (c) {
+                I18n.LANG_RU -> "Wi-Fi отключается от $nets"
+                I18n.LANG_PT -> "desconecta de $nets"
+                I18n.LANG_PL -> "Wi-Fi rozłącza się z $nets"
+                I18n.LANG_ES -> "se desconecta de $nets"
+                I18n.LANG_DE -> "WLAN sich von $nets trennt"
+                I18n.LANG_FR -> "le Wi-Fi se déconnecte de $nets"
+                I18n.LANG_IT -> "il Wi-Fi si disconnette da $nets"
+                I18n.LANG_ZH -> "从 $nets 断开"
+                else -> "disconnecting from $nets"
             }
-            "wifi_gone" -> when {
-                ru -> "сеть $nets недоступна в течение ${wifiGoneDurationText(wifiGoneSeconds(t))}"
-                pt -> "$nets ficar fora de alcance por ${wifiGoneDurationText(wifiGoneSeconds(t))}"
-                else -> "$nets is out of range for ${wifiGoneDurationText(wifiGoneSeconds(t))}"
+            "wifi_gone" -> {
+                val dur = wifiGoneDurationText(wifiGoneSeconds(t))
+                when (c) {
+                    I18n.LANG_RU -> "сеть $nets недоступна в течение $dur"
+                    I18n.LANG_PT -> "$nets fica fora de alcance por $dur"
+                    I18n.LANG_PL -> "sieć $nets jest poza zasięgiem przez $dur"
+                    I18n.LANG_ES -> "$nets está fuera de alcance durante $dur"
+                    I18n.LANG_DE -> "$nets seit $dur außer Reichweite ist"
+                    I18n.LANG_FR -> "$nets est hors de portée pendant $dur"
+                    I18n.LANG_IT -> "$nets è fuori portata per $dur"
+                    I18n.LANG_ZH -> "$nets 离开范围已达 $dur"
+                    else -> "$nets is out of range for $dur"
+                }
             }
-            "time" -> when {
-                ru -> "время достигает ${t.optString("at", "?")}"
-                pt -> "for ${t.optString("at", "?")}"
-                else -> "it's ${t.optString("at", "?")}"
+            "time" -> {
+                val at = t.optString("at", "?")
+                when (c) {
+                    I18n.LANG_RU -> "наступает $at"
+                    I18n.LANG_PT -> "são $at"
+                    I18n.LANG_PL -> "jest godzina $at"
+                    I18n.LANG_ES -> "son las $at"
+                    I18n.LANG_DE -> "es $at Uhr ist"
+                    I18n.LANG_FR -> "il est $at"
+                    I18n.LANG_IT -> "sono le $at"
+                    I18n.LANG_ZH -> "到达 $at"
+                    else -> "it's $at"
+                }
             }
-            "wifi_off" -> when {
-                ru -> "Wi-Fi выключен (проверка каждые ${t.optInt("minutes", 3)} мин)"
-                pt -> "o Wi-Fi estiver desligado (checando a cada ${t.optInt("minutes", 3)} min)"
-                else -> "Wi-Fi is off (checked every ${t.optInt("minutes", 3)} min)"
+            "wifi_off" -> {
+                val mins = t.optInt("minutes", 3)
+                when (c) {
+                    I18n.LANG_RU -> "Wi-Fi выключен (проверка каждые $mins мин)"
+                    I18n.LANG_PT -> "o Wi-Fi está desligado (verifica a cada $mins min)"
+                    I18n.LANG_PL -> "Wi-Fi jest wyłączone (co $mins min)"
+                    I18n.LANG_ES -> "el Wi-Fi está apagado (cada $mins min)"
+                    I18n.LANG_DE -> "WLAN aus ist (Prüfung alle $mins Min.)"
+                    I18n.LANG_FR -> "le Wi-Fi est désactivé (vérifié toutes les $mins min)"
+                    I18n.LANG_IT -> "il Wi-Fi è disattivo (controllo ogni $mins min)"
+                    I18n.LANG_ZH -> "Wi-Fi 已关闭（每 $mins 分钟检查）"
+                    else -> "Wi-Fi is off (checked every $mins min)"
+                }
             }
-            "bt_connect" -> when { ru -> "подключается $devText"; pt -> "$devText conectar"; else -> "$devText connects" }
-            "bt_disconnect" -> when { ru -> "отключается $devText"; pt -> "$devText desconectar"; else -> "$devText disconnects" }
+            "bt_connect" -> when (c) {
+                I18n.LANG_RU -> "подключается $devText"
+                I18n.LANG_PT -> "$devText conecta"
+                I18n.LANG_PL -> "łączy się $devText"
+                I18n.LANG_ES -> "se conecta $devText"
+                I18n.LANG_DE -> "$devText sich verbindet"
+                I18n.LANG_FR -> "$devText se connecte"
+                I18n.LANG_IT -> "si connette $devText"
+                I18n.LANG_ZH -> "$devText 连接"
+                else -> "$devText connects"
+            }
+            "bt_disconnect" -> when (c) {
+                I18n.LANG_RU -> "отключается $devText"
+                I18n.LANG_PT -> "$devText desconecta"
+                I18n.LANG_PL -> "rozłącza się $devText"
+                I18n.LANG_ES -> "se desconecta $devText"
+                I18n.LANG_DE -> "$devText sich trennt"
+                I18n.LANG_FR -> "$devText se déconnecte"
+                I18n.LANG_IT -> "si disconnette $devText"
+                I18n.LANG_ZH -> "$devText 断开"
+                else -> "$devText disconnects"
+            }
             "charging_on" -> {
                 val m = t.optString("mode", "any")
                 val ms = if (m == "any" || m.isEmpty()) "" else " (${I18n.t(m.uppercase())})"
-                when { ru -> "подключается зарядка$ms"; pt -> "o carregador$ms conectar"; else -> "charger$ms connects" }
+                when (c) {
+                    I18n.LANG_RU -> "подключается зарядка$ms"
+                    I18n.LANG_PT -> "o carregador$ms conecta"
+                    I18n.LANG_PL -> "podłączona jest ładowarka$ms"
+                    I18n.LANG_ES -> "se conecta el cargador$ms"
+                    I18n.LANG_DE -> "ein Ladegerät$ms angeschlossen wird"
+                    I18n.LANG_FR -> "le chargeur$ms est branché"
+                    I18n.LANG_IT -> "il caricatore$ms è collegato"
+                    I18n.LANG_ZH -> "接入充电器$ms"
+                    else -> "charger$ms connects"
+                }
             }
             "charging_off" -> {
                 val m = t.optString("mode", "any")
                 val ms = if (m == "any" || m.isEmpty()) "" else " (${I18n.t(m.uppercase())})"
-                when { ru -> "отключается зарядка$ms"; pt -> "o carregador$ms desconectar"; else -> "charger$ms disconnects" }
+                when (c) {
+                    I18n.LANG_RU -> "отключается зарядка$ms"
+                    I18n.LANG_PT -> "o carregador$ms desconecta"
+                    I18n.LANG_PL -> "odłączona jest ładowarka$ms"
+                    I18n.LANG_ES -> "se desconecta el cargador$ms"
+                    I18n.LANG_DE -> "das Ladegerät$ms getrennt wird"
+                    I18n.LANG_FR -> "le chargeur$ms est débranché"
+                    I18n.LANG_IT -> "il caricatore$ms viene scollegato"
+                    I18n.LANG_ZH -> "拔下充电器$ms"
+                    else -> "charger$ms disconnects"
+                }
             }
-            "battery_below" -> when {
-                ru -> "заряд опускается до ${t.optInt("percent", 20)}% или ниже"
-                pt -> "a bateria cair para ${t.optInt("percent", 20)}% ou menos"
-                else -> "battery drops to ${t.optInt("percent", 20)}% or below"
+            "battery_below" -> {
+                val pct = t.optInt("percent", 20)
+                when (c) {
+                    I18n.LANG_RU -> "заряд опускается до $pct% или ниже"
+                    I18n.LANG_PT -> "a bateria cai para $pct% ou menos"
+                    I18n.LANG_PL -> "bateria spada do $pct% lub niżej"
+                    I18n.LANG_ES -> "la batería baja al $pct% o menos"
+                    I18n.LANG_DE -> "der Akku auf $pct% oder weniger fällt"
+                    I18n.LANG_FR -> "la batterie descend à $pct% ou moins"
+                    I18n.LANG_IT -> "la batteria scende al $pct% o meno"
+                    I18n.LANG_ZH -> "电量降至 $pct% 或更低"
+                    else -> "battery drops to $pct% or below"
+                }
             }
-            "battery_above" -> when {
-                ru -> "заряд поднимается до ${t.optInt("percent", 80)}% или выше"
-                pt -> "a bateria subir para ${t.optInt("percent", 80)}% ou mais"
-                else -> "battery rises to ${t.optInt("percent", 80)}% or above"
+            "battery_above" -> {
+                val pct = t.optInt("percent", 80)
+                when (c) {
+                    I18n.LANG_RU -> "заряд поднимается до $pct% или выше"
+                    I18n.LANG_PT -> "a bateria sobe para $pct% ou mais"
+                    I18n.LANG_PL -> "bateria rośnie do $pct% lub wyżej"
+                    I18n.LANG_ES -> "la batería sube al $pct% o más"
+                    I18n.LANG_DE -> "der Akku auf $pct% oder mehr steigt"
+                    I18n.LANG_FR -> "la batterie monte à $pct% ou plus"
+                    I18n.LANG_IT -> "la batteria sale al $pct% o più"
+                    I18n.LANG_ZH -> "电量升至 $pct% 或更高"
+                    else -> "battery rises to $pct% or above"
+                }
             }
-            "temp_above" -> when {
-                ru -> "температура батареи достигает ${t.optInt("temp", 42)} °C"
-                pt -> "a bateria atingir ${t.optInt("temp", 42)} °C"
-                else -> "battery temp reaches ${t.optInt("temp", 42)} °C"
+            "temp_above" -> {
+                val tv = t.optInt("temp", 42)
+                when (c) {
+                    I18n.LANG_RU -> "температура батареи достигает $tv °C"
+                    I18n.LANG_PT -> "a bateria atinge $tv °C"
+                    I18n.LANG_PL -> "temperatura baterii osiąga $tv °C"
+                    I18n.LANG_ES -> "la batería alcanza $tv °C"
+                    I18n.LANG_DE -> "die Akkutemperatur $tv °C erreicht"
+                    I18n.LANG_FR -> "la batterie atteint $tv °C"
+                    I18n.LANG_IT -> "la batteria raggiunge $tv °C"
+                    I18n.LANG_ZH -> "电池温度升至 $tv °C"
+                    else -> "battery temp reaches $tv °C"
+                }
             }
-            "temp_below" -> when {
-                ru -> "температура батареи снижается до ${t.optInt("temp", 38)} °C"
-                pt -> "a bateria esfriar para ${t.optInt("temp", 38)} °C"
-                else -> "battery temp cools to ${t.optInt("temp", 38)} °C"
+            "temp_below" -> {
+                val tv = t.optInt("temp", 38)
+                when (c) {
+                    I18n.LANG_RU -> "температура батареи снижается до $tv °C"
+                    I18n.LANG_PT -> "a bateria esfria para $tv °C"
+                    I18n.LANG_PL -> "temperatura baterii spada do $tv °C"
+                    I18n.LANG_ES -> "la batería baja a $tv °C"
+                    I18n.LANG_DE -> "die Akkutemperatur auf $tv °C sinkt"
+                    I18n.LANG_FR -> "la batterie descend à $tv °C"
+                    I18n.LANG_IT -> "la batteria scende a $tv °C"
+                    I18n.LANG_ZH -> "电池温度降至 $tv °C"
+                    else -> "battery temp cools to $tv °C"
+                }
             }
-            "screen_off_for" -> when {
-                ru -> "экран выключен ${t.optInt("minutes", 10)} мин"
-                pt -> "a tela ficar desligada por ${t.optInt("minutes", 10)} min"
-                else -> "screen is off for ${t.optInt("minutes", 10)} min"
+            "screen_off_for" -> {
+                val mins = t.optInt("minutes", 10)
+                when (c) {
+                    I18n.LANG_RU -> "экран выключен $mins мин"
+                    I18n.LANG_PT -> "a tela fica desligada por $mins min"
+                    I18n.LANG_PL -> "ekran jest wyłączony przez $mins min"
+                    I18n.LANG_ES -> "la pantalla está apagada durante $mins min"
+                    I18n.LANG_DE -> "der Bildschirm seit $mins Min. aus ist"
+                    I18n.LANG_FR -> "l'écran est éteint pendant $mins min"
+                    I18n.LANG_IT -> "lo schermo resta spento per $mins min"
+                    I18n.LANG_ZH -> "熄屏已达 $mins 分钟"
+                    else -> "screen is off for $mins min"
+                }
             }
-            "app_open" -> when { ru -> "открывается $appText"; pt -> "$appText abrir"; else -> "$appText opens" }
-            "app_close" -> when { ru -> "закрывается $appText"; pt -> "$appText fechar"; else -> "$appText closes" }
+            "app_open" -> when (c) {
+                I18n.LANG_RU -> "открывается $appText"
+                I18n.LANG_PT -> "$appText abre"
+                I18n.LANG_PL -> "otwiera się $appText"
+                I18n.LANG_ES -> "se abre $appText"
+                I18n.LANG_DE -> "$appText geöffnet wird"
+                I18n.LANG_FR -> "$appText s'ouvre"
+                I18n.LANG_IT -> "si apre $appText"
+                I18n.LANG_ZH -> "打开 $appText"
+                else -> "$appText opens"
+            }
+            "app_close" -> when (c) {
+                I18n.LANG_RU -> "закрывается $appText"
+                I18n.LANG_PT -> "$appText fecha"
+                I18n.LANG_PL -> "zamyka się $appText"
+                I18n.LANG_ES -> "se cierra $appText"
+                I18n.LANG_DE -> "$appText geschlossen wird"
+                I18n.LANG_FR -> "$appText se ferme"
+                I18n.LANG_IT -> "si chiude $appText"
+                I18n.LANG_ZH -> "关闭 $appText"
+                else -> "$appText closes"
+            }
             "gesture" -> t.optString("gesture").takeIf { it.isNotEmpty() }?.let { gid ->
                 val gName = gestureName(gid)
                 val fStr = I18n.t(if (t.optInt("fingers", 2) == 1) "one finger" else "two fingers")
-                when {
-                    ru -> "вы рисуете «$gName» ($fStr)"
-                    pt -> "você desenhar $gName ($fStr)"
+                when (c) {
+                    I18n.LANG_RU -> "вы рисуете «$gName» ($fStr)"
+                    I18n.LANG_PT -> "você desenha “$gName” ($fStr)"
+                    I18n.LANG_PL -> "narysujesz „$gName” ($fStr)"
+                    I18n.LANG_ES -> "dibujas “$gName” ($fStr)"
+                    I18n.LANG_DE -> "du „$gName“ zeichnest ($fStr)"
+                    I18n.LANG_FR -> "vous tracez « $gName » ($fStr)"
+                    I18n.LANG_IT -> "disegni “$gName” ($fStr)"
+                    I18n.LANG_ZH -> "你绘制“$gName”（$fStr）"
                     else -> "you draw $gName ($fStr)"
                 }
-            } ?: when {
-                ru -> "нарисован жест (выберите фигуру ниже)"
-                pt -> "um gesto for desenhado (escolha abaixo)"
+            } ?: when (c) {
+                I18n.LANG_RU -> "нарисован жест (выберите фигуру ниже)"
+                I18n.LANG_PT -> "um gesto é desenhado (escolha abaixo)"
+                I18n.LANG_PL -> "zostaje narysowany gest (wybierz kształt poniżej)"
+                I18n.LANG_ES -> "dibujas un gesto (elige uno abajo)"
+                I18n.LANG_DE -> "eine Geste gezeichnet wird (unten wählen)"
+                I18n.LANG_FR -> "un geste est tracé (choisissez ci-dessous)"
+                I18n.LANG_IT -> "disegni un gesto (scegli sotto)"
+                I18n.LANG_ZH -> "绘制手势（在下方选择形状）"
                 else -> "a gesture is drawn (pick one below)"
             }
             else -> TRIGGERS[type]?.let { en ->
                 val tr = I18n.t(en)
-                if (tr.startsWith("Wi-Fi") || tr.startsWith("Bluetooth") || tr.startsWith("Do Not Disturb") || tr.startsWith("Shizuku")) tr
-                else tr.replaceFirstChar { it.lowercase() }
-            } ?: when { ru -> "срабатывает триггер"; pt -> "o gatilho disparar"; else -> "trigger fires" }
+                if (c == I18n.LANG_DE || c == I18n.LANG_ZH ||
+                    tr.startsWith("Wi-Fi") || tr.startsWith("WLAN") ||
+                    tr.startsWith("Bluetooth") || tr.startsWith("Shizuku") ||
+                    tr.startsWith("Do Not Disturb") || tr.startsWith("Не беспокоить") ||
+                    tr.startsWith("«Не беспокоить»") || tr.startsWith("Nie przeszkadzać") ||
+                    tr.startsWith("Não perturbe") || tr.startsWith("No molestar") ||
+                    tr.startsWith("Ne pas déranger") || tr.startsWith("Non disturbare")
+                ) tr else tr.replaceFirstChar { it.lowercase() }
+            } ?: when (c) {
+                I18n.LANG_RU -> "срабатывает триггер"
+                I18n.LANG_PT -> "o gatilho dispara"
+                I18n.LANG_PL -> "działa wyzwalacz"
+                I18n.LANG_ES -> "se activa el activador"
+                I18n.LANG_DE -> "der Auslöser greift"
+                I18n.LANG_FR -> "le déclencheur s'active"
+                I18n.LANG_IT -> "scatta l'attivatore"
+                I18n.LANG_ZH -> "触发条件满足"
+                else -> "trigger fires"
+            }
         }
 
         val qualifiers = mutableListOf<String>()
         days(r).takeIf { it.isNotEmpty() && it.size < 7 }?.let { d ->
-            qualifiers += when { ru -> "по ${dayText(d)}"; pt -> "em ${dayText(d)}"; else -> "on ${dayText(d)}" }
+            val dt = dayText(d)
+            qualifiers += when (c) {
+                I18n.LANG_RU -> "по $dt"
+                I18n.LANG_PT -> "em $dt"
+                I18n.LANG_PL -> "w $dt"
+                I18n.LANG_ES -> "los $dt"
+                I18n.LANG_DE -> "an $dt"
+                I18n.LANG_FR -> "les $dt"
+                I18n.LANG_IT -> "di $dt"
+                I18n.LANG_ZH -> "在 $dt"
+                else -> "on $dt"
+            }
         }
         val from = r.optString("from"); val to = r.optString("to")
         if (from.isNotEmpty() && to.isNotEmpty()) {
-            qualifiers += when { ru -> "с $from до $to"; pt -> "entre $from e $to"; else -> "between $from and $to" }
+            qualifiers += when (c) {
+                I18n.LANG_RU -> "с $from до $to"
+                I18n.LANG_PT -> "entre $from e $to"
+                I18n.LANG_PL -> "między $from a $to"
+                I18n.LANG_ES -> "entre las $from y $to"
+                I18n.LANG_DE -> "zwischen $from und $to"
+                I18n.LANG_FR -> "entre $from et $to"
+                I18n.LANG_IT -> "tra le $from e le $to"
+                I18n.LANG_ZH -> "在 $from 至 $to 之间"
+                else -> "between $from and $to"
+            }
         }
         r.optJSONArray("conditions")?.takeIf { it.length() > 0 }?.let { cs ->
-            val joiner = if (r.optString("conditionsMode") == "any") orWord else andWord
-            val ifW = when { ru -> "если "; pt -> "se "; else -> "if " }
-            qualifiers += ifW + (0 until cs.length()).joinToString(joiner) { conditionText(cs.getJSONObject(it), appName) }
+            val joiner = if (r.optString("conditionsMode") == "any") gr.orWord else gr.andWord
+            qualifiers += gr.ifWord + (0 until cs.length()).joinToString(joiner) { conditionText(cs.getJSONObject(it), appName) }
         }
         r.optString("after").takeIf { it.isNotEmpty() }?.let { rid ->
-            val pfx = when { ru -> "после "; pt -> "após "; else -> "after " }
-            qualifiers += "$pfx${routineName(rid)}"
+            val nm = routineName(rid)
+            qualifiers += if (c == I18n.LANG_ZH) "$nm 之后" else "${gr.afterWord}$nm"
         }
         r.optString("unless").takeIf { it.isNotEmpty() }?.let { rid ->
             val nm = routineName(rid)
-            qualifiers += when { ru -> "пока не сработает $nm"; pt -> "até $nm rodar"; else -> "until $nm runs" }
+            qualifiers += when (c) {
+                I18n.LANG_RU -> "пока не сработает $nm"
+                I18n.LANG_PT -> "até $nm executar"
+                I18n.LANG_PL -> "dopóki nie uruchomi się $nm"
+                I18n.LANG_ES -> "hasta que se ejecute $nm"
+                I18n.LANG_DE -> "bis $nm läuft"
+                I18n.LANG_FR -> "jusqu'à ce que $nm s'exécute"
+                I18n.LANG_IT -> "finché $nm non si avvia"
+                I18n.LANG_ZH -> "直到 $nm 运行"
+                else -> "until $nm runs"
+            }
         }
         r.optJSONObject("between")?.let { b ->
             val s = b.optString("start"); val e = b.optString("end")
-            if (s.isNotEmpty()) qualifiers += (when { ru -> "после "; pt -> "após "; else -> "after " }) + routineName(s)
-            if (e.isNotEmpty()) qualifiers += (when { ru -> "до "; pt -> "antes de "; else -> "before " }) + routineName(e)
+            if (s.isNotEmpty()) qualifiers += if (c == I18n.LANG_ZH) "${routineName(s)} 之后" else gr.afterWord + routineName(s)
+            if (e.isNotEmpty()) qualifiers += if (c == I18n.LANG_ZH) "${routineName(e)} 之前" else gr.beforeWord + routineName(e)
         }
-        if (r.optBoolean("once")) qualifiers += when {
-            ru -> "не чаще раза в день"
-            pt -> "no máximo uma vez ao dia"
+        if (r.optBoolean("once")) qualifiers += when (c) {
+            I18n.LANG_RU -> "не чаще раза в день"
+            I18n.LANG_PT -> "no máximo uma vez ao dia"
+            I18n.LANG_PL -> "raz dziennie"
+            I18n.LANG_ES -> "una vez al día"
+            I18n.LANG_DE -> "einmal täglich"
+            I18n.LANG_FR -> "une fois par jour"
+            I18n.LANG_IT -> "una volta al giorno"
+            I18n.LANG_ZH -> "每天仅一次"
             else -> "once a day"
         }
-        val whenClause = if (qualifiers.isEmpty()) head else "$head, ${qualifiers.joinToString(", ")}"
+        val sep = if (c == I18n.LANG_ZH) "，" else ", "
+        val whenClause = if (qualifiers.isEmpty()) head else "$head$sep${qualifiers.joinToString(sep)}"
 
         val acts = r.optJSONArray("actions")
         val items = if (acts == null) emptyList() else (0 until acts.length()).map { i ->
             Actions.describe(acts.getJSONObject(i), appName, routineName)
         }
+        val listSep = if (c == I18n.LANG_ZH) "、" else ", "
         val doClause = when (items.size) {
             0 -> I18n.t("nothing yet (add an action below)")
             1 -> items[0]
-            2 -> "${items[0]}$andWord${items[1]}"
-            else -> "${items.dropLast(1).joinToString(", ")}$andWord${items.last()}"
+            2 -> "${items[0]}${gr.andWord}${items[1]}"
+            else -> "${items.dropLast(1).joinToString(listSep)}${gr.andWord}${items.last()}"
         }
         return whenClause to doClause
     }
@@ -705,8 +1103,14 @@ object Routines {
         if (!g.optBoolean("on", true)) return null
         val from = g.optString("from"); val to = g.optString("to"); val mins = g.optInt("minutes", 3)
         return when (I18n.current()) {
-            I18n.LANG_RU -> "Держит Wi-Fi вкл. $from–$to (проверка каждые $mins мин) до запуска"
-            I18n.LANG_PT -> "Mantém o Wi-Fi ligado $from–$to (a cada $mins min) até rodar"
+            I18n.LANG_RU -> "Держит Wi-Fi включённым $from–$to (проверка каждые $mins мин) до запуска"
+            I18n.LANG_PT -> "Mantém o Wi-Fi ativado $from–$to (a cada $mins min) até executar"
+            I18n.LANG_PL -> "Utrzymuje Wi-Fi włączone $from–$to (co $mins min) do uruchomienia"
+            I18n.LANG_ES -> "Mantiene el Wi-Fi activo $from–$to (cada $mins min) hasta ejecutarse"
+            I18n.LANG_DE -> "Hält WLAN an $from–$to (alle $mins Min.) bis zum Start"
+            I18n.LANG_FR -> "Garde le Wi-Fi activé $from–$to (toutes les $mins min) jusqu'au lancement"
+            I18n.LANG_IT -> "Mantiene il Wi-Fi attivo $from–$to (ogni $mins min) fino all'avvio"
+            I18n.LANG_ZH -> "在 $from–$to 保持 Wi-Fi 开启（每 $mins 分钟检查）直到运行"
             else -> "Keeps Wi-Fi on $from–$to (checks every $mins min) until it runs"
         }
     }

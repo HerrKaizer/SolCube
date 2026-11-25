@@ -56,6 +56,7 @@ public class ProfilesUserService extends ISolCubeService.Stub {
         try {
             JSONObject o = new JSONObject(json);
             SysSettings.setNoticeSecret(o.optString("secret", ""));
+            Haptics.configure(o.optJSONObject("haptics"));
             JSONArray a = o.optJSONArray("profiles");
             profiles = a == null ? new JSONArray() : a;
             L.i("loaded " + profiles.length() + " profiles");

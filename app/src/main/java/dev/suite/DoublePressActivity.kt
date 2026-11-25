@@ -172,8 +172,8 @@ object DoublePress {
     const val WINDOW_MIN = 250
     const val WINDOW_MAX = 700
 
-    fun vibrate(ctx: Context) = Components.prefs(ctx).getBoolean(KEY_VIBRATE, true)
-    fun setVibrate(ctx: Context, on: Boolean) = Components.prefs(ctx).edit().putBoolean(KEY_VIBRATE, on).apply()
+    fun vibrate(ctx: Context) = HapticPrefs.preset(ctx, HapticPrefs.SLOT_DOUBLE_PRESS) != HapticPrefs.OFF
+    fun setVibrate(ctx: Context, on: Boolean) = HapticPrefs.setSlotEnabled(ctx, HapticPrefs.SLOT_DOUBLE_PRESS, on)
     fun nfc(ctx: Context) = Components.prefs(ctx).getBoolean(KEY_NFC, true)
     fun setNfc(ctx: Context, on: Boolean) = Components.prefs(ctx).edit().putBoolean(KEY_NFC, on).apply()
 
@@ -217,11 +217,8 @@ object DoublePress {
         return Shell.oneShot(ctx, cmd) == "ok"
     }
 
-    fun vibrateOnce(ctx: Context) = runCatching {
-        val attrs = android.os.VibrationAttributes.Builder()
-            .setUsage(android.os.VibrationAttributes.USAGE_COMMUNICATION_REQUEST)
-            .build()
-        ctx.getSystemService(Vibrator::class.java)?.vibrate(VibrationEffect.createOneShot(60, 255), attrs)
+    fun vibrateOnce(ctx: Context) {
+        HapticPrefs.playSlot(ctx, HapticPrefs.SLOT_DOUBLE_PRESS)
     }
 
     fun run(act: Activity) = action.perform(act, vibrate(act), nfc = false)

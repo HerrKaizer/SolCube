@@ -138,7 +138,8 @@ class RippleHost(private val ctx: Context) {
             out0.write("auth ${Ipc.mac(secret, "server|${auth[1]}|$ns")}\n".toByteArray()); out0.flush()
             val line = readLine(input) ?: return
             val p = line.trim().split(" ")
-            if (p.size < 3 || p[0] != "ripple") return
+            val isNav = p[0] == "ripple_nav"
+            if (p.size < 3 || (p[0] != "ripple" && !isNav)) return
             val fx = p[1].toFloatOrNull() ?: return
             val fy = p[2].toFloatOrNull() ?: return
             val len = p.getOrNull(3)?.toIntOrNull() ?: 0
@@ -153,6 +154,14 @@ class RippleHost(private val ctx: Context) {
                 input.readFully(data)
                 frame = decodeScreencap(data)
                 Log.i(TAG, "frame ${frame?.width}x${frame?.height} in ${android.os.SystemClock.uptimeMillis() - t0}ms")
+            }
+            if (isNav) {
+                it.soTimeout = 4500
+                val cmd = readLine(input)?.trim()
+                if (cmd != "go") {
+                    frame?.recycle()
+                    return
+                }
             }
             val cts = CountDownLatch(1)
             val start = CountDownLatch(1)
@@ -236,10 +245,11 @@ class RippleHost(private val ctx: Context) {
         }
     }
 
-    /** Must run on the main thread. */
-    private fun show(
-        fx: Float, fy: Float, fingers: FloatArray?, frame: android.graphics.Bitmap?,
-        onCts: () -> Unit, onStart: () -> Unit, onDone: () -> Unit
+    /** Must run on the main thread. Attaches [RippleView] and resolves window-local coordinates. */
+    private fun addOverlay(
+        fx: Float, fy: Float, fingers: FloatArray?,
+        onReady: (RippleView, Float, Float, FloatArray?, Float, Float, () -> Unit) -> Unit,
+        onFail: () -> Unit,
     ) {
         // Prefer the accessibility overlay: it is drawn above the status and navigation bars, so
         // the real status bar doesn't show on top of the screenshot's own. Fall back to the
@@ -249,7 +259,7 @@ class RippleHost(private val ctx: Context) {
         val vwm: WindowManager = a11y?.getSystemService(WindowManager::class.java) ?: wm
         val type = if (a11y != null) WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
             else WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-        if (a11y == null && !Settings.canDrawOverlays(ctx)) { onDone(); return }
+        if (a11y == null && !Settings.canDrawOverlays(ctx)) { onFail(); return }
         val view = RippleView(vctx)
         holdOverride?.let { view.ctsHoldMs = it }
         // the app-overlay fallback IS captured by Circle to Search's screenshot: keep it frozen
@@ -292,16 +302,37 @@ class RippleHost(private val ctx: Context) {
         }
         var added = true
         try { vwm.addView(view, lp) } catch (e: Exception) { Log.w(TAG, "addView", e); added = false }
-        if (!added) { onDone(); return }
+        if (!added) { onFail(); return }
         Log.i(TAG, if (a11y != null) "ripple window: accessibility overlay (above bars)" else "ripple window: app overlay")
+        var removed = false
+        val removeOnce: () -> Unit = {
+            if (!removed) {
+                removed = true
+                try { vwm.removeViewImmediate(view) } catch (_: Exception) {}
+            }
+        }
         view.post {
             val loc = IntArray(2); view.getLocationOnScreen(loc)
             val lx = loc[0].toFloat(); val ly = loc[1].toFloat()
             val vf = fs?.let { floatArrayOf(it[0] - lx, it[1] - ly, it[2] - lx, it[3] - ly) }
-            view.play(sx - lx, sy - ly, vf, frame, lx, ly, onCts, onStart) {
-                try { vwm.removeViewImmediate(view) } catch (_: Exception) {}
-                onDone()
-            }
+            onReady(view, sx - lx, sy - ly, vf, lx, ly, removeOnce)
         }
+    }
+
+    /** Must run on the main thread. */
+    private fun show(
+        fx: Float, fy: Float, fingers: FloatArray?, frame: android.graphics.Bitmap?,
+        onCts: () -> Unit, onStart: () -> Unit, onDone: () -> Unit
+    ) {
+        addOverlay(
+            fx, fy, fingers,
+            onReady = { view, rx, ry, vf, lx, ly, removeOnce ->
+                view.play(rx, ry, vf, frame, lx, ly, onCts, onStart) {
+                    removeOnce()
+                    onDone()
+                }
+            },
+            onFail = onDone,
+        )
     }
 }

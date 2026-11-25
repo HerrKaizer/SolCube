@@ -37,14 +37,15 @@ public class CtsListener {
     // width) and stays still. Moving it (swipe up = home/recents, sideways = switch apps) cancels.
     static volatile boolean navEnabled = false;
     static volatile boolean navCts = false, navRoutine = false;
-    static volatile long navHoldMs = 450;
+    static volatile long navHoldMs = 350;
     static final float NAV_STRIP = 0.035f;          // bottom 3.5 % of the height (~110 px; vivo's bar window is 72 px)
     static final float NAV_SIDE = 0.2f;             // not the outer 20 % on each side (games' corner buttons)
-    // The launcher finishes its RecentsAnimation on the real ACTION_UP; it then posts disableInputProxy() 200 ms later
-    // (plus a 100 ms post), so let that settle before the ripple / Circle to Search.
-    static final long NAV_SETTLE_MS = 350;
+    // The launcher finishes its RecentsAnimation on the real ACTION_UP; letting it settle cleanly avoids stuck blur.
+    static final long NAV_SETTLE_STILL_MS = 100;
+    static final long NAV_SETTLE_MS = 260;
     static final long NAV_LIFT_WAIT_MS = 3000;      // max wait for the finger to lift after a recognised hold; abort if exceeded
     static boolean navWait = false, navAbort = false;   // guarded by lock
+    static int navMaxDrift = 0;                         // guarded by lock
 
     /** End-to-end test (shell-only hook): fresh screenshot, then ripple + CTS with the given freeze. */
     static void test(long freeze) {
@@ -160,16 +161,17 @@ public class CtsListener {
                 if (fire) {
                     if (isNav) {
                         if (navRoutine) {
-                            if (!Haptics.bluelmTrigger()) pop();
+                            Haptics.ctsStart();
                             if (settleNavTouch(cap)) {
-                                if (!triggerRoutine("nav_hold") && navCts) fire(fx, fy, fingers, cap, false);
+                                if (triggerRoutine("nav_hold")) Haptics.powerHold();
+                                else if (navCts) fire(fx, fy, fingers, cap, false, false);
                             }
                         } else if (navCts) {
-                            fire(fx, fy, fingers, cap, true);
+                            fire(fx, fy, fingers, cap, true, true);
                         }
                     } else {
-                        if (touchRoutine && triggerRoutine("two_finger_hold")) pop();
-                        else if (touchCts) fire(fx, fy, fingers, cap);
+                        if (touchRoutine && triggerRoutine("two_finger_hold")) Haptics.powerHold();
+                        else if (touchCts) fire(fx, fy, fingers, cap, false, true);
                     }
                 }
             }
@@ -205,18 +207,22 @@ public class CtsListener {
     }
 
     static void fire(float fx, float fy, float[] fingers, Capture cap) {
-        fire(fx, fy, fingers, cap, false);
+        fire(fx, fy, fingers, cap, false, true);
     }
 
-    /** Ripple from (fx, fy) over the captured frame, then Circle to Search. Used by both gestures. */
-    static void fire(float fx, float fy, float[] fingers, Capture cap, boolean isNav) {
+    static void fire(float fx, float fy, float[] fingers, Capture cap, boolean isNav, boolean vibrate) {
         if (!busy.compareAndSet(false, true)) return;   // one at a time
-        // instant feedback: the hold was recognised (BlueLM's own trigger vibration)
-        if (!Haptics.bluelmTrigger()) pop();
+        if (vibrate) Haptics.ctsStart();
         try {
-            if (isNav && !settleNavTouch(cap)) return;
             if (!animate) {
+                if (isNav && !settleNavTouch(cap)) return;
                 launch();
+                return;
+            }
+            if (isNav) {
+                if (!rippleNav(fx, fy, fingers, cap)) {
+                    if (settleNavTouch(cap)) launch();
+                }
                 return;
             }
             byte[] frame = null;
@@ -249,9 +255,12 @@ public class CtsListener {
             fingersDown = count;
             if (navWait && count > 0) {
                 int nt2 = navTol() * 2;
-                if (count != 1 || navSlot < 0 || id[navSlot] < 0
-                        || Math.abs(x[navSlot] - nsx) > nt2 || Math.abs(y[navSlot] - nsy) > nt2) {
+                if (count != 1 || navSlot < 0 || id[navSlot] < 0) {
                     navAbort = true; lock.notifyAll();
+                } else {
+                    int drift = Math.max(Math.abs(x[navSlot] - nsx), Math.abs(y[navSlot] - nsy));
+                    if (drift > navMaxDrift) navMaxDrift = drift;
+                    if (drift > nt2) { navAbort = true; lock.notifyAll(); }
                 }
             }
             if (count == 0 || (!touchEnabled && !navEnabled)) {
@@ -268,7 +277,7 @@ public class CtsListener {
                 if (first && count == 1) {
                     for (int i = 0; i < SLOTS; i++) if (id[i] >= 0) {
                         if (onNavBar((float) x[i] / maxX, (float) y[i] / maxY)) {
-                            navSince = t; navSlot = i; nsx = x[i]; nsy = y[i];
+                            navSince = t; navSlot = i; nsx = x[i]; nsy = y[i]; navMaxDrift = 0;
                             capture = null;
                             lock.notifyAll();   // wake the hold timer
                         }
@@ -276,11 +285,13 @@ public class CtsListener {
                     }
                 } else if (navSince != 0) {
                     int nt = navTol();
-                    if (count != 1 || id[navSlot] < 0
-                            || Math.abs(x[navSlot] - nsx) > nt || Math.abs(y[navSlot] - nsy) > nt) {
-                        navSince = 0;   // second finger, lifted, or moved (a swipe): not a hold
+                    if (count != 1 || id[navSlot] < 0) {
+                        navSince = 0;   // second finger or lifted: not a hold
                     } else {
-                        return;         // still holding on the bar
+                        int drift = Math.max(Math.abs(x[navSlot] - nsx), Math.abs(y[navSlot] - nsy));
+                        if (drift > navMaxDrift) navMaxDrift = drift;
+                        if (drift > nt) navSince = 0;   // moved (a swipe): not a hold
+                        else return;                    // still holding on the bar
                     }
                 }
             }
@@ -366,10 +377,17 @@ public class CtsListener {
         return true;
     }
 
-    static boolean settleNavTouch(Capture cap) {
+    static long navSettleMs() {
+        int drift;
+        synchronized (lock) { drift = navMaxDrift; }
+        return drift <= navTol() / 2 ? NAV_SETTLE_STILL_MS : NAV_SETTLE_MS;
+    }
+
+    static boolean waitForNavLift() {
         long t0 = now();
         long deadline = t0 + NAV_LIFT_WAIT_MS;
         boolean lifted, aborted;
+        int drift;
         synchronized (lock) {
             navWait = true;
             navAbort = false;
@@ -381,21 +399,87 @@ public class CtsListener {
                 }
                 lifted = fingersDown == 0 && !navAbort;
                 aborted = navAbort;
+                drift = navMaxDrift;
             } finally {
                 navWait = false;
             }
         }
-        L.i("nav lift wait " + (now() - t0) + "ms lifted=" + lifted + " abort=" + aborted);
-        if (!lifted) return false;
+        long settle = navSettleMs();
+        L.i("nav lift wait " + (now() - t0) + "ms lifted=" + lifted + " abort=" + aborted
+                + " drift=" + drift + " settle=" + settle + "ms");
+        return lifted;
+    }
+
+    static boolean settleNavTouch(Capture cap) {
+        if (!waitForNavLift()) return false;
         long settleFrom = now();
         if (cap != null) {
             try { cap.join(400); } catch (InterruptedException ignored) {}
         }
-        long rem = NAV_SETTLE_MS - (now() - settleFrom);
+        long rem = navSettleMs() - (now() - settleFrom);
         if (rem > 0) {
             try { Thread.sleep(rem); } catch (InterruptedException ignored) {}
         }
         return true;
+    }
+
+    /** Pre-decodes the screenshot and shows an armed glow during nav lift, then opens CTS at clean t=0. */
+    static boolean rippleNav(float fx, float fy, float[] fingers, Capture cap) {
+        long t0 = System.nanoTime();
+        byte[] frame = null;
+        if (cap != null) {
+            try { cap.join(250); } catch (InterruptedException ignored) {}
+            frame = cap.data;
+        }
+        int len = frame == null ? 0 : frame.length;
+        boolean launched = false;
+        try (java.net.Socket s = new java.net.Socket()) {
+            s.setTcpNoDelay(true);
+            s.setSendBufferSize(1 << 22);
+            String key = secret;
+            if (key == null || key.isEmpty()) { L.i("ripple_nav skipped: no secret from SolCube yet"); return false; }
+            s.connect(new java.net.InetSocketAddress("127.0.0.1", 47321), 80);
+            s.setSoTimeout(300);
+            OutputStream out = s.getOutputStream();
+            InputStream in0 = s.getInputStream();
+            if (!handshake(in0, out)) return false;
+            out.write(String.format(java.util.Locale.US, "ripple_nav %.4f %.4f %d %.4f %.4f %.4f %.4f %d\n",
+                    fx, fy, len, fingers[0], fingers[1], fingers[2], fingers[3], freezeMs).getBytes());
+            out.flush();
+            InputStream in = s.getInputStream();
+            if (!"ok".equals(readLine(in))) return false;
+            if (len > 0) out.write(frame);
+            out.flush();
+
+            if (!waitForNavLift()) {
+                out.write("abort\n".getBytes());
+                out.flush();
+                return true;   // user swiped or timed out: aborted cleanly without launching CTS
+            }
+            long settle = navSettleMs();
+            if (settle > 0) {
+                try { Thread.sleep(settle); } catch (InterruptedException ignored) {}
+            }
+            out.write("go\n".getBytes());
+            out.flush();
+            s.setSoTimeout(3000);
+            String line;
+            while ((line = readLine(in)) != null) {
+                if ("cts".equals(line) && !launched) {
+                    launch();
+                    launched = true;
+                    L.i("cts at " + (System.nanoTime() - t0) / 1000000 + "ms");
+                } else if ("done".equals(line)) {
+                    Haptics.ctsReveal();
+                    break;
+                }
+            }
+            L.i("ripple_nav " + (System.nanoTime() - t0) / 1000000 + "ms frame=" + len);
+            return launched;
+        } catch (Exception e) {
+            L.i("ripple_nav skipped: " + e);
+            return false;
+        }
     }
 
     /**
@@ -436,7 +520,7 @@ public class CtsListener {
                     launch(); launched = true;
                     L.i("cts at " + (System.nanoTime() - t0) / 1000000 + "ms");
                 } else if ("done".equals(line)) {
-                    pop();                                   // CTS is revealed now
+                    Haptics.ctsReveal();                     // CTS is revealed now
                     break;
                 }
             }
@@ -452,29 +536,6 @@ public class CtsListener {
         int c;
         while ((c = in.read()) >= 0 && c != '\n') sb.append((char) c);
         return c < 0 && sb.length() == 0 ? null : sb.toString();
-    }
-
-    static boolean vibrated;
-
-    // Ripple runs 1050 ms after `start`; second pop comes at `done` (~1080 ms).
-    /**
-     * Strong, crisp pop: a 30 ms full-power step, which vivo plays as CLICK(STRONG).
-     * (Plays when the ripple starts moving and again when CTS is revealed.
-     * Note: vivo plays chained effects only up to the first one; a plain waveform plays in full.)
-     */
-    static void pop() {
-        vibrated = true;
-        run(java.util.Arrays.asList("cmd", "vibrator_manager", "synced", "-f", "-d", "SolCube",
-                "waveform", "-a", "30", "255"));
-    }
-
-    static void run(java.util.List<String> cmd) {
-        try {
-            new ProcessBuilder(cmd).redirectErrorStream(true)
-                    .redirectOutput(new java.io.File("/dev/null")).start();
-        } catch (IOException e) {
-            L.e("error", e);
-        }
     }
 
     static void launch() {

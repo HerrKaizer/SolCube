@@ -175,7 +175,7 @@ object Components {
     fun touchHold(ctx: Context) = prefs(ctx).getInt(KEY_TOUCH_HOLD, 400)
     fun buttonHold(ctx: Context) = prefs(ctx).getInt(KEY_BUTTON_HOLD, 350)
     fun ctsNav(ctx: Context) = prefs(ctx).getBoolean(KEY_CTS_NAV, false)
-    fun navHold(ctx: Context) = prefs(ctx).getInt(KEY_NAV_HOLD, 450)
+    fun navHold(ctx: Context) = prefs(ctx).getInt(KEY_NAV_HOLD, 350)
     fun ctsAnimate(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_CTS_ANIMATE, true)
     fun ctsRippleWanted(ctx: Context): Boolean =
         ctsNav(ctx) || Routines.hasEnabledTrigger(ctx, "nav_hold") ||
@@ -219,6 +219,7 @@ object Components {
             .put("buttonHold", buttonHold(ctx))
             .put("animate", ctsAnimate(ctx))
             .put("freeze", freeze(ctx))
+            .put("haptics", HapticPrefs.toJson(ctx))
             .put("secret", Ipc.secret(ctx)).toString()   // ripple-port handshake (see Ipc)
     }
 

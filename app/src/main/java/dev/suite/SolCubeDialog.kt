@@ -112,12 +112,7 @@ object Look {
         panel = Color.rgb(0xFB, 0xF8, 0xF3),
     )
 
-    private val fonts = HashMap<Int, Typeface>()
-    fun font(ctx: Context, weight: Int): Typeface = fonts.getOrPut(weight) {
-        try {
-            Typeface.Builder(ctx.assets, "fonts/GoogleSansFlex.ttf").setFontVariationSettings("'wght' $weight").build() ?: Typeface.DEFAULT
-        } catch (_: Exception) { Typeface.DEFAULT }
-    }
+    fun font(ctx: Context, weight: Int): Typeface = Fonts.get(ctx, weight)
 }
 
 /**

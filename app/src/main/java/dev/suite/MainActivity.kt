@@ -45,13 +45,7 @@ class MainActivity : Activity() {
     private val fontMedium: Typeface by lazy { googleSans(560) }
     private val fontBold: Typeface by lazy { googleSans(680) }
 
-    private fun googleSans(weight: Int): Typeface = try {
-        Typeface.Builder(assets, "fonts/GoogleSansFlex.ttf")
-            .setFontVariationSettings("'wght' $weight")
-            .build() ?: Typeface.DEFAULT
-    } catch (_: Exception) {
-        Typeface.DEFAULT
-    }
+    private fun googleSans(weight: Int): Typeface = Fonts.get(this, weight)
 
     private val main = Handler(Looper.getMainLooper())
     private val io = Executors.newSingleThreadExecutor()
@@ -119,6 +113,10 @@ class MainActivity : Activity() {
     private val headerPillAnims = java.util.WeakHashMap<View, android.animation.ValueAnimator>()
     private var gestActiveList: LinearLayout? = null
     private var gesturePauseDepth = 0
+    private var gestVibSwitch: Switch? = null
+    private var dpVibSwitch: Switch? = null
+    private var refreshHapticsUi: (() -> Unit)? = null
+    private var syncingVibUi = false
 
     private fun pauseLiveGestures() {
         val first = gesturePauseDepth == 0
@@ -146,8 +144,10 @@ class MainActivity : Activity() {
         poll()
     }
 
+    private var builtLang: String = I18n.LANG_EN
+
     override fun onCreate(savedInstanceState: Bundle?) {
-        I18n.init(this)
+        builtLang = I18n.init(this)
         setTheme(if (Look.isDark(this)) android.R.style.Theme_DeviceDefault_NoActionBar else android.R.style.Theme_DeviceDefault_Light_NoActionBar)
         super.onCreate(savedInstanceState)
         RenderTest.rebuild = { runOnUiThread { recreate() } }
@@ -187,6 +187,10 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        if (I18n.init(this) != builtLang) {
+            recreate()
+            return
+        }
         resumed = true
         SolCubeService.sync(this)   // e.g. overlay permission was just granted
         io.execute {
@@ -195,6 +199,13 @@ class MainActivity : Activity() {
         }
         poll()
         checkUpdates()
+        val pUi = Components.prefs(this)
+        if (!pUi.getBoolean("asked_notif_perm", false) &&
+            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            pUi.edit().putBoolean("asked_notif_perm", true).apply()
+            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 101)
+        }
         cleanupOldBackup()
         keepAlive()
         renderDouble()   // vivo's switch / the handler may have changed in Settings
@@ -279,7 +290,7 @@ class MainActivity : Activity() {
         showSection(holdSec, running = s.cts?.optBoolean("button") == true && enabled(holdSec),
             detail = when {
                 !shellOk && enabled(holdSec) -> "Waiting for Shizuku"
-                else -> "Hold the power button (screen on) to " + actionText(PowerHold.action) + "."
+                else -> pressStatusLine(isDouble = false, PowerHold.action)
             })
         val count = listOf(ctsTouch, ctsButton, ctsNav).count { enabled(it) }
         val ctsActive = listOf(
@@ -316,11 +327,11 @@ class MainActivity : Activity() {
                 else -> buildString {
                     val pkg = fi.optString("game")
                     val bat = fi.optInt("battery") / 10f
-                    if (pkg.isEmpty()) append("No listed game running")
+                    if (pkg.isEmpty()) append(I18n.t("No listed game running"))
                     else {
                         append(appName(pkg)).append(" · ").append(fi.optInt("src")).append("→").append(fi.optInt("dst")).append(" fps")
                     }
-                    if (fi.optBoolean("paused")) append(" · Paused: hot")
+                    if (fi.optBoolean("paused")) append(" · ").append(I18n.t("Paused: hot"))
                     append(String.format(java.util.Locale.US, " · %.1f °C", bat))
                 }
             },
@@ -685,7 +696,7 @@ class MainActivity : Activity() {
         shizukuCard = card()
         shizukuText = label("", 14.5f, p.fg)
         shizukuCard.addView(shizukuText)
-        shizukuButton = pillButton("", filled = true) {
+        shizukuButton = pillButton("", filled = true, autoFit = true) {
             if (Shell.state() == Shell.State.NOT_RUNNING) {
                 packageManager.getLaunchIntentForPackage("moe.shizuku.privileged.api")?.let { startActivity(it) }
                     ?: toast("Shizuku isn't installed")
@@ -803,9 +814,7 @@ class MainActivity : Activity() {
         val savedCode = I18n.saved(this)
         val options = listOf(
             I18n.LANG_SYSTEM to I18n.t("System"),
-            I18n.LANG_EN to "English",
-            I18n.LANG_RU to "Русский",
-            I18n.LANG_PT to "Português",
+            *I18n.SUPPORTED.map { it to I18n.nativeName(it) }.toTypedArray(),
         )
         langCard.addView(hScroll(*options.map { (code, title) ->
             chip(title, savedCode == code, localize = false) {
@@ -821,11 +830,200 @@ class MainActivity : Activity() {
         langCard.addView(View(this).apply { setBackgroundColor(p.stroke) },
             LinearLayout.LayoutParams(MATCH_PARENT, 1.dp).apply { topMargin = 12.dp; bottomMargin = 10.dp })
 
-        langCard.addView(pillButton("Request a language", filled = false) { languageRequest() }.apply {
-            textSize = 13.5f
-            setPadding(12.dp, 0, 12.dp, 0)
-        }, LinearLayout.LayoutParams(MATCH_PARENT, 38.dp))
+        langCard.addView(pillButton("Request a language", filled = false, size = 13.5f, autoFit = true) { languageRequest() },
+            LinearLayout.LayoutParams(MATCH_PARENT, 38.dp))
         return langCard
+    }
+
+    private fun buildHapticsCard(inner: Boolean): LinearLayout {
+        val hCard = if (inner) innerCard() else card()
+        val hHeader = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            clipChildren = false
+            clipToPadding = false
+        }
+        hHeader.addView(label("Haptics", if (inner) 15.5f else 17f, p.fg, bold = true),
+            LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        val masterSw = Switch(this).apply {
+            styleSwitch(this)
+            isChecked = HapticPrefs.master(this@MainActivity)
+        }
+        hHeader.addView(masterSw, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { leftMargin = 8.dp })
+        val hChevron = chevronBadge(false)
+        hHeader.addView(hChevron, LinearLayout.LayoutParams(30.dp, 30.dp).apply { leftMargin = 10.dp })
+        hCard.addView(hHeader)
+
+        val hStatus = label("", 13f, p.sub)
+        hCard.addView(hStatus, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 4.dp })
+
+        val hBody = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        hBody.addView(View(this).apply { setBackgroundColor(p.stroke) },
+            LinearLayout.LayoutParams(MATCH_PARENT, 1.dp).apply { topMargin = 12.dp; bottomMargin = 6.dp })
+
+        val slots = listOf(
+            "Circle to Search" to HapticPrefs.SLOT_CTS,
+            "Screen gestures" to HapticPrefs.SLOT_GESTURES,
+            "Double power press" to HapticPrefs.SLOT_DOUBLE_PRESS,
+            "Power-button hold" to HapticPrefs.SLOT_POWER_HOLD,
+            "Routine vibrate action" to HapticPrefs.SLOT_ROUTINE,
+        )
+        val slotRows = mutableListOf<Triple<View, TextView, String>>()
+        lateinit var refresh: () -> Unit
+
+        slots.forEach { (title, slot) ->
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(4.dp, 10.dp, 4.dp, 10.dp)
+                background = ripple(null, 14.dp)
+                setOnClickListener {
+                    if (!HapticPrefs.master(this@MainActivity)) return@setOnClickListener
+                    pickHapticPreset(title, slot) { refresh() }
+                }
+            }
+            row.addView(label(title, 14.5f, p.fg), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            val valView = label("", 13f, p.link, bold = true).apply {
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+            }
+            row.addView(valView, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { leftMargin = 8.dp })
+            row.addView(label("›", 17f, p.sub), LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { leftMargin = 6.dp })
+            hBody.addView(row, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+            slotRows += Triple(row, valView, slot)
+        }
+
+        hBody.addView(View(this).apply { setBackgroundColor(p.stroke) },
+            LinearLayout.LayoutParams(MATCH_PARENT, 1.dp).apply { topMargin = 6.dp; bottomMargin = 10.dp })
+
+        val uiWrap = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val uiSw = Switch(this).apply {
+            text = "App UI feedback"
+            textSize = 14f
+            setTextColor(p.fg)
+            typeface = fontRegular
+            styleSwitch(this)
+            isChecked = HapticPrefs.uiPref(this@MainActivity)
+            setOnCheckedChangeListener { _, c ->
+                if (syncingVibUi) return@setOnCheckedChangeListener
+                HapticPrefs.setUiPref(this@MainActivity, c)
+                if (c) HapticPrefs.uiTick(this@MainActivity)
+            }
+        }
+        uiWrap.addView(uiSw)
+        uiWrap.addView(label("Bottom bar, volume knob, theme slider", 12f, p.sub),
+            LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 2.dp })
+        hBody.addView(uiWrap)
+
+        hBody.addView(View(this).apply { setBackgroundColor(p.stroke) },
+            LinearLayout.LayoutParams(MATCH_PARENT, 1.dp).apply { topMargin = 12.dp; bottomMargin = 10.dp })
+        hBody.addView(pillButton("Reset to defaults", filled = false, size = 13.5f, autoFit = true) {
+            HapticPrefs.resetDefaults(this@MainActivity)
+            syncingVibUi = true
+            try {
+                uiSw.isChecked = true
+                gestVibSwitch?.isChecked = true
+                dpVibSwitch?.isChecked = true
+                refresh()
+            } finally {
+                syncingVibUi = false
+            }
+            HapticPrefs.preview(this@MainActivity, HapticPrefs.CLICK)
+            toast("Haptics reset to defaults")
+        }, LinearLayout.LayoutParams(MATCH_PARENT, 38.dp))
+
+        refresh = {
+            val masterOn = HapticPrefs.master(this@MainActivity)
+            if (masterSw.isChecked != masterOn) {
+                val prevSync = syncingVibUi
+                syncingVibUi = true
+                try { masterSw.isChecked = masterOn } finally { syncingVibUi = prevSync }
+            }
+            hStatus.put(if (masterOn) "Tap to customise per action" else "All vibrations off")
+            val rowAlpha = if (masterOn) 1f else 0.42f
+            slotRows.forEach { (row, valView, slot) ->
+                row.isEnabled = masterOn
+                row.alpha = rowAlpha
+                valView.put(HapticPrefs.labelFor(HapticPrefs.preset(this@MainActivity, slot)))
+            }
+            uiWrap.alpha = rowAlpha
+            uiSw.isEnabled = masterOn
+        }
+        refreshHapticsUi = refresh
+
+        masterSw.setOnCheckedChangeListener { _, c ->
+            if (syncingVibUi) return@setOnCheckedChangeListener
+            HapticPrefs.setMaster(this@MainActivity, c)
+            if (c) HapticPrefs.preview(this@MainActivity, HapticPrefs.CLICK)
+            refresh()
+        }
+
+        refresh()
+        hCard.addView(hBody)
+        makeCollapsible("settings_haptics", hCard, listOf(hHeader, hStatus), hChevron, hBody, defaultOpen = false)
+        return hCard
+    }
+
+    private fun pickHapticPreset(slotTitle: String, slot: String, onPicked: () -> Unit) {
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        box.addView(label("Tap a style to feel it", 12.5f, p.sub),
+            LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = 8.dp })
+
+        var cur = HapticPrefs.preset(this, slot)
+        val dotViews = mutableListOf<Pair<String, View>>()
+        val labelViews = mutableListOf<Pair<String, TextView>>()
+
+        fun updateSelection() {
+            dotViews.forEach { (id, v) ->
+                val sel = id == cur
+                v.background = GradientDrawable().apply {
+                    shape = GradientDrawable.OVAL
+                    setColor(if (sel) p.accent else Color.TRANSPARENT)
+                    setStroke(1.5f.let { (it * resources.displayMetrics.density).toInt() },
+                        if (sel) p.accent else p.sub)
+                }
+            }
+            labelViews.forEach { (id, tv) ->
+                tv.setTextColor(if (id == cur) p.link else p.fg)
+                tv.typeface = if (id == cur) fontMedium else fontRegular
+            }
+        }
+
+        HapticPrefs.PRESETS.forEach { id ->
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(10.dp, 12.dp, 10.dp, 12.dp)
+                background = ripple(null, 14.dp)
+                setOnClickListener {
+                    cur = id
+                    updateSelection()
+                    HapticPrefs.setPreset(this@MainActivity, slot, id)
+                    if (id != HapticPrefs.OFF) HapticPrefs.preview(this@MainActivity, id)
+                    syncingVibUi = true
+                    try {
+                        if (slot == HapticPrefs.SLOT_GESTURES) gestVibSwitch?.isChecked = (id != HapticPrefs.OFF)
+                        if (slot == HapticPrefs.SLOT_DOUBLE_PRESS) dpVibSwitch?.isChecked = (id != HapticPrefs.OFF)
+                    } finally {
+                        syncingVibUi = false
+                    }
+                    onPicked()
+                }
+            }
+            val dot = View(this)
+            row.addView(dot, LinearLayout.LayoutParams(16.dp, 16.dp).apply { rightMargin = 12.dp })
+            val tv = label(HapticPrefs.labelFor(id), 15f, p.fg)
+            row.addView(tv, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            box.addView(row, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+            dotViews += id to dot
+            labelViews += id to tv
+        }
+        updateSelection()
+        SolCubeDialog.Builder(this)
+            .setTitle(slotTitle)
+            .setView(box)
+            .setPositiveButton("Done", null)
+            .show()
     }
 
     private fun buildPowerCard(inner: Boolean): LinearLayout {
@@ -897,16 +1095,13 @@ class MainActivity : Activity() {
             LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 12.dp })
         diagLogText = mono(11f).apply { setLineSpacing(2.dp.toFloat(), 1f) }
         diagBody.addView(diagLogText, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 4.dp })
-        diagBody.addView(pillButton("Copy report", filled = false) {
+        diagBody.addView(pillButton("Copy report", filled = false, size = 13.5f, autoFit = true) {
             val report = lastDiagReport
             if (report.isNotEmpty()) {
                 val cm = getSystemService(android.content.ClipboardManager::class.java)
                 cm?.setPrimaryClip(android.content.ClipData.newPlainText("SolCube diagnostics", report))
                 toast("Diagnostics copied")
             }
-        }.apply {
-            textSize = 13.5f
-            setPadding(12.dp, 0, 12.dp, 0)
         }, LinearLayout.LayoutParams(MATCH_PARENT, 38.dp).apply { topMargin = 12.dp })
         diagCard.addView(diagBody)
         makeCollapsible("settings_diag", diagCard, listOf(diagHeader, diagStatusRow), diagChevron, diagBody, defaultOpen = false)
@@ -915,14 +1110,12 @@ class MainActivity : Activity() {
 
     private fun buildSettingsActions(): LinearLayout {
         val settingsActions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val updateBtn = pillButton("Check for updates", filled = false) { checkUpdates(manual = true) }.apply {
-            textSize = 13.5f
-            setPadding(8.dp, 0, 8.dp, 0)
+        val updateBtn = pillButton("Check for updates", filled = false, size = 13.5f, autoFit = true) { checkUpdates(manual = true) }.apply {
+            setPadding(10.dp, 0, 10.dp, 0)
         }
         lateinit var restartBtn: TextView
-        restartBtn = pillButton("Restart SolCube", filled = false) { restartSolCube(restartBtn) }.apply {
-            textSize = 13.5f
-            setPadding(8.dp, 0, 8.dp, 0)
+        restartBtn = pillButton("Restart SolCube", filled = false, size = 13.5f, autoFit = true) { restartSolCube(restartBtn) }.apply {
+            setPadding(10.dp, 0, 10.dp, 0)
         }
         settingsActions.addView(updateBtn, LinearLayout.LayoutParams(0, 42.dp, 1f))
         settingsActions.addView(restartBtn, LinearLayout.LayoutParams(0, 42.dp, 1f).apply { leftMargin = 10.dp })
@@ -962,8 +1155,10 @@ class MainActivity : Activity() {
             }
         }
         titlePill.addView(iconView, LinearLayout.LayoutParams(22.dp, 22.dp).apply { rightMargin = 10.dp })
-        titlePill.addView(label(title, 26f, p.onAccent, bold = true).apply {
+        val titleSize = if (I18n.t(title).length > 13) 22f else 26f
+        titlePill.addView(label(title, titleSize, p.onAccent, bold = true).apply {
             maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
         })
 
         val statusPill = LinearLayout(this).apply {
@@ -1103,12 +1298,10 @@ class MainActivity : Activity() {
 
             gestSec = section(GestureStore.KEY, "Screen gestures", collapsible = false, inner = false, compact = false)
             val actRow = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.HORIZONTAL }
-            actRow.addView(pillButton("+ Add gesture", filled = true) { addGestureWizard() }.apply {
-                textSize = 14f
-            }, LinearLayout.LayoutParams(0, 42.dp, 1.35f))
-            actRow.addView(pillButton("Test pad", filled = false) { tryGestures() }.apply {
-                textSize = 14f
-            }, LinearLayout.LayoutParams(0, 42.dp, 1f).apply { leftMargin = 10.dp })
+            actRow.addView(pillButton("+ Add gesture", filled = true, size = 14f, autoFit = true) { addGestureWizard() },
+                LinearLayout.LayoutParams(0, 42.dp, 1.35f))
+            actRow.addView(pillButton("Test pad", filled = false, size = 14f, autoFit = true) { tryGestures() },
+                LinearLayout.LayoutParams(0, 42.dp, 1f).apply { leftMargin = 10.dp })
             gestSec.body.addView(actRow, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 12.dp })
 
             gestActiveList = LinearLayout(this@MainActivity).apply {
@@ -1126,15 +1319,19 @@ class MainActivity : Activity() {
             gestSettingsCard.addView(gestSensRow)
             renderGestureSens()
 
-            gestSettingsCard.addView(Switch(this@MainActivity).apply {
+            gestVibSwitch = Switch(this@MainActivity).apply {
                 text = "Vibrate when recognised"
                 textSize = 14f
                 setTextColor(p.fg)
                 typeface = fontRegular
                 styleSwitch(this)
                 isChecked = GestureStore.vibrate(this@MainActivity)
-                setOnCheckedChangeListener { _, c -> io.execute { GestureStore.setVibrate(this@MainActivity, c) } }
-            }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 12.dp })
+                setOnCheckedChangeListener { _, c ->
+                    if (syncingVibUi) return@setOnCheckedChangeListener
+                    io.execute { GestureStore.setVibrate(this@MainActivity, c); main.post { refreshHapticsUi?.invoke() } }
+                }
+            }
+            gestSettingsCard.addView(gestVibSwitch, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 12.dp })
 
             gestSettingsCard.addView(View(this@MainActivity).apply { setBackgroundColor(p.stroke) },
                 LinearLayout.LayoutParams(MATCH_PARENT, 1.dp).apply { topMargin = 14.dp; bottomMargin = 12.dp })
@@ -1212,6 +1409,7 @@ class MainActivity : Activity() {
             )
             addView(buildThemeCard(inner = false), cardParams())
             addView(buildLanguageCard(inner = false), cardParams())
+            addView(buildHapticsCard(inner = false), cardParams())
             addView(buildPowerCard(inner = false), cardParams())
             addView(buildDiagCard(inner = false), cardParams())
             addView(buildSettingsActions(), LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 4.dp })
@@ -1761,7 +1959,8 @@ class MainActivity : Activity() {
             Components.saveGames(this, list + Components.Game(pkg, 60, 120))
             field.setText("")
             renderGames()
-        }, LinearLayout.LayoutParams(80.dp, 44.dp).apply { leftMargin = 8.dp })
+        }.apply { minWidth = 80.dp; minimumWidth = 80.dp; setPadding(16.dp, 0, 16.dp, 0) },
+            LinearLayout.LayoutParams(WRAP_CONTENT, 44.dp).apply { leftMargin = 8.dp })
         card.addView(addRow, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 8.dp })
 
         card.addView(label("Heat pause (battery)", 14.5f, p.fg, bold = true).apply { setPadding(0, 16.dp, 0, 2.dp) })
@@ -1833,7 +2032,7 @@ class MainActivity : Activity() {
         thresholds.removeAllViews()
         fun stepper(title: String, value: Int, set: (Int) -> Unit) {
             val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-            row.addView(label(String.format(java.util.Locale.US, "%s %.1f °C", title, value / 10f), 13.5f, p.fg),
+            row.addView(label(String.format(java.util.Locale.US, "%s %.1f °C", I18n.t(title), value / 10f), 13.5f, p.fg, localize = false),
                 LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
             row.addView(chip("−", false) { set(value - 5) }, LinearLayout.LayoutParams(44.dp, 32.dp))
             row.addView(chip("+", false) { set(value + 5) }, LinearLayout.LayoutParams(44.dp, 32.dp).apply { leftMargin = 6.dp })
@@ -1948,8 +2147,8 @@ class MainActivity : Activity() {
         card.addView(streamDetail, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 6.dp })
 
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        wideBtn = pillButton("", filled = true) { streamAction(wide = true) }
-        streamBtn = pillButton("", filled = true) { streamAction(wide = false) }
+        wideBtn = pillButton("", filled = true, size = 14.5f, autoFit = true) { streamAction(wide = true) }
+        streamBtn = pillButton("", filled = true, size = 14.5f, autoFit = true) { streamAction(wide = false) }
         row.addView(wideBtn, LinearLayout.LayoutParams(0, 44.dp, 1f))
         row.addView(streamBtn, LinearLayout.LayoutParams(0, 44.dp, 1f).apply { leftMargin = 8.dp })
         card.addView(row, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 14.dp })
@@ -1987,7 +2186,8 @@ class MainActivity : Activity() {
             Components.saveStreamApps(this, list + pkg)
             field.setText("")
             renderStreamApps()
-        }, LinearLayout.LayoutParams(80.dp, 44.dp).apply { leftMargin = 8.dp })
+        }.apply { minWidth = 80.dp; minimumWidth = 80.dp; setPadding(16.dp, 0, 16.dp, 0) },
+            LinearLayout.LayoutParams(WRAP_CONTENT, 44.dp).apply { leftMargin = 8.dp })
         body.addView(addRow, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 8.dp })
         card.addView(body)
         makeCollapsible("stream", card, listOf(header, statusRow, streamDetail), chevron, body, defaultOpen = false)
@@ -2117,7 +2317,7 @@ class MainActivity : Activity() {
         card.addView(statusRow, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 8.dp })
         dpDetail = label("", 13f, p.sub)
         card.addView(dpDetail, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 6.dp })
-        dpMake = pillButton("Make SolCube the handler", filled = true) {
+        dpMake = pillButton("Make SolCube the handler", filled = true, autoFit = true) {
             if (dpBusy) return@pillButton
             dpBusy = true
             renderDouble()
@@ -2155,15 +2355,20 @@ class MainActivity : Activity() {
         body.addView(windowRow, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 14.dp })
         body.addView(label("Android's own setting (default 300 ms). Takes effect after a restart. A single press locks the screen that much later.", 12f, p.sub))
 
-        body.addView(Switch(this).apply {
+        dpVibSwitch = Switch(this).apply {
             text = "Short vibration on double press"
             textSize = 13.5f
             setTextColor(p.fg)
             typeface = fontRegular
             styleSwitch(this)
             isChecked = DoublePress.vibrate(this@MainActivity)
-            setOnCheckedChangeListener { _, c -> DoublePress.setVibrate(this@MainActivity, c) }
-        }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 12.dp })
+            setOnCheckedChangeListener { _, c ->
+                if (syncingVibUi) return@setOnCheckedChangeListener
+                DoublePress.setVibrate(this@MainActivity, c)
+                refreshHapticsUi?.invoke()
+            }
+        }
+        body.addView(dpVibSwitch, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 12.dp })
         card.addView(body)
         makeCollapsible("double", card, listOf(header, statusRow, dpDetail), chevron, body, defaultOpen = false)
         renderDouble()
@@ -2183,14 +2388,35 @@ class MainActivity : Activity() {
         dpStatus.setTextColor(if (ready) p.ok else p.sub)
         (dpDot.background as GradientDrawable).setColor(if (ready) p.ok else alpha(p.sub, 0.5f))
         dpDetail.put(when {
-            ready -> "Double-press the power button to " + actionText(DoublePress.action) + "."
+            ready -> pressStatusLine(isDouble = true, DoublePress.action)
             mine -> "Its switch in vivo Wallet (“Double press the Power button to quickly swipe cards”) is off. Set up turns it on."
             h == null -> "Android asks which app to use each time."
             else -> "Right now it goes to ${appName(h)}."
         })
         dpMake.visibility = if (ready) View.GONE else View.VISIBLE
-        dpMake.text = if (dpBusy) "…" else "Set up double press"
+        dpMake.text = if (dpBusy) "…" else I18n.t("Set up double press")
         renderChoices(dpChoices, DoublePress.action, cts = true) { renderDouble() }
+    }
+
+    private fun pressStatusLine(isDouble: Boolean, pa: PressAction): String {
+        val kind = pa.action(this)
+        val pkg = if (kind == null) pa.target(this) else null
+        val custom = if (kind == PressAction.CUSTOM) pa.customAction(this) else null
+        val customDesc = if (custom != null) {
+            if (I18n.current() == I18n.LANG_EN) {
+                customActionPhrase(custom)
+            } else {
+                val allR = if (custom.optString("type") == "run_routine") Routines.load(this) else emptyList()
+                val rtName: (String) -> String = { rid -> allR.firstOrNull { it.optString("id") == rid }?.optString("name") ?: "?" }
+                Actions.describe(custom, ::appName, rtName)
+            }
+        } else null
+        return I18n.pressActionDetail(
+            isDouble = isDouble,
+            kind = kind,
+            targetName = pkg?.takeIf { it.isNotEmpty() }?.let(::appName),
+            customDesc = customDesc,
+        )
     }
 
     /** "open Mir Pay" / "turn silent mode on or off" … for the status line. */
@@ -3086,7 +3312,7 @@ class MainActivity : Activity() {
             }
         }
 
-        box.addView(pillButton("Draw a custom shape", filled = false) {
+        box.addView(pillButton("Draw a custom shape", filled = false, autoFit = true) {
             dlg.dismiss()
             recordGesture(null) { id ->
                 renderActiveGesturesList()
@@ -3138,7 +3364,7 @@ class MainActivity : Activity() {
     }
 
     private fun gesturePad(hint: String): GesturePad = GesturePad(this, p.accent, alpha(p.fg, 0.22f), p.sub).apply {
-        this.hint = hint
+        this.hint = I18n.t(hint)
     }
 
     /** Draw on a pad and see what SolCube makes of it, with one or two fingers. */
@@ -3152,7 +3378,7 @@ class MainActivity : Activity() {
         val sub = label(" ", 12.5f, p.sub).apply { gravity = Gravity.CENTER }
         box.addView(sub, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         var pendingAction: (() -> Unit)? = null
-        val assignBtn = pillButton("Assign action", filled = true) { pendingAction?.invoke() }.apply {
+        val assignBtn = pillButton("Assign action", filled = true, autoFit = true) { pendingAction?.invoke() }.apply {
             visibility = View.GONE
         }
         box.addView(assignBtn, LinearLayout.LayoutParams(MATCH_PARENT, 42.dp).apply { topMargin = 12.dp })
@@ -3174,7 +3400,7 @@ class MainActivity : Activity() {
                     else -> "Nothing assigned to it with $how yet"
                 }
                 if (block == null) {
-                    if (GestureStore.vibrate(this)) DoublePress.vibrateOnce(this)
+                    if (GestureStore.vibrate(this)) HapticPrefs.playSlot(this, HapticPrefs.SLOT_GESTURES)
                     val existing = by.firstOrNull()
                     assignBtn.text = if (existing != null) "Edit “${existing.optString("name")}”" else "Assign action"
                     assignBtn.visibility = View.VISIBLE
@@ -3671,7 +3897,7 @@ class MainActivity : Activity() {
             val a = acts.getJSONObject(i)
             val at = a.optString("type")
             val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-            row.addView(label("${i + 1}.  " + (Actions.ALL[at] ?: at), 14.5f, p.fg),
+            row.addView(label("${i + 1}.  " + I18n.t(Actions.ALL[at] ?: at), 14.5f, p.fg, localize = false),
                 LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
             addActionOptionChips(row, a, isRoutine = isRoutine, allowToggle = false, allRoutines = allRoutines, selfRoutineId = selfRoutineId, onUpdate = rebuild)
             if (i > 0) row.addView(label("↑", 15f, p.sub).apply {
@@ -3934,19 +4160,7 @@ class MainActivity : Activity() {
             val (whenClause, doClause) = Routines.plainSummaryParts(
                 r, all, ::appName, { gid -> GestureStore.name(this, gid) }, rtNameMap,
             )
-            val sb = android.text.SpannableStringBuilder()
-            fun appendAccent(word: String) {
-                val s = sb.length
-                sb.append(word)
-                sb.setSpan(android.text.style.StyleSpan(android.graphics.Typeface.BOLD), s, sb.length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-                sb.setSpan(android.text.style.ForegroundColorSpan(p.link), s, sb.length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-            }
-            val (whenWord, doWord) = I18n.summaryKeywords()
-            appendAccent(whenWord)
-            sb.append(" ").append(whenClause).append(", ")
-            appendAccent(doWord)
-            sb.append(" ").append(doClause).append(".")
-            summaryText.text = sb
+            summaryText.text = I18n.buildSummary(whenClause, doClause, p.link)
         }
 
         val nameCard = card()
@@ -4043,7 +4257,7 @@ class MainActivity : Activity() {
                         else { t.put("minutes", v / 60); t.remove("seconds") }
                         rebuild()
                     }
-                    row.addView(label("For ${Routines.wifiGoneDurationText(sec)}", 13.5f, p.fg), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+                    row.addView(label(Routines.wifiGoneForText(sec), 13.5f, p.fg, localize = false), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
                     row.addView(chip("−", false) {
                         val next = when {
                             sec > 300 -> sec - 300
@@ -4454,7 +4668,7 @@ class MainActivity : Activity() {
         }
 
         val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        buttons.addView(pillButton("Save", filled = true) {
+        buttons.addView(pillButton("Save", filled = true, autoFit = true) {
             val list = commit()
             io.execute {
                 Routines.save(this, list)
@@ -4468,7 +4682,7 @@ class MainActivity : Activity() {
             }
             dlg.dismiss()
         }, LinearLayout.LayoutParams(0, 46.dp, 1f))
-        buttons.addView(pillButton("Run now", filled = false) {
+        buttons.addView(pillButton("Run now", filled = false, autoFit = true) {
             val list = commit()
             io.execute {
                 Routines.save(this, list)
@@ -4530,7 +4744,10 @@ class MainActivity : Activity() {
                 updateLink.visibility = if (r != null) View.VISIBLE else View.GONE
                 if (r != null) {
                     updateLink.text = "Update available: ${r.version}"
-                    Updates.firstShow(this, r)   // the background check won't pop it up again
+                    Updates.firstShow(this, r)   // track that dialog has been seen
+                    if (!manual && !openedNow && Updates.shouldNotify(this, r)) {
+                        Updates.notifyUpdate(this, r)
+                    }
                     // every time the app is opened while it's out of date (and from the button)
                     if ((openedNow || manual) && !updateDialogUp) {
                         updateDialogUp = true
@@ -4646,11 +4863,14 @@ class MainActivity : Activity() {
         }
 
     /** Card title with a small "BETA" tag after it. */
-    private fun betaTitle(t: String, size: Float = 18f) = LinearLayout(this).apply {
-        orientation = LinearLayout.HORIZONTAL
-        gravity = Gravity.CENTER_VERTICAL
-        addView(label(t, size, p.fg, bold = true))
-        addView(label("BETA", 10.5f, p.accent, bold = true).apply {
+    private fun betaTitle(t: String, size: Float = 18f): LinearLayout {
+        val titleView = label(t, size, p.fg, bold = true).apply {
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }
+        val badgeView = label("BETA", 10.5f, p.accent, bold = true).apply {
+            maxLines = 1
+            isSingleLine = true
             letterSpacing = 0.08f
             setPadding(8.dp, 2.dp, 8.dp, 2.dp)
             background = GradientDrawable().apply {
@@ -4658,7 +4878,25 @@ class MainActivity : Activity() {
                 setColor(alpha(p.accent, 0.14f))
                 setStroke(1.dp, alpha(p.accent, 0.45f))
             }
-        }, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { leftMargin = 10.dp })
+        }
+        return object : LinearLayout(this) {
+            override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+                if (MeasureSpec.getMode(widthMeasureSpec) != MeasureSpec.UNSPECIFIED) {
+                    val availW = MeasureSpec.getSize(widthMeasureSpec) - paddingLeft - paddingRight
+                    badgeView.measure(
+                        MeasureSpec.makeMeasureSpec(availW.coerceAtLeast(0), MeasureSpec.AT_MOST),
+                        MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED),
+                    )
+                    titleView.maxWidth = (availW - badgeView.measuredWidth - 10.dp).coerceAtLeast(0)
+                }
+                super.onMeasure(widthMeasureSpec, heightMeasureSpec)
+            }
+        }.apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(titleView)
+            addView(badgeView, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { leftMargin = 10.dp })
+        }
     }
 
     /** "Also a Quick Settings tile" + a button for the system's add-tile prompt. */
@@ -4730,13 +4968,26 @@ class MainActivity : Activity() {
         sw.minHeight = 44.dp
     }
 
-    private fun pillButton(t: String, filled: Boolean, onClick: () -> Unit) =
-        label(t, 15f, if (filled) p.onAccent else p.fg, bold = true).apply {
-            gravity = Gravity.CENTER
-            maxLines = 1
-            background = ripple(if (filled) accentGradient(24.dp) else glass(24.dp), 24.dp)
-            setOnClickListener { onClick() }
+    private fun pillButton(
+        t: String,
+        filled: Boolean,
+        size: Float = 15f,
+        autoFit: Boolean = false,
+        onClick: () -> Unit,
+    ) = label(t, size, if (filled) p.onAccent else p.fg, bold = true).apply {
+        gravity = Gravity.CENTER
+        maxLines = 1
+        ellipsize = android.text.TextUtils.TruncateAt.END
+        setPadding(12.dp, 0, 12.dp, 0)
+        if (autoFit) {
+            val sp = resources.displayMetrics.scaledDensity
+            val minPx = (9.5f * sp).toInt().coerceAtLeast(1)
+            val maxPx = (size * sp).toInt().coerceAtLeast(minPx + 1)
+            setAutoSizeTextTypeUniformWithConfiguration(minPx, maxPx, 1, android.util.TypedValue.COMPLEX_UNIT_PX)
         }
+        background = ripple(if (filled) accentGradient(24.dp) else glass(24.dp), 24.dp)
+        setOnClickListener { onClick() }
+    }
 
     private fun rounded(color: Int, radius: Int) = GradientDrawable().apply {
         cornerRadius = radius.toFloat()
@@ -4901,7 +5152,7 @@ class MainActivity : Activity() {
                         val stop = kotlin.math.round(pos).toInt().coerceIn(0, 2)
                         if (stop != lastTickStop) {
                             lastTickStop = stop
-                            performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK)
+                            HapticPrefs.uiTick(this@MainActivity)
                         }
                     }
                     return true
@@ -4915,7 +5166,7 @@ class MainActivity : Activity() {
                     }
                     val changed = target != mode
                     if (changed && !dragging) {
-                        performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK)
+                        HapticPrefs.uiTick(this@MainActivity)
                     }
                     mode = target
                     anim?.cancel()

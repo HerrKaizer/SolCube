@@ -439,7 +439,7 @@ class TempOverlay(private val ctx: Context) {
         val slop = android.view.ViewConfiguration.get(ctx).scaledTouchSlop
         val longPress = Runnable {
             held = true
-            box.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+            HapticPrefs.uiLongPress(ctx)
             Island.show(ctx, "Overlay off")
             Thread { Components.setTemp(ctx, false); Components.setFps(ctx, false) }.start()
         }

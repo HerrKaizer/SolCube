@@ -303,9 +303,7 @@ object Island {
         private val bg = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.BLACK }
         private val txt = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.WHITE
-            typeface = runCatching {
-                Typeface.Builder(ctx.assets, "fonts/GoogleSansFlex.ttf").setFontVariationSettings("'wght' 560").build()
-            }.getOrNull() ?: Typeface.DEFAULT_BOLD
+            typeface = Fonts.get(ctx, 560)
         }
         private val mark = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE

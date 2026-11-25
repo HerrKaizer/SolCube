@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="a11y_label">SolCube 波纹</string>
+    <string name="a11y_description">允许 SolCube 在状态栏上方绘制即圈即搜的波纹动效，不会读取屏幕上的任何内容。</string>
+</resources>

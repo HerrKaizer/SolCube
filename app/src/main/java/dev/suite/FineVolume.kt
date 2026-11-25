@@ -432,7 +432,7 @@ class VolumeDial(
         }
         if (v != value) {
             value = v
-            performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK)
+            HapticPrefs.uiTick(context)
             onChange(v)
         }
     }

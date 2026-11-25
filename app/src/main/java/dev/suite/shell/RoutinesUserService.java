@@ -852,7 +852,7 @@ public class RoutinesUserService extends ISolCubeService.Stub {
             write("wifi", "on");
             L.i(r.optString("name") + ": Wi-Fi was off → turned on");
             SysSettings.notice("Wi-Fi on", true);
-            Haptics.done();
+            Haptics.routineDone();
         }
     }
 
@@ -1068,6 +1068,7 @@ public class RoutinesUserService extends ISolCubeService.Stub {
                 goneSince.clear();
                 inRange.clear();
                 L.i("loaded " + routines.length() + " routines");
+                Haptics.configure(o.optJSONObject("haptics"));
                 GestureListener.configure(o.optJSONObject("gestures"), routines,
                         (gid, fingers, res) -> evaluate("gesture:" + fingers + ":" + gid));
                 evaluate(null);

@@ -593,7 +593,7 @@ half4 main(float2 fc) {
                 if (tapped != activeIdx) {
                     activeIdx = tapped
                     lastTickIdx = tapped
-                    performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                    HapticPrefs.uiTick(context)
                     onSelect(tapped)
                 } else {
                     lastTickIdx = activeIdx
@@ -614,7 +614,7 @@ half4 main(float2 fc) {
                     val nearest = pos.roundToInt().coerceIn(0, n - 1)
                     if (nearest != lastTickIdx) {
                         lastTickIdx = nearest
-                        performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                        HapticPrefs.uiTick(context)
                         activeIdx = nearest
                         onSelect(nearest)
                     }

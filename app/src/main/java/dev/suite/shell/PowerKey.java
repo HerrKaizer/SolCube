@@ -296,14 +296,14 @@ final class PowerKey {
             if (fire) {
                 if (routine && CtsListener.triggerRoutine("power_hold")) {
                     L.i("power hold → routine");
-                    CtsListener.pop();
+                    Haptics.powerHold();
                 } else if (cts) {
                     L.i("power hold");
                     CtsListener.fire(fx, fy, new float[]{fx, fy, fx, fy}, c);
                 } else if (act) {
                     L.i("power hold → SolCube action");
                     // the "Power button hold" card: SolCube's invisible activity opens the app / switches the sound mode / runs action
-                    CtsListener.pop();
+                    Haptics.powerHold();
                     SysSettings.exec("am", "start", "-n", "dev.suite/.HoldActivity",
                             "-f", "0x10800000");   // NEW_TASK | NO_ANIMATION
                 } else {

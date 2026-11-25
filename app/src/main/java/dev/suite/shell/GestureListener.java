@@ -89,6 +89,7 @@ final class GestureListener {
             enabled = g.optBoolean("on", false);
             sens = g.optInt("sens", 1);
             vib = g.optBoolean("vibrate", true);
+            if (g.has("haptic")) Haptics.gesturePreset = g.optString("haptic", Haptics.gesturePreset);
             JSONArray a = g.optJSONArray("ignore");
             if (a != null) for (int i = 0; i < a.length(); i++) ig.add(a.optString(i));
             JSONArray sm = g.optJSONArray("samples");
@@ -333,7 +334,7 @@ final class GestureListener {
         if (ignore.contains(front)) { L.i("gesture " + r.id + " ignored in " + front); return; }
         L.i("gesture (" + fingers + " finger" + (fingers == 1 ? "" : "s") + ") " + r);
         last = r.id + " " + Math.round(r.score * 100) + "% " + time;
-        if (vibrate) Haptics.pop();
+        if (vibrate) Haptics.gesture();
         Sink s = sink;
         if (s != null) s.onGesture(r.id, fingers, r);
     }

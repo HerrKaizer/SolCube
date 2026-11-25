@@ -68,6 +68,7 @@ public class CtsUserService extends ISolCubeService.Stub {
             JSONObject o = new JSONObject(json);
             CtsListener.freezeMs = Math.max(0, Math.min(600, o.optLong("freeze", 0)));
             CtsListener.animate = o.optBoolean("animate", true);
+            Haptics.configure(o.optJSONObject("haptics"));
             String sec = o.optString("secret", "");
             if (!sec.isEmpty()) {
                 CtsListener.secret = sec;
@@ -79,7 +80,7 @@ public class CtsUserService extends ISolCubeService.Stub {
             boolean nav = o.optBoolean("nav", false);
             CtsListener.navCts = o.optBoolean("navCts", nav);
             CtsListener.navRoutine = o.optBoolean("navRoutine", false);
-            CtsListener.navHoldMs = clamp(o.optLong("navHold", 450));
+            CtsListener.navHoldMs = clamp(o.optLong("navHold", 350));
             CtsListener.navEnabled = nav;
             boolean btnCts = o.optBoolean("buttonCts", true);
             PowerKey.cts = btnCts;
@@ -127,7 +128,8 @@ public class CtsUserService extends ISolCubeService.Stub {
             System.exit(0);
         }
         button = btn;
-        L.i("triggers: touch=" + touch + " (" + CtsListener.holdMs + " ms), button=" + btn + " (" + PowerKey.holdMs + " ms)");
+        L.i("triggers: touch=" + touch + " (" + CtsListener.holdMs + " ms), nav=" + CtsListener.navEnabled
+                + " (" + CtsListener.navHoldMs + " ms), button=" + btn + " (" + PowerKey.holdMs + " ms)");
     }
 
     /** /dev/input/eventN of the input device with this name (from `getevent -p`, else `/proc/bus/input/devices`). */

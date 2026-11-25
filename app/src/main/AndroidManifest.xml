@@ -8,6 +8,7 @@
     <!-- localhost socket between the shell-side listener and the ripple overlay -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- double press: silent mode needs Do Not Disturb access (granted through Shizuku) -->
     <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
 
@@ -100,6 +101,10 @@
             android:name=".IslandReceiver"
             android:exported="true"
             android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+
+        <receiver
+            android:name=".UpdateActionReceiver"
+            android:exported="false" />
 
         <receiver
             android:name=".BootReceiver"

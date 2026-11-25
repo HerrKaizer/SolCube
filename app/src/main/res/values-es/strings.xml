@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="a11y_label">Efecto SolCube</string>
+    <string name="a11y_description">Permite que SolCube muestre el efecto de Circle to Search sobre la barra de estado. No lee nada de la pantalla.</string>
+</resources>

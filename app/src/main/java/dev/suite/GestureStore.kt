@@ -22,7 +22,7 @@ object GestureStore {
 
     fun on(ctx: Context) = Components.enabled(ctx, KEY)
     fun sens(ctx: Context) = Components.prefs(ctx).getInt(K_SENS, 1)
-    fun vibrate(ctx: Context) = Components.prefs(ctx).getBoolean(K_VIBRATE, true)
+    fun vibrate(ctx: Context) = HapticPrefs.preset(ctx, HapticPrefs.SLOT_GESTURES) != HapticPrefs.OFF
 
     /** Apps where gestures never fire. Defaults to the frame-interpolation games. */
     fun ignore(ctx: Context): JSONArray = Components.prefs(ctx).getString(K_IGNORE, null)
@@ -96,7 +96,7 @@ object GestureStore {
     private fun put(ctx: Context, key: String, v: Any) = Components.prefs(ctx).edit().putString(key, v.toString()).commit()
 
     fun setSens(ctx: Context, v: Int) { Components.prefs(ctx).edit().putInt(K_SENS, v.coerceIn(0, 2)).commit(); push(ctx) }
-    fun setVibrate(ctx: Context, v: Boolean) { Components.prefs(ctx).edit().putBoolean(K_VIBRATE, v).commit(); push(ctx) }
+    fun setVibrate(ctx: Context, v: Boolean) { HapticPrefs.setSlotEnabled(ctx, HapticPrefs.SLOT_GESTURES, v); push(ctx) }
     fun setIgnore(ctx: Context, a: JSONArray) { put(ctx, K_IGNORE, a); push(ctx) }
     fun setOn(ctx: Context, on: Boolean) { Components.prefs(ctx).edit().putBoolean(KEY, on).commit(); push(ctx) }
 
@@ -168,6 +168,7 @@ object GestureStore {
         .put("on", on(ctx))
         .put("sens", sens(ctx))
         .put("vibrate", vibrate(ctx))
+        .put("haptic", HapticPrefs.preset(ctx, HapticPrefs.SLOT_GESTURES))
         .put("ignore", ignore(ctx))
         .put("samples", samples(ctx))
 

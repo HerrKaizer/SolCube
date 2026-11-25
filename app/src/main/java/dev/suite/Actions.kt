@@ -119,6 +119,7 @@ object Actions {
     }
 
     fun valueText(type: String, v: String): String {
+        val gr = I18n.g()
         val raw = when {
             v == "toggle" -> "Toggle"
             v == "restore" -> "Back to before"
@@ -128,14 +129,14 @@ object Actions {
             type == "rotation" && v == "landscape" -> "Landscape"
             type == "dark_mode" && v == "auto" -> "Auto"
             type == "screen_timeout" -> when (v) {
-                "15000" -> if (I18n.current() == I18n.LANG_RU) "15 с" else "15 s"
-                "30000" -> if (I18n.current() == I18n.LANG_RU) "30 с" else "30 s"
-                "60000" -> if (I18n.current() == I18n.LANG_RU) "1 мин" else "1 min"
-                "120000" -> if (I18n.current() == I18n.LANG_RU) "2 мин" else "2 min"
-                "300000" -> if (I18n.current() == I18n.LANG_RU) "5 мин" else "5 min"
-                "600000" -> if (I18n.current() == I18n.LANG_RU) "10 мин" else "10 min"
-                "1800000" -> if (I18n.current() == I18n.LANG_RU) "30 мин" else "30 min"
-                else -> "${(v.toLongOrNull() ?: 60_000L) / 1000} " + if (I18n.current() == I18n.LANG_RU) "с" else "s"
+                "15000" -> return "15 ${gr.secUnit}"
+                "30000" -> return "30 ${gr.secUnit}"
+                "60000" -> return "1 ${gr.minUnit}"
+                "120000" -> return "2 ${gr.minUnit}"
+                "300000" -> return "5 ${gr.minUnit}"
+                "600000" -> return "10 ${gr.minUnit}"
+                "1800000" -> return "30 ${gr.minUnit}"
+                else -> return "${(v.toLongOrNull() ?: 60_000L) / 1000} ${gr.secUnit}"
             }
             type == "media_control" -> when (v) {
                 "play_pause" -> "Play / Pause"
@@ -146,8 +147,9 @@ object Actions {
                 "stop" -> "Stop"
                 else -> v.replaceFirstChar { it.uppercase() }
             }
+            type == "ringer" && v == "normal" -> "Ring"
             type in setOf("media", "ring_vol", "notif_vol", "alarm_vol", "brightness") -> return "$v%"
-            type == "wait" -> return "$v " + if (I18n.current() == I18n.LANG_RU) "с" else "s"
+            type == "wait" -> return "$v ${gr.secUnit}"
             else -> v.replaceFirstChar { it.uppercase() }
         }
         return I18n.t(raw)
@@ -174,26 +176,23 @@ object Actions {
     ): String {
         val type = o.optString("type")
         val name = I18n.t(ALL[type] ?: type)
-        val ru = I18n.current() == I18n.LANG_RU
-        val pt = I18n.current() == I18n.LANG_PT
+        val gr = I18n.g()
         return when {
             type == "open_app" -> {
                 val pkg = o.optString("pkg")
-                if (pkg.isEmpty()) I18n.t("Open app")
-                else when {
-                    ru -> "Открыть ${appName(pkg)}"
-                    pt -> "Abrir ${appName(pkg)}"
-                    else -> "Open ${appName(pkg)}"
+                when {
+                    pkg.isEmpty() -> I18n.t("Open app")
+                    gr.code == I18n.LANG_DE -> "${appName(pkg)} öffnen"
+                    else -> "${gr.openVerb} ${appName(pkg)}"
                 }
             }
             type == "close_app" -> {
                 val apps = o.optJSONArray("apps")
                 when (val n = apps?.length() ?: 0) {
                     0 -> I18n.t("Close specific apps")
-                    1 -> when {
-                        ru -> "Закрыть ${appName(apps!!.getString(0))}"
-                        pt -> "Fechar ${appName(apps!!.getString(0))}"
-                        else -> "Close ${appName(apps!!.getString(0))}"
+                    1 -> {
+                        val nm = appName(apps!!.getString(0))
+                        if (gr.code == I18n.LANG_DE) "$nm schließen" else "${gr.closeVerb} $nm"
                     }
                     else -> I18n.t("Close $n apps")
                 }
@@ -207,10 +206,14 @@ object Actions {
                 val targets = o.optJSONArray("apps")
                 when (val n = targets?.length() ?: 0) {
                     0 -> I18n.t("Launch in background")
-                    1 -> when {
-                        ru -> "Запустить ${appName(targets!!.getString(0))} в фоне"
-                        pt -> "Abrir ${appName(targets!!.getString(0))} em 2º plano"
-                        else -> "Launch ${appName(targets!!.getString(0))} in bg"
+                    1 -> {
+                        val nm = appName(targets!!.getString(0))
+                        if (gr.code == I18n.LANG_DE) {
+                            "$nm im Hintergrund starten"
+                        } else {
+                            val sfx = if (gr.launchBgSuffix.isNotEmpty()) " ${gr.launchBgSuffix}" else ""
+                            "${gr.launchVerb} $nm$sfx"
+                        }
                     }
                     else -> I18n.t("Launch $n apps in bg")
                 }
@@ -218,10 +221,16 @@ object Actions {
             type == "notice" -> {
                 val t = o.optString("text").trim()
                 if (t.isEmpty()) I18n.t("Show status pill")
-                else when {
-                    ru -> "Островок «${t.take(24)}»"
-                    pt -> "Pílula “${t.take(24)}”"
-                    else -> "Pill “${t.take(24)}”"
+                else {
+                    val clip = t.take(24)
+                    when (gr.code) {
+                        I18n.LANG_RU -> "${gr.pillWord} «$clip»"
+                        I18n.LANG_FR -> "${gr.pillWord} « $clip »"
+                        I18n.LANG_PL -> "${gr.pillWord} „$clip”"
+                        I18n.LANG_DE -> "${gr.pillWord} „$clip“"
+                        I18n.LANG_ZH -> "${gr.pillWord}“$clip”"
+                        else -> "${gr.pillWord} “$clip”"
+                    }
                 }
             }
             type == "open_url" -> {
@@ -229,11 +238,7 @@ object Actions {
                 if (u.isEmpty()) I18n.t("Open link")
                 else {
                     val shortU = u.removePrefix("https://").removePrefix("http://").take(28)
-                    when {
-                        ru -> "Открыть $shortU"
-                        pt -> "Abrir $shortU"
-                        else -> "Open $shortU"
-                    }
+                    if (gr.code == I18n.LANG_DE) "$shortU öffnen" else "${gr.openVerb} $shortU"
                 }
             }
             type == "shell_cmd" -> {
@@ -242,23 +247,15 @@ object Actions {
             }
             type == "run_routine" -> {
                 val id = o.optString("routineId")
-                if (id.isEmpty()) I18n.t("Run routine")
-                else when {
-                    ru -> "Запустить ${routineName(id)}"
-                    pt -> "Executar ${routineName(id)}"
-                    else -> "Run ${routineName(id)}"
+                when {
+                    id.isEmpty() -> I18n.t("Run routine")
+                    gr.code == I18n.LANG_DE -> "${routineName(id)} ausführen"
+                    else -> "${gr.runVerb} ${routineName(id)}"
                 }
             }
-            o.optString("value") == "toggle" -> when {
-                ru -> "Переключить: $name"
-                pt -> "Alternar $name"
-                else -> "Toggle $name"
-            }
-            type == "media_control" -> when {
-                ru -> "Медиа: ${valueText(type, o.optString("value", "play_pause"))}"
-                pt -> "Mídia: ${valueText(type, o.optString("value", "play_pause"))}"
-                else -> "Media: ${valueText(type, o.optString("value", "play_pause"))}"
-            }
+            o.optString("value") == "toggle" ->
+                if (gr.code == I18n.LANG_DE) "$name umschalten" else "${gr.togglePrefix}$name"
+            type == "media_control" -> "${gr.mediaPrefix}${valueText(type, o.optString("value", "play_pause"))}"
             type == "stream_laptop" -> I18n.t(when (o.optString("value")) {
                 "wide" -> "Laptop 16:10 screen"
                 "on" -> "Stream to laptop on"
@@ -272,7 +269,16 @@ object Actions {
                 else -> "Screen timeout back to before"
             })
             values(type, allowRestore = false).isEmpty() -> name
-            else -> if (ru || pt) "$name: ${valueText(type, o.optString("value")).lowercase()}" else "$name ${valueText(type, o.optString("value")).lowercase()}"
+            else -> {
+                val valTxt = valueText(type, o.optString("value"))
+                when {
+                    gr.code == I18n.LANG_DE -> "$name: $valTxt"
+                    gr.code == I18n.LANG_ZH -> "$name：$valTxt"
+                    gr.code == I18n.LANG_FR -> "$name : ${valTxt.lowercase()}"
+                    gr.useColonForActionValue -> "$name: ${valTxt.lowercase()}"
+                    else -> "$name ${valTxt.lowercase()}"
+                }
+            }
         }
     }
 }

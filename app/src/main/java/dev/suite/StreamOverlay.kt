@@ -94,19 +94,20 @@ class StreamOverlay(private val ctx: Context) {
 
     private fun render() {
         if (!::root.isInitialized) return
-        streamBtn.text = when {
+        I18n.init(ctx)
+        streamBtn.text = I18n.t(when {
             !helper -> "Laptop not found"
             streaming -> "Stop stream"
             else -> "Start stream"
-        }
+        })
         bubble.text = if (streaming) "●" else "○"
-        dimText.text = "Brightness ${Components.dim(ctx)}%"
+        dimText.text = I18n.t("Brightness ${Components.dim(ctx)}%")
     }
 
     // ------------------------------------------------------------------ layout
 
-    private fun pill(t: String, filled: Boolean, onClick: () -> Unit) = TextView(winCtx).apply {
-        text = t
+    private fun pill(t: String, filled: Boolean, localize: Boolean = true, onClick: () -> Unit) = TextView(winCtx).apply {
+        text = if (localize) I18n.t(t) else t
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
         typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
         setTextColor(if (filled) 0xFF1E1002.toInt() else fg)
@@ -121,6 +122,7 @@ class StreamOverlay(private val ctx: Context) {
 
     @SuppressLint("ClickableViewAccessibility")
     private fun build() {
+        I18n.init(ctx)
         root = LinearLayout(winCtx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
 
         bubble = TextView(winCtx).apply {
@@ -230,16 +232,17 @@ class StreamOverlay(private val ctx: Context) {
                 apps.addView(r, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(6f) })
             }
             val name = runCatching { pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString() }.getOrDefault(pkg)
-            r!!.addView(pill(name, false) { launch(pkg) },
+            r!!.addView(pill(name, false, localize = false) { launch(pkg) },
                 LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(40f)).apply { if (i % 2 == 1) leftMargin = dp(6f) })
         }
     }
 
     private fun launch(pkg: String) {
+        I18n.init(ctx)
         collapse()
         val i = ctx.packageManager.getLaunchIntentForPackage(pkg) ?: return
         runCatching { ctx.startActivity(i.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)) }
-            .onFailure { android.widget.Toast.makeText(ctx, "Couldn't open it", android.widget.Toast.LENGTH_SHORT).show() }
+            .onFailure { android.widget.Toast.makeText(ctx, I18n.t("Couldn't open it"), android.widget.Toast.LENGTH_SHORT).show() }
     }
 
     private fun key(code: Int) {
@@ -250,11 +253,12 @@ class StreamOverlay(private val ctx: Context) {
     private fun collapse() { panel.visibility = View.GONE }
 
     private fun action(cmd: String) {
+        I18n.init(ctx)
         streamBtn.text = "…"
         bg.post {
             val r = Components.streamCmd(ctx, cmd)
             main.post {
-                if (r == "no-helper") android.widget.Toast.makeText(ctx, "Laptop helper not found — is the cable in and the helper running?", android.widget.Toast.LENGTH_LONG).show()
+                if (r == "no-helper") android.widget.Toast.makeText(ctx, I18n.t("Laptop helper not found — is the cable in and the helper running?"), android.widget.Toast.LENGTH_LONG).show()
             }
             bg.removeCallbacks(poll)
             bg.post(poll)

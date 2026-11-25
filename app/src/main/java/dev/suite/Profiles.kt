@@ -69,6 +69,7 @@ object Profiles {
     }
 
     fun config(ctx: Context): String = JSONObject().put("profiles", JSONArray(load(ctx)))
+        .put("haptics", HapticPrefs.toJson(ctx))
         .put("secret", Ipc.secret(ctx)).toString()
 
     fun newId(): String = "p_" + System.currentTimeMillis()
