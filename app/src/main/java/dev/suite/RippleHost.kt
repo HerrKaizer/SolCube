@@ -139,7 +139,8 @@ class RippleHost(private val ctx: Context) {
             val line = readLine(input) ?: return
             val p = line.trim().split(" ")
             val isNav = p[0] == "ripple_nav"
-            if (p.size < 3 || (p[0] != "ripple" && !isNav)) return
+            val isNavLive = p[0] == "ripple_nav_live"
+            if (p.size < 3 || (p[0] != "ripple" && !isNav && !isNavLive)) return
             val fx = p[1].toFloatOrNull() ?: return
             val fy = p[2].toFloatOrNull() ?: return
             val len = p.getOrNull(3)?.toIntOrNull() ?: 0
@@ -155,7 +156,67 @@ class RippleHost(private val ctx: Context) {
                 frame = decodeScreencap(data)
                 Log.i(TAG, "frame ${frame?.width}x${frame?.height} in ${android.os.SystemClock.uptimeMillis() - t0}ms")
             }
-            if (isNav) {
+            if (isNavLive) {
+                if (SolCubeA11y.instance != null) {
+                    val viewRef = java.util.concurrent.atomic.AtomicReference<RippleView>()
+                    val removeRef = java.util.concurrent.atomic.AtomicReference<() -> Unit>()
+                    val started = CountDownLatch(1)
+                    val clean = CountDownLatch(1)
+                    val done = CountDownLatch(1)
+                    main.post {
+                        addOverlay(
+                            fx, fy, fingers,
+                            onReady = { view, rx, ry, vf, lx, ly, removeOnce ->
+                                view.holdFade = true
+                                view.ctsHoldMs = 0L
+                                view.durationMs = 800L
+                                viewRef.set(view)
+                                removeRef.set(removeOnce)
+                                view.play(
+                                    rx, ry, vf, frame, lx, ly,
+                                    onCts = { started.countDown() },
+                                    onStart = {},
+                                    onClean = { clean.countDown() },
+                                    onDone = {
+                                        removeOnce()
+                                        done.countDown()
+                                    },
+                                )
+                            },
+                            onFail = {
+                                started.countDown()
+                                clean.countDown()
+                                done.countDown()
+                            },
+                        )
+                    }
+                    started.await(2, TimeUnit.SECONDS)
+                    out.write("started\n".toByteArray()); out.flush()
+                    it.soTimeout = 5000
+                    val cmd = readLine(input)?.trim()
+                    if (cmd == "ready") {
+                        clean.await(2, TimeUnit.SECONDS)
+                        out.write("cts\n".toByteArray()); out.flush()
+                        it.soTimeout = 3000
+                        val cmd2 = readLine(input)?.trim()
+                        if (cmd2 == "launched") {
+                            Thread.sleep(160)
+                            viewRef.get()?.holdFade = false
+                            done.await(4, TimeUnit.SECONDS)
+                            out.write("done\n".toByteArray()); out.flush()
+                        } else {
+                            viewRef.get()?.holdFade = false
+                            main.post { removeRef.get()?.invoke() }
+                        }
+                    } else {
+                        viewRef.get()?.holdFade = false
+                        main.post { removeRef.get()?.invoke() }
+                    }
+                    return
+                }
+                out.write("need_wait\n".toByteArray()); out.flush()
+            }
+            if (isNav || isNavLive) {
                 it.soTimeout = 4500
                 val cmd = readLine(input)?.trim()
                 if (cmd != "go") {

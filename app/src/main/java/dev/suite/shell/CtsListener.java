@@ -41,12 +41,14 @@ public class CtsListener {
     static final float NAV_STRIP = 0.035f;          // bottom 3.5 % of the height (~110 px; vivo's bar window is 72 px)
     static final float NAV_SIDE = 0.2f;             // not the outer 20 % on each side (games' corner buttons)
     // OriginOS 6 (Android 16, SDK <= 36) BBKLauncher2 minimizes/closes the foreground app if CTS
-    // opens before the real ACTION_UP + ~350 ms disableInputProxy() settle. Android 17 / OriginOS 7
-    // (SDK >= 37) doesn't trigger the launcher on a stationary hold, so it can fire immediately.
+    // opens before the real ACTION_UP + ~350 ms disableInputProxy() settle. OriginOS 7 (Android 17,
+    // SDK >= 37) also starts speculative startExistingRecents on touch-down (settling in ~30-44 ms
+    // after ACTION_UP), so it uses fireNavLive to start the ripple immediately and launch CTS after
+    // lift + launcher settle on a clean frame.
     static final boolean NAV_WAIT_LIFT = detectNavWaitLift();
     static final long NAV_SETTLE_MS = 350;
     static final long NAV_LIFT_WAIT_MS = 3000;      // max wait for finger lift after a recognised hold; abort if exceeded
-    static boolean navWait = false, navAbort = false;   // guarded by lock
+    static boolean navWait = false, navAbort = false, navLiveWait = false;   // guarded by lock
 
     static boolean detectNavWaitLift() {
         if (android.os.Build.VERSION.SDK_INT >= 37) return false;
@@ -180,7 +182,7 @@ public class CtsListener {
                         }
                     } else if (isNav) {
                         if (navRoutine && triggerRoutine("nav_hold")) Haptics.powerHold();
-                        else if (navCts) fire(fx, fy, fingers, cap);
+                        else if (navCts) fireNavLive(fx, fy, fingers, cap);
                     } else {
                         if (touchRoutine && triggerRoutine("two_finger_hold")) Haptics.powerHold();
                         else if (touchCts) fire(fx, fy, fingers, cap);
@@ -267,10 +269,17 @@ public class CtsListener {
         synchronized (lock) {
             fingersDown = count;
             if (navWait && count > 0) {
-                int nt2 = navTol() * 2;
-                if (count != 1 || navSlot < 0 || id[navSlot] < 0
-                        || Math.max(Math.abs(x[navSlot] - nsx), Math.abs(y[navSlot] - nsy)) > nt2) {
-                    navAbort = true; lock.notifyAll();
+                if (navLiveWait) {
+                    int dragY = Math.round(maxY * 0.12f);
+                    if (count != 1 || navSlot < 0 || id[navSlot] < 0 || (nsy - y[navSlot]) > dragY) {
+                        navAbort = true; lock.notifyAll();
+                    }
+                } else {
+                    int nt2 = navTol() * 2;
+                    if (count != 1 || navSlot < 0 || id[navSlot] < 0
+                            || Math.max(Math.abs(x[navSlot] - nsx), Math.abs(y[navSlot] - nsy)) > nt2) {
+                        navAbort = true; lock.notifyAll();
+                    }
                 }
             }
             if (count == 0 || (!touchEnabled && !navEnabled)) {
@@ -386,11 +395,16 @@ public class CtsListener {
     }
 
     static boolean waitForNavLift() {
+        return waitForNavLift(false);
+    }
+
+    static boolean waitForNavLift(boolean liveRipple) {
         long t0 = now();
         long deadline = t0 + NAV_LIFT_WAIT_MS;
         boolean lifted, aborted;
         synchronized (lock) {
             navWait = true;
+            navLiveWait = liveRipple;
             navAbort = false;
             try {
                 while (fingersDown > 0 && !navAbort) {
@@ -402,6 +416,7 @@ public class CtsListener {
                 aborted = navAbort;
             } finally {
                 navWait = false;
+                navLiveWait = false;
             }
         }
         L.i("nav lift wait " + (now() - t0) + "ms lifted=" + lifted + " abort=" + aborted);
@@ -552,6 +567,183 @@ public class CtsListener {
         } catch (IOException e) {
             L.e("error", e);
         }
+    }
+
+    static void fireNavLive(float fx, float fy, float[] fingers, Capture cap) {
+        if (!busy.compareAndSet(false, true)) return;
+        Haptics.ctsStart();
+        try {
+            if (animate && rippleNavLive(fx, fy, fingers, cap)) return;
+            if (hasVisibleAppBehindHome()) {
+                if (!waitForNavLift(false)) return;
+                waitNavSettled(600);
+            }
+            launch();
+        } finally {
+            busy.set(false);
+        }
+    }
+
+    /** Plays the ripple immediately on hold, settling any speculative recents gesture in parallel underneath. */
+    static boolean rippleNavLive(float fx, float fy, float[] fingers, Capture cap) {
+        long t0 = System.nanoTime();
+        boolean needsSettle = hasVisibleAppBehindHome();
+        byte[] frame = null;
+        if (cap != null) {
+            try { cap.join(250); } catch (InterruptedException ignored) {}
+            frame = cap.data;
+        }
+        int len = frame == null ? 0 : frame.length;
+        try (java.net.Socket s = new java.net.Socket()) {
+            s.setTcpNoDelay(true);
+            s.setSendBufferSize(1 << 22);
+            String key = secret;
+            if (key == null || key.isEmpty()) { L.i("ripple_nav_live skipped: no secret from SolCube yet"); return false; }
+            s.connect(new java.net.InetSocketAddress("127.0.0.1", 47321), 80);
+            s.setSoTimeout(300);
+            OutputStream out = s.getOutputStream();
+            InputStream in0 = s.getInputStream();
+            if (!handshake(in0, out)) return false;
+            out.write(String.format(java.util.Locale.US, "ripple_nav_live %.4f %.4f %d %.4f %.4f %.4f %.4f %d\n",
+                    fx, fy, len, fingers[0], fingers[1], fingers[2], fingers[3], freezeMs).getBytes());
+            out.flush();
+            InputStream in = s.getInputStream();
+            if (!"ok".equals(readLine(in))) return false;
+            if (len > 0) out.write(frame);
+            out.flush();
+
+            s.setSoTimeout(2500);
+            String state = readLine(in);
+            if ("started".equals(state)) {
+                if (needsSettle) {
+                    if (!waitForNavLift(true)) {
+                        out.write("abort\n".getBytes());
+                        out.flush();
+                        return true;
+                    }
+                    waitNavSettled(600);
+                }
+                out.write("ready\n".getBytes());
+                out.flush();
+                s.setSoTimeout(3000);
+                if (!"cts".equals(readLine(in))) return false;
+                launch();
+                out.write("launched\n".getBytes());
+                out.flush();
+                s.setSoTimeout(4000);
+                String line;
+                while ((line = readLine(in)) != null) {
+                    if ("done".equals(line)) {
+                        Haptics.ctsReveal();
+                        break;
+                    }
+                }
+                L.i("ripple_nav_live " + (System.nanoTime() - t0) / 1000000 + "ms settle=" + needsSettle);
+                return true;
+            }
+            if ("need_wait".equals(state)) {
+                if (needsSettle) {
+                    if (!waitForNavLift(false)) {
+                        out.write("abort\n".getBytes());
+                        out.flush();
+                        return true;
+                    }
+                    waitNavSettled(600);
+                }
+                out.write("go\n".getBytes());
+                out.flush();
+                s.setSoTimeout(3000);
+                boolean launched = false;
+                String line;
+                while ((line = readLine(in)) != null) {
+                    if ("cts".equals(line) && !launched) {
+                        launch();
+                        launched = true;
+                    } else if ("done".equals(line)) {
+                        Haptics.ctsReveal();
+                        break;
+                    }
+                }
+                L.i("ripple_nav_live(wait) " + (System.nanoTime() - t0) / 1000000 + "ms settle=" + needsSettle);
+                return launched;
+            }
+            return false;
+        } catch (Exception e) {
+            L.i("ripple_nav_live skipped: " + e);
+            return false;
+        }
+    }
+
+    private static Object atm;
+    private static java.lang.reflect.Method getAllRootTasksM;
+
+    private static void initAtm() throws Exception {
+        if (atm != null) return;
+        atm = Class.forName("android.app.ActivityTaskManager").getMethod("getService").invoke(null);
+        getAllRootTasksM = atm.getClass().getMethod("getAllRootTaskInfos");
+    }
+
+    private static int taskActivityType(Object info) {
+        try {
+            Object cfg = info.getClass().getField("configuration").get(info);
+            Object wcfg = cfg.getClass().getField("windowConfiguration").get(cfg);
+            return (Integer) wcfg.getClass().getMethod("getActivityType").invoke(wcfg);
+        } catch (Throwable t) {
+            return -1;
+        }
+    }
+
+    private static String taskTopPkg(Object info) {
+        try {
+            android.content.ComponentName top =
+                    (android.content.ComponentName) info.getClass().getField("topActivity").get(info);
+            return top != null ? top.getPackageName() : "";
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    static boolean hasVisibleAppBehindHome() {
+        try {
+            initAtm();
+            @SuppressWarnings("unchecked")
+            java.util.List<?> infos = (java.util.List<?>) getAllRootTasksM.invoke(atm);
+            if (infos == null || infos.isEmpty()) return false;
+            if (taskActivityType(infos.get(0)) != 2) return false;
+            for (int i = 1; i < infos.size(); i++) {
+                Object info = infos.get(i);
+                if (!info.getClass().getField("visible").getBoolean(info)) continue;
+                if (taskActivityType(info) != 1) continue;
+                String pkg = taskTopPkg(info);
+                if (!pkg.isEmpty() && !"com.google.android.googlequicksearchbox".equals(pkg)) return true;
+            }
+        } catch (Throwable t) {
+            L.e("nav check", t);
+        }
+        return false;
+    }
+
+    static void waitNavSettled(long maxMs) {
+        long t0 = now();
+        long deadline = t0 + maxMs;
+        boolean homeGone = false;
+        try {
+            initAtm();
+            while (now() < deadline) {
+                @SuppressWarnings("unchecked")
+                java.util.List<?> infos = (java.util.List<?>) getAllRootTasksM.invoke(atm);
+                if (infos != null && !infos.isEmpty() && taskActivityType(infos.get(0)) != 2) {
+                    homeGone = true;
+                    break;
+                }
+                Thread.sleep(15);
+            }
+            if (homeGone) Thread.sleep(35);
+        } catch (InterruptedException ignored) {
+        } catch (Throwable t) {
+            L.e("nav settle", t);
+        }
+        L.i("nav settled in " + (now() - t0) + "ms homeGone=" + homeGone);
     }
 }
 

@@ -43,6 +43,7 @@ class RippleView(context: Context) : View(context) {
     private var t = 0f
     private var running = false
     @Volatile private var waveDone = false   // set in onDraw once the crest is past the farthest corner
+    @Volatile var holdFade = false
     private var fadeA = 1f
     private val FADE_MS = 100f
 
@@ -64,7 +65,8 @@ class RippleView(context: Context) : View(context) {
     /** All points are in this view's coordinates; window offset maps them to screen space. */
     fun play(
         x: Float, y: Float, fingers: FloatArray?, screenshot: Bitmap?,
-        windowX: Float, windowY: Float, onCts: () -> Unit, onStart: () -> Unit, onDone: () -> Unit
+        windowX: Float, windowY: Float, onCts: () -> Unit, onStart: () -> Unit,
+        onClean: () -> Unit = {}, onDone: () -> Unit
     ) {
         cx = x; cy = y; offX = windowX; offY = windowY
         if (fingers != null && fingers.size >= 4) {
@@ -78,15 +80,20 @@ class RippleView(context: Context) : View(context) {
         waveDone = false; fadeA = 1f
         var start = 0L
         var started = false
+        var cleanSent = false
         var doneAt = 0L
         val tick = object : Runnable {
             override fun run() {
                 val now = SystemClock.uptimeMillis()
                 if (!started && now >= start) { started = true; onStart() }   // ripple begins moving
                 t = ((now - start).toFloat() / durationMs).coerceIn(0f, 1f)
+                if (!cleanSent && t >= 1f) {
+                    cleanSent = true
+                    postOnAnimation { postOnAnimation { onClean() } }
+                }
                 // the wave has cleared the farthest corner: short fade, then finish
                 // (instead of waiting out the rest of durationMs)
-                if ((waveDone || t >= 1f) && doneAt == 0L) doneAt = now
+                if ((waveDone || t >= 1f) && !holdFade && doneAt == 0L) doneAt = now
                 val f = if (doneAt == 0L) 0f else ((now - doneAt).toFloat() / FADE_MS).coerceIn(0f, 1f)
                 fadeA = 1f - f * f * (3f - 2f * f)
                 invalidate()
