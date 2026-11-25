@@ -1,5 +1,6 @@
 package dev.suite.shell;
 
+import android.media.AudioManager;
 import android.os.IBinder;
 import android.os.SystemClock;
 import android.view.InputDevice;
@@ -9,8 +10,15 @@ import java.io.FileDescriptor;
 import java.io.FileInputStream;
 import java.io.FileReader;
 import java.lang.reflect.Method;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Power button: hold 0.5 s (screen on) -> Circle to Search with the ripple starting at the
@@ -47,9 +55,29 @@ final class PowerKey {
     static long downAt, downUptime;
     static CtsListener.Capture cap;
 
-    static Object input, power;
-    static Method inject, isInteractive;
+    static Object input, power, audioSvc;
+    static Method inject, isInteractive, adjustVol;
     static final Map<Integer, Integer> scanToKey = new HashMap<>();
+    static final ScheduledExecutorService keyRepeater = Executors.newSingleThreadScheduledExecutor(r -> {
+        Thread t = new Thread(r, "key-repeat");
+        t.setDaemon(true);
+        return t;
+    });
+
+    static final class HeldKey {
+        final int scanCode, keyCode;
+        final long downTime;
+        int repeatCount;
+        boolean sawKernelRepeat;
+        boolean released;
+        ScheduledFuture<?> repeater;
+
+        HeldKey(int scanCode, int keyCode, long downTime) {
+            this.scanCode = scanCode;
+            this.keyCode = keyCode;
+            this.downTime = downTime;
+        }
+    }
 
     static synchronized void start(String powerDev, String... volumeDevs) {
         start(powerDev, "", volumeDevs);
@@ -70,7 +98,7 @@ final class PowerKey {
             L.i("power key disabled (no inject/power service): " + t);
             return;
         }
-        loadKeyLayout(powerDevName);
+        loadKeyLayout(powerDev, powerDevName);
         started = true;
         Thread t = new Thread(() -> readPower(powerDev), "power");
         t.setDaemon(true); t.start();
@@ -82,7 +110,7 @@ final class PowerKey {
         timer.setDaemon(true); timer.start();
     }
 
-    private static void loadKeyLayout(String devName) {
+    private static void loadKeyLayout(String devPath, String devName) {
         scanToKey.clear();
         // Standard Linux input-event-codes fallbacks for hardware keys sharing a PMIC/kpd node
         scanToKey.put(114, KeyEvent.KEYCODE_VOLUME_DOWN);
@@ -105,19 +133,77 @@ final class PowerKey {
         scanToKey.put(142, KeyEvent.KEYCODE_SLEEP);
         scanToKey.put(582, KeyEvent.KEYCODE_VOICE_ASSIST);
         scanToKey.put(583, KeyEvent.KEYCODE_ASSIST);
-        parseKlFile("/system/usr/keylayout/Generic.kl");
+
+        List<String> loaded = new ArrayList<>();
+        String[] genericPaths = {
+            "/system/usr/keylayout/Generic.kl",
+            "/product/usr/keylayout/Generic.kl",
+            "/vendor/usr/keylayout/Generic.kl",
+            "/odm/usr/keylayout/Generic.kl",
+        };
+        for (String p : genericPaths) {
+            if (parseKlFile(p)) loaded.add(p);
+        }
+        if (devName != null && devName.toLowerCase(Locale.US).contains("mtk")) {
+            if (parseKlFile("/system/usr/keylayout/mtk-kpd.kl")) loaded.add("/system/usr/keylayout/mtk-kpd.kl");
+            if (parseKlFile("/vendor/usr/keylayout/mtk-kpd.kl")) loaded.add("/vendor/usr/keylayout/mtk-kpd.kl");
+        }
         if (devName != null && !devName.isEmpty()) {
             String kl = devName.replaceAll("[^A-Za-z0-9_-]", "_") + ".kl";
-            parseKlFile("/system/usr/keylayout/" + kl);
-            parseKlFile("/system_ext/usr/keylayout/" + kl);
-            parseKlFile("/product/usr/keylayout/" + kl);
-            parseKlFile("/vendor/usr/keylayout/" + kl);
-            parseKlFile("/odm/usr/keylayout/" + kl);
+            String[] dirs = {"/system", "/system_ext", "/product", "/vendor", "/odm"};
+            for (String d : dirs) {
+                String p = d + "/usr/keylayout/" + kl;
+                if (parseKlFile(p)) loaded.add(p);
+            }
+        }
+        String dumpsysKl = findKeyLayoutInDumpsys(devPath, devName);
+        if (dumpsysKl != null && !dumpsysKl.isEmpty() && parseKlFile(dumpsysKl)) {
+            loaded.add(dumpsysKl + " (dumpsys)");
+        }
+        L.i("keylayout for " + devName + " (" + devPath + "): " + loaded);
+    }
+
+    private static String findKeyLayoutInDumpsys(String devPath, String devName) {
+        try {
+            String dump = SysSettings.exec("dumpsys", "input");
+            if (dump == null || dump.isEmpty()) return null;
+            String curHeaderName = null, curPath = null, curKl = null;
+            String nameFallback = null;
+            for (String raw : dump.split("\n")) {
+                String line = raw.trim();
+                if (line.startsWith("Device ") && line.contains(":")) {
+                    if (curKl != null) {
+                        if (devPath != null && devPath.equals(curPath)) return curKl;
+                        if (nameFallback == null && devName != null && !devName.isEmpty() && devName.equals(curHeaderName)) {
+                            nameFallback = curKl;
+                        }
+                    }
+                    curHeaderName = line.substring(line.indexOf(':') + 1).trim();
+                    curPath = null;
+                    curKl = null;
+                } else if (line.startsWith("Path:")) {
+                    curPath = line.substring(5).trim();
+                } else if (line.startsWith("KeyLayoutFile:")) {
+                    String kl = line.substring(14).trim();
+                    if (!kl.isEmpty() && !"none".equalsIgnoreCase(kl)) curKl = kl;
+                }
+            }
+            if (curKl != null) {
+                if (devPath != null && devPath.equals(curPath)) return curKl;
+                if (nameFallback == null && devName != null && !devName.isEmpty() && devName.equals(curHeaderName)) {
+                    nameFallback = curKl;
+                }
+            }
+            return nameFallback;
+        } catch (Throwable t) {
+            return null;
         }
     }
 
-    private static void parseKlFile(String path) {
+    private static boolean parseKlFile(String path) {
+        boolean parsed = false;
         try (BufferedReader r = new BufferedReader(new FileReader(path))) {
+            parsed = true;
             String line;
             while ((line = r.readLine()) != null) {
                 int hash = line.indexOf('#');
@@ -136,20 +222,70 @@ final class PowerKey {
             }
         } catch (Throwable ignored) {
         }
+        return parsed;
     }
 
     static boolean interactive() {
         try { return (Boolean) isInteractive.invoke(power); } catch (Throwable t) { return true; }
     }
 
-    static void injectKeyEvent(int action, int keyCode, long downTime, long eventTime, int scanCode) {
+    static boolean injectKeyEvent(int action, int keyCode, long downTime, long eventTime, int repeatCount) {
         try {
-            KeyEvent e = new KeyEvent(downTime, eventTime, action, keyCode, 0, 0,
-                    -1 /* virtual keyboard */, scanCode, KeyEvent.FLAG_FROM_SYSTEM, InputDevice.SOURCE_KEYBOARD);
-            inject.invoke(input, e, 0 /* async */);
+            KeyEvent e = new KeyEvent(downTime, eventTime, action, keyCode, repeatCount, 0,
+                    -1 /* virtual keyboard */, 0 /* scanCode */, KeyEvent.FLAG_FROM_SYSTEM, InputDevice.SOURCE_KEYBOARD);
+            Object ok = inject.invoke(input, e, 0 /* async */);
+            if (Boolean.FALSE.equals(ok)) {
+                L.i("inject returned false for keyCode=" + keyCode + " action=" + action);
+                return false;
+            }
+            return true;
         } catch (Throwable t) {
-            L.i("inject failed: " + t);
+            L.i("inject failed for keyCode=" + keyCode + ": " + t);
+            return false;
         }
+    }
+
+    private static void adjustVolumeFallback(int keyCode) {
+        int dir = keyCode == KeyEvent.KEYCODE_VOLUME_DOWN ? AudioManager.ADJUST_LOWER : AudioManager.ADJUST_RAISE;
+        int flags = AudioManager.FLAG_SHOW_UI | AudioManager.FLAG_PLAY_SOUND;
+        try {
+            if (audioSvc == null || adjustVol == null) {
+                IBinder b = (IBinder) Class.forName("android.os.ServiceManager")
+                        .getMethod("getService", String.class).invoke(null, "audio");
+                if (b != null) {
+                    audioSvc = Class.forName("android.media.IAudioService$Stub")
+                            .getMethod("asInterface", IBinder.class).invoke(null, b);
+                    for (Method m : audioSvc.getClass().getMethods()) {
+                        if (!"adjustSuggestedStreamVolume".equals(m.getName())) continue;
+                        Class<?>[] ps = m.getParameterTypes();
+                        if (ps.length >= 4 && ps[0] == int.class && ps[1] == int.class && ps[2] == int.class) {
+                            adjustVol = m;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (audioSvc != null && adjustVol != null) {
+                Class<?>[] ps = adjustVol.getParameterTypes();
+                Object[] args = new Object[ps.length];
+                args[0] = dir;
+                args[1] = AudioManager.USE_DEFAULT_STREAM_TYPE;
+                args[2] = flags;
+                int strIdx = 0;
+                for (int i = 3; i < ps.length; i++) {
+                    if (ps[i] == String.class) args[i] = strIdx++ == 0 ? "com.android.shell" : "SolCube";
+                    else if (ps[i] == int.class) args[i] = 0;
+                    else if (ps[i] == boolean.class) args[i] = false;
+                }
+                adjustVol.invoke(audioSvc, args);
+                return;
+            }
+        } catch (Throwable t) {
+            audioSvc = null;
+            adjustVol = null;
+            L.i("IAudioService volume fallback failed: " + t);
+        }
+        SysSettings.exec("cmd", "media_session", "volume", "--adj", dir < 0 ? "lower" : "raise", "--show");
     }
 
     static void injectKey(int action, long downTime) {
@@ -158,7 +294,7 @@ final class PowerKey {
 
     static void readPower(String dev) {
         FileDescriptor fd = null;
-        Map<Integer, Long> otherDown = new HashMap<>();
+        Map<Integer, HeldKey> otherDown = new HashMap<>();
         try {
             fd = android.system.Os.open(dev, android.system.OsConstants.O_RDONLY, 0);
             Method ioctl = android.system.Os.class.getMethod("ioctlInt", FileDescriptor.class, int.class);
@@ -183,10 +319,12 @@ final class PowerKey {
             L.i("power key reader stopped: " + t);
         } finally {
             long now = SystemClock.uptimeMillis();
-            for (Map.Entry<Integer, Long> e : otherDown.entrySet()) {
-                Integer mapped = scanToKey.get(e.getKey());
-                int kc = mapped != null ? mapped : KeyEvent.KEYCODE_UNKNOWN;
-                injectKeyEvent(KeyEvent.ACTION_UP, kc, e.getValue(), now, e.getKey());
+            for (HeldKey hk : otherDown.values()) {
+                synchronized (hk) {
+                    hk.released = true;
+                    if (hk.repeater != null) { hk.repeater.cancel(false); hk.repeater = null; }
+                }
+                injectKeyEvent(KeyEvent.ACTION_UP, hk.keyCode, hk.downTime, now, 0);
             }
             // closing the fd releases the grab -> the system gets the button back
             try { if (fd != null) android.system.Os.close(fd); } catch (Throwable ignored) {}
@@ -194,23 +332,67 @@ final class PowerKey {
         }
     }
 
-    static void onOtherKey(int scanCode, int val, Map<Integer, Long> otherDown) {
-        if (val != 0 && val != 1) return;   // ignore autorepeat; InputDispatcher synthesizes repeats natively
+    static void onOtherKey(int scanCode, int val, Map<Integer, HeldKey> otherDown) {
+        if (val != 0 && val != 1 && val != 2) return;
         Integer mapped = scanToKey.get(scanCode);
         int keyCode = mapped != null ? mapped : KeyEvent.KEYCODE_UNKNOWN;
-        if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN || keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
-            onVolume(keyCode == KeyEvent.KEYCODE_VOLUME_DOWN ? 0 : 1, val == 1);
+        if (val == 1 && keyCode == KeyEvent.KEYCODE_UNKNOWN) {
+            L.i("unmapped key on grabbed power dev: scan=" + scanCode);
         }
+        boolean isVol = keyCode == KeyEvent.KEYCODE_VOLUME_DOWN || keyCode == KeyEvent.KEYCODE_VOLUME_UP;
         long now = SystemClock.uptimeMillis();
-        long dt;
         if (val == 1) {
-            otherDown.put(scanCode, now);
-            dt = now;
+            if (isVol) onVolume(keyCode == KeyEvent.KEYCODE_VOLUME_DOWN ? 0 : 1, true);
+            HeldKey stale = otherDown.remove(scanCode);
+            if (stale != null) {
+                synchronized (stale) {
+                    stale.released = true;
+                    if (stale.repeater != null) { stale.repeater.cancel(false); stale.repeater = null; }
+                }
+            }
+            HeldKey hk = new HeldKey(scanCode, keyCode, now);
+            otherDown.put(scanCode, hk);
+            if (!injectKeyEvent(KeyEvent.ACTION_DOWN, keyCode, now, now, 0) && isVol) {
+                adjustVolumeFallback(keyCode);
+            }
+            hk.repeater = keyRepeater.scheduleAtFixedRate(() -> {
+                int rep;
+                synchronized (hk) {
+                    if (hk.released || hk.sawKernelRepeat) return;
+                    rep = ++hk.repeatCount;
+                }
+                if (!injectKeyEvent(KeyEvent.ACTION_DOWN, hk.keyCode, hk.downTime, SystemClock.uptimeMillis(), rep) && isVol) {
+                    adjustVolumeFallback(hk.keyCode);
+                }
+            }, 400, 50, TimeUnit.MILLISECONDS);
+        } else if (val == 2) {
+            HeldKey hk = otherDown.get(scanCode);
+            if (hk == null) return;
+            int rep;
+            long dt;
+            synchronized (hk) {
+                if (hk.released) return;
+                hk.sawKernelRepeat = true;
+                if (hk.repeater != null) { hk.repeater.cancel(false); hk.repeater = null; }
+                rep = ++hk.repeatCount;
+                dt = hk.downTime;
+            }
+            if (!injectKeyEvent(KeyEvent.ACTION_DOWN, keyCode, dt, now, rep) && isVol) {
+                adjustVolumeFallback(keyCode);
+            }
         } else {
-            Long prev = otherDown.remove(scanCode);
-            dt = prev != null ? prev : now;
+            if (isVol) onVolume(keyCode == KeyEvent.KEYCODE_VOLUME_DOWN ? 0 : 1, false);
+            HeldKey hk = otherDown.remove(scanCode);
+            long dt = now;
+            if (hk != null) {
+                synchronized (hk) {
+                    hk.released = true;
+                    if (hk.repeater != null) { hk.repeater.cancel(false); hk.repeater = null; }
+                    dt = hk.downTime;
+                }
+            }
+            injectKeyEvent(KeyEvent.ACTION_UP, keyCode, dt, now, 0);
         }
-        injectKeyEvent(val == 1 ? KeyEvent.ACTION_DOWN : KeyEvent.ACTION_UP, keyCode, dt, now, scanCode);
     }
 
     static void onVolume(int idx, boolean pressed) {

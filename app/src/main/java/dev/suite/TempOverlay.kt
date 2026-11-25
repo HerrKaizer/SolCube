@@ -69,6 +69,9 @@ class TempOverlay(private val ctx: Context) {
     private var bat: Int? = null
     private var cpuLoad: Int? = null
     private var gpuLoad: Int? = null
+    private var lastTempKey: String? = null
+    private var lastFpsText: String? = null
+    private var lastLoadKey: String? = null
 
     private var worker: HandlerThread? = null
     private var bg: Handler? = null
@@ -157,32 +160,48 @@ class TempOverlay(private val ctx: Context) {
         tempView = null
         loadView = null
         fpsView = null
+        lastTempKey = null
+        lastFpsText = null
+        lastLoadKey = null
         usingA11y = false
     }
 
     private fun render() {
-        val sb = android.text.SpannableStringBuilder()
-        val sep = if (isPortrait()) "\n" else " "
-        fun add(v: Int?, color: Int?) {
-            if (sb.isNotEmpty()) sb.append(sep)
-            val start = sb.length
-            sb.append(v?.toString() ?: "--")
-            if (color != null) {
-                sb.setSpan(android.text.style.ForegroundColorSpan(color), start, sb.length,
-                    android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        val portrait = isPortrait()
+        val sep = if (portrait) "\n" else " "
+        val tempKey = "$portrait|$cpu|$gpu|$bat"
+        if (tempKey != lastTempKey) {
+            lastTempKey = tempKey
+            val sb = android.text.SpannableStringBuilder()
+            fun add(v: Int?, color: Int?) {
+                if (sb.isNotEmpty()) sb.append(sep)
+                val start = sb.length
+                sb.append(v?.toString() ?: "--")
+                if (color != null) {
+                    sb.setSpan(android.text.style.ForegroundColorSpan(color), start, sb.length,
+                        android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                }
             }
+            add(cpu, socColor(cpu))
+            add(gpu, socColor(gpu))
+            add(bat, batteryColor(bat))
+            tempView?.text = sb
         }
-        add(cpu, socColor(cpu))
-        add(gpu, socColor(gpu))
-        add(bat, batteryColor(bat))
-        tempView?.text = sb
 
         fun fmt(v: Int?) = v?.toString() ?: "--"
-        fpsView?.text = fmt(fps)
+        val fpsText = fmt(fps)
+        if (fpsText != lastFpsText) {
+            lastFpsText = fpsText
+            fpsView?.text = fpsText
+        }
         loadView?.let { lv ->
-            lv.barCpu = cpuLoad
-            lv.barGpu = gpuLoad
-            if (lv.barMode || lv.vertical) lv.invalidate() else lv.text = "${fmt(cpuLoad)}$sep${fmt(gpuLoad)}"
+            val loadKey = "$portrait|${lv.barMode}|${lv.vertical}|$cpuLoad|$gpuLoad"
+            if (loadKey != lastLoadKey) {
+                lastLoadKey = loadKey
+                lv.barCpu = cpuLoad
+                lv.barGpu = gpuLoad
+                if (lv.barMode || lv.vertical) lv.invalidate() else lv.text = "${fmt(cpuLoad)}$sep${fmt(gpuLoad)}"
+            }
         }
     }
 
@@ -491,6 +510,9 @@ class TempOverlay(private val ctx: Context) {
      * three-digit FPS pill in the same column), its height in landscape. The FPS pill is at least
      * as wide as the temperatures in portrait. Runs again whenever the temperature pill resizes.
      */
+    private fun textPillMinWidth(pill: PillView, sample: String): Int =
+        kotlin.math.ceil(pill.paint.measureText(sample).toDouble()).toInt() + pill.paddingLeft + pill.paddingRight
+
     private fun matchTempPill() {
         val tv = tempView ?: return
         val lv = loadView ?: return
@@ -500,10 +522,17 @@ class TempOverlay(private val ctx: Context) {
         val lp = lv.layoutParams as LinearLayout.LayoutParams
         val w = if (portrait && tw > 0) tw else LinearLayout.LayoutParams.WRAP_CONTENT
         val h = if (!portrait && th > 0) th else LinearLayout.LayoutParams.WRAP_CONTENT
-        if (lp.width != w || lp.height != h) { lp.width = w; lp.height = h; lv.layoutParams = lp }
-        val minW = if (portrait && tv.visibility == View.VISIBLE) tw else 0
-        if (fv.minWidth != minW) fv.minWidth = minW
-        lv.requestLayout(); fv.requestLayout()
+        if (lp.width != w || lp.height != h) {
+            lp.width = w; lp.height = h
+            lv.layoutParams = lp
+            lv.requestLayout()
+        }
+        val fpsMinW = textPillMinWidth(fv, "888")
+        val minW = if (portrait && tv.visibility == View.VISIBLE) maxOf(tw, fpsMinW) else fpsMinW
+        if (fv.minWidth != minW) {
+            fv.minWidth = minW
+            fv.requestLayout()
+        }
     }
 
     /** Moves the pill back inside the screen if its current size pokes past an edge. */
@@ -591,6 +620,9 @@ class TempOverlay(private val ctx: Context) {
         val tv = tempView ?: return
         val lv = loadView ?: return
         val fv = fpsView ?: return
+        lastTempKey = null
+        lastFpsText = null
+        lastLoadKey = null
         val p = Style.prefs(ctx)
         val scale = p.getInt(Style.KEY_SIZE, Style.DEFAULT_SIZE) / 100f
         val opacity = p.getInt(Style.KEY_BG_OPACITY, Style.DEFAULT_BG_OPACITY)
@@ -635,6 +667,7 @@ class TempOverlay(private val ctx: Context) {
             pill.strokePx = stroke
             pill.invalidate()
         }
+        tv.minWidth = textPillMinWidth(tv, if (portrait) "88" else "88 88 88")
 
         // Landscape: second pill sits to the right. Portrait: below, as two upright bars.
         val fm = tv.paint.fontMetricsInt
