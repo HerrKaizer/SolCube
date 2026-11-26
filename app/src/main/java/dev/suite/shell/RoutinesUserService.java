@@ -135,6 +135,8 @@ public class RoutinesUserService extends ISolCubeService.Stub {
     private Set<String> lastBtSet;
     private Object wm, pm;
     private Method isLocked, isInteractive;
+    /** SolCube pushes screen on/off/unlock ("screen ..."); once that works, a lock-only loop can poll slowly. */
+    private volatile boolean screenPushed;
 
     private final Runnable fast = new Runnable() {
         @Override public void run() {
@@ -245,7 +247,9 @@ public class RoutinesUserService extends ISolCubeService.Stub {
                 armed = false;
                 return;
             }
-            h.postDelayed(this, 1500);
+            // Only lock/screen triggers and the app pushes those events: a slow safety poll is enough.
+            boolean lockOnly = !(needApp || needCharge || needAudioBt || needDnd || needAirplane || needPowerMode || needMisc);
+            h.postDelayed(this, lockOnly && screenPushed ? 6000 : 1500);
         }
     };
 
@@ -1115,6 +1119,11 @@ public class RoutinesUserService extends ISolCubeService.Stub {
     }
 
     @Override public String command(String cmd) {
+        if (cmd.startsWith("screen ")) {   // pushed by SolCube on screen on/off/unlock: check at once
+            screenPushed = true;
+            h.post(() -> { if (armed) { h.removeCallbacks(fast); fast.run(); } });
+            return "ok";
+        }
         if (cmd.startsWith("trigger ")) {
             return triggerShortcut(cmd.substring(8).trim()) ? "matched" : "none";
         }

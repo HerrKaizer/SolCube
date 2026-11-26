@@ -33,7 +33,6 @@ import android.widget.Switch
 import dev.suite.shell.Gestures
 import android.widget.TextView
 import android.widget.Toast
-import rikka.shizuku.Shizuku
 import java.util.concurrent.Executors
 
 class MainActivity : Activity() {
@@ -72,9 +71,9 @@ class MainActivity : Activity() {
         val body: LinearLayout,
     )
 
-    private lateinit var shizukuCard: LinearLayout
-    private lateinit var shizukuText: TextView
-    private lateinit var shizukuButton: TextView
+    private lateinit var engineCard: LinearLayout
+    private lateinit var engineText: TextView
+    private lateinit var engineButton: TextView
     private lateinit var overlayCard: LinearLayout
     private lateinit var shortcutsGroup: GroupCard
     private lateinit var automationGroup: GroupCard
@@ -117,6 +116,15 @@ class MainActivity : Activity() {
     private var dpVibSwitch: Switch? = null
     private var refreshHapticsUi: (() -> Unit)? = null
     private var syncingVibUi = false
+    private val lockedCards = mutableListOf<Pair<View, View>>()
+    private var setupLaunched = false
+    private var engineStarting = false
+
+    private val shellListener: () -> Unit = {
+        io.execute { Components.reconcile(this) }
+        poll()
+        maybeOpenTour()
+    }
 
     private fun pauseLiveGestures() {
         val first = gesturePauseDepth == 0
@@ -139,10 +147,6 @@ class MainActivity : Activity() {
         }
     }
 
-    private val permListener = Shizuku.OnRequestPermissionResultListener { _, _ ->
-        io.execute { Components.reconcile(this) }
-        poll()
-    }
 
     private var builtLang: String = I18n.LANG_EN
 
@@ -165,7 +169,21 @@ class MainActivity : Activity() {
         activeTab = (savedInstanceState?.getInt("active_tab", uiPrefs().getInt("active_tab", 0))
             ?: uiPrefs().getInt("active_tab", 0)).coerceIn(0, 5)
         setContentView(build(savedInstanceState?.getInt("scroll_y", 0) ?: 0))
-        Shizuku.addRequestPermissionResultListener(permListener)
+
+        Shell.addStateListener(shellListener)
+        // Wait for the re-attach attempt to finish (an engine that survived SolCube being killed
+        // takes up to ~1.5 s to hand its binder back) before deciding setup is needed.
+        val firstLaunch = savedInstanceState == null
+        Shell.tryAttachExisting(applicationContext) {
+            // Setup opens by itself for someone who never connected, or who has no SolEngine pairing (e.g.
+            // came from Shizuku, dropped in 5.7.0); otherwise the card's Start button and the automatic
+            // start take care of a stopped SolEngine.
+            if (firstLaunch && !isFinishing && !isDestroyed && Shell.state() != Shell.State.READY &&
+                !SetupPrefs.skippedBasic(this) && (!SetupPrefs.hasEverConnected(this) || !AdbEngine.isPaired(this))) {
+                setupLaunched = true
+                openSetup(fromUnlock = false)
+            }
+        }
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -180,7 +198,8 @@ class MainActivity : Activity() {
             val appCtx = applicationContext
             Thread { GestureStore.pushPaused(appCtx, false) }.apply { isDaemon = true }.start()
         }
-        Shizuku.removeRequestPermissionResultListener(permListener)
+
+        Shell.removeStateListener(shellListener)
         io.shutdown()
         super.onDestroy()
     }
@@ -192,6 +211,8 @@ class MainActivity : Activity() {
             return
         }
         resumed = true
+        Shell.tryAttachExisting(applicationContext) { maybeOpenTour() }
+        SolCubeHost.autoStart(applicationContext)   // throttled after failures
         SolCubeService.sync(this)   // e.g. overlay permission was just granted
         io.execute {
             Components.reconcile(this)
@@ -201,6 +222,7 @@ class MainActivity : Activity() {
         checkUpdates()
         val pUi = Components.prefs(this)
         if (!pUi.getBoolean("asked_notif_perm", false) &&
+            (Shell.state() == Shell.State.READY || SetupPrefs.skippedBasic(this)) &&
             checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED
         ) {
             pUi.edit().putBoolean("asked_notif_perm", true).apply()
@@ -257,19 +279,33 @@ class MainActivity : Activity() {
         val canDraw = rawOverlay || a11yOk
         val shellOk = s.shell == Shell.State.READY
 
-        shizukuCard.visibility = if (s.shell == Shell.State.READY) View.GONE else View.VISIBLE
-        when (s.shell) {
-            Shell.State.NOT_RUNNING -> {
-                shizukuText.text = "Shizuku isn't running — it stops on every reboot. Start it again in the Shizuku app (Wireless debugging). Circle to Search, Frame interpolation and Super resolution need it; SolCube brings them back by itself once it's running."
-                shizukuButton.text = "Open Shizuku"
+        for ((content, scrim) in lockedCards) {
+            if (content is android.view.ViewGroup) {
+                val childAlpha = if (shellOk) 1f else 0.28f
+                for (i in 0 until content.childCount) {
+                    content.getChildAt(i).alpha = childAlpha
+                }
             }
-            Shell.State.NO_PERMISSION -> {
-                shizukuText.text = "Allow SolCube to use Shizuku so it can start and stop the shell-side parts."
-                shizukuButton.text = "Allow"
+            scrim.visibility = if (shellOk) View.GONE else View.VISIBLE
+        }
+
+        val showEngineCard = when (s.shell) {
+            Shell.State.READY -> false
+            // also when not paired: former Shizuku users (5.7.0 dropped Shizuku) must pair SolEngine
+            Shell.State.NOT_RUNNING -> SetupPrefs.hasEverConnected(this) || !AdbEngine.isPaired(this)
+        }
+        engineCard.visibility = if (showEngineCard) View.VISIBLE else View.GONE
+        when (s.shell) {
+            Shell.State.NOT_RUNNING -> if (!AdbEngine.isPaired(this)) {
+                engineText.text = I18n.t("SolCube now runs on its own SolEngine instead of Shizuku. Pair it once (about a minute) to turn your features back on.")
+                engineButton.text = I18n.t("Set up SolEngine")
+            } else {
+                engineText.text = I18n.t("SolEngine isn't running (it stops when the phone restarts). It starts by itself on Wi-Fi, or tap Start.")
+                engineButton.text = I18n.t(if (engineStarting || SolCubeHost.starting) "Starting SolEngine…" else "Start SolEngine")
             }
             Shell.State.READY -> {}
         }
-        overlayCard.visibility = if (canDraw || shellOk) View.GONE else View.VISIBLE
+        overlayCard.visibility = if (canDraw || shellOk || !SolCubeService.anyEnabled(this)) View.GONE else View.VISIBLE
 
         // Circle to Search: shell listener + optional ripple overlay in this app
         val anim = Components.ctsAnimate(this)
@@ -277,7 +313,7 @@ class MainActivity : Activity() {
         val rippleOk = !anim || ripple
         val listener = s.cts?.optBoolean("running") == true
         fun ctsDetail(sec: Section, idle: String) = when {
-            !shellOk && enabled(sec) -> "Waiting for Shizuku"
+            !shellOk && enabled(sec) -> "Waiting for SolEngine"
             anim && enabled(sec) && !canDraw && !shellOk -> "Needs “Display over other apps”"
             else -> idle
         }
@@ -289,7 +325,7 @@ class MainActivity : Activity() {
             detail = ctsDetail(ctsNav, "Hold one finger still on the navigation bar at the bottom"))
         showSection(holdSec, running = s.cts?.optBoolean("button") == true && enabled(holdSec),
             detail = when {
-                !shellOk && enabled(holdSec) -> "Waiting for Shizuku"
+                !shellOk && enabled(holdSec) -> "Waiting for SolEngine"
                 else -> pressStatusLine(isDouble = false, PowerHold.action)
             })
         val count = listOf(ctsTouch, ctsButton, ctsNav).count { enabled(it) }
@@ -322,7 +358,7 @@ class MainActivity : Activity() {
         showSection(
             game, running = fiRunning,
             detail = when {
-                !shellOk && enabled(game) -> "Waiting for Shizuku"
+                !shellOk && enabled(game) -> "Waiting for SolEngine"
                 fi == null -> "Keeps vivo frame interpolation on in listed games"
                 else -> buildString {
                     val pkg = fi.optString("game")
@@ -341,7 +377,7 @@ class MainActivity : Activity() {
         showSection(
             srSec, running = sr?.optBoolean("running") == true,
             detail = when {
-                !shellOk && enabled(srSec) -> "Waiting for Shizuku"
+                !shellOk && enabled(srSec) -> "Waiting for SolEngine"
                 else -> "vivo super resolution, kept on while enabled"
             },
         )
@@ -351,7 +387,7 @@ class MainActivity : Activity() {
         showSection(
             mixSec, running = mix?.optBoolean("running") == true,
             detail = when {
-                !shellOk && enabled(mixSec) -> "Waiting for Shizuku"
+                !shellOk && enabled(mixSec) -> "Waiting for SolEngine"
                 mix == null -> "Apps keep playing when another starts sound. Calls still pause them."
                 mix.optString("error").isNotEmpty() -> "Couldn't take over audio focus: ${mix.optString("error")}"
                 else -> {
@@ -458,7 +494,7 @@ class MainActivity : Activity() {
             TempOverlay.running || fiRunning || sr?.optBoolean("running") == true || s.stream?.optBoolean("streaming") == true || Components.enabled(this, Components.KEY_STREAM),
             if (gameParts.isEmpty()) "All off" else gameParts.joinToString(" · "))
 
-        val mixOn = mix?.optBoolean("running") == true || enabled(mixSec)
+        val mixOn = mix?.optBoolean("running") == true
         syncVolume()
         setGroup(audioGroup, mixOn,
             (if (mixOn) "Mixing · " else "") + "Volume ${FineVolume.percent(this)}%")
@@ -481,121 +517,21 @@ class MainActivity : Activity() {
     }
 
     private fun renderDiagnostics(s: Components.Status, canDraw: Boolean) {
-        val shState = when (s.shell) {
-            Shell.State.READY -> "Ready"
-            Shell.State.NO_PERMISSION -> "No permission"
-            Shell.State.NOT_RUNNING -> "Not running"
-        }
-        val daemons = listOf(
-            "cts" to s.cts,
-            "routines" to s.routines,
-            "profiles" to s.profiles,
-            "fi" to s.fi,
-            "sr" to s.sr,
-            "mix" to s.mix,
-            "stream" to s.stream,
-        )
-        val runningCount = daemons.count { (_, o) -> o?.optBoolean("running") == true || o?.optBoolean("streaming") == true }
-        val dotColor = when (s.shell) {
-            Shell.State.READY -> p.ok
-            Shell.State.NO_PERMISSION -> p.warn
-            Shell.State.NOT_RUNNING -> alpha(p.sub, 0.5f)
-        }
-        (diagDot.background as GradientDrawable).setColor(dotColor)
-        val sum = "Shizuku: $shState · $runningCount shell active"
-        if (diagSummary.text != sum) diagSummary.text = sum
-
-        val nm = getSystemService(android.app.NotificationManager::class.java)
-        val pm = getSystemService(android.os.PowerManager::class.java)
-        val dndGranted = nm?.isNotificationPolicyAccessGranted == true
-        val dozeIgnored = pm?.isIgnoringBatteryOptimizations(packageName) == true
-        val a11yRunning = SolCubeA11y.instance != null
-        val doubleReady = DoublePress.ready(this)
-        val themeName = arrayOf("Light", "System", "Dark")[Look.themeMode(this)]
-        val verName = Updates.current(this)
-        val verCode = runCatching { packageManager.getPackageInfo(packageName, 0).longVersionCode }.getOrDefault(0L)
-
-        val hostMode = when {
-            SolCubeA11y.instance != null && SolCubeService.anyEnabled(this@MainActivity) -> "active (a11y)"
-            SolCubeService.running -> "active (fgs)"
-            SolCubeService.anyEnabled(this@MainActivity) -> "starting"
-            else -> "idle"
-        }
-
-        val appInfo = buildString {
-            appendLine("Version: $verName ($verCode)")
-            appendLine("Device: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL} · Android ${android.os.Build.VERSION.RELEASE} (SDK ${android.os.Build.VERSION.SDK_INT})")
-            appendLine("Theme: $themeName (${if (isDark()) "dark" else "light"}) · Keep-alive: $hostMode")
-            appendLine("Shizuku: $shState · Overlay: ${if (canDraw) "ok" else "missing"} · A11y: ${if (a11yRunning) "on" else "off"}")
-            append("DND: ${if (dndGranted) "ok" else "no"} · Battery whitelist: ${if (dozeIgnored) "ok" else "no"} · Double-press: ${if (doubleReady) "suite" else "other"}")
-        }
-        val svcInfo = daemons.joinToString("\n") { (name, o) ->
-            val st = when {
-                o == null -> "stopped"
-                o.optBoolean("streaming") -> "streaming"
-                o.optBoolean("running") -> "running"
-                else -> "idle"
-            }
-            val extra = when (name) {
-                "fi" -> o?.optString("game")?.takeIf { it.isNotEmpty() }?.let { " (${appName(it)})" } ?: ""
-                "profiles" -> o?.optString("activeName")?.takeIf { it.isNotEmpty() }?.let { " ($it)" } ?: ""
-                "mix" -> o?.optString("error")?.takeIf { it.isNotEmpty() }?.let { " (err: $it)" } ?: ""
-                else -> ""
-            }
-            val req = when (name) {
-                "cts" -> Components.ctsServiceWanted(this)
-                "routines" -> Routines.load(this).any { it.optBoolean("on", true) }
-                "profiles" -> Profiles.load(this).any { it.optBoolean("on", true) && Profiles.apps(it).isNotEmpty() }
-                "fi" -> Components.enabled(this, Components.KEY_GAME)
-                "sr" -> Components.enabled(this, Components.KEY_SR)
-                "mix" -> Components.enabled(this, Components.KEY_MIX)
-                "stream" -> Components.enabled(this, Components.KEY_STREAM)
-                else -> false
-            }
-            "• $name: $st${if (req) " (enabled)" else ""}$extra"
-        }
-        val eventLines = mutableListOf<String>()
-        for ((name, o) in daemons) {
-            val arr = o?.optJSONArray("log") ?: continue
-            val start = maxOf(0, arr.length() - 3)
-            for (i in start until arr.length()) {
-                val msg = arr.optString(i).trim()
-                if (msg.isNotEmpty()) eventLines += "[$name] $msg"
-            }
-        }
-        val recentLogs = if (eventLines.isEmpty()) "(no shell events recorded)" else eventLines.takeLast(12).joinToString("\n")
-
-        if (diagAppText.text != appInfo) diagAppText.text = appInfo
-        if (diagSvcText.text != svcInfo) diagSvcText.text = svcInfo
-        if (diagLogText.text != recentLogs) diagLogText.text = recentLogs
-
-        // the raw values that used to sit on the feature cards
-        val live = buildString {
-            val fi = s.fi
-            appendLine("Frame interpolation")
-            if (fi == null) appendLine("  not running")
-            else {
-                appendLine("  fi  = ${fi.optString("fi")}")
-                appendLine("  gpu = ${fi.optString("gpu")}")
-                logText(fi).lines().forEach { appendLine("  $it") }
-            }
-            val sr = s.sr
-            appendLine("Super resolution")
-            appendLine(if (sr == null) "  not running" else "  sr = ${sr.optString("sr")}  vsr = ${sr.optString("vsr")}")
-            appendLine("Gestures")
-            append("  last drawing: ${lastGestureText(s.routines)}")
-        }
-        if (diagLiveText.text != live) diagLiveText.text = live
-        lastDiagReport = "$appInfo\n\nServices:\n$svcInfo\n\nLive values:\n$live\n\nRecent events:\n$recentLogs"
+        val r = Diagnostics.build(this, s, canDraw, ::appName, lastGestureText(s.routines))
+        (diagDot.background as GradientDrawable).setColor(when (r.health) {
+            Diagnostics.Health.OK -> p.ok
+            Diagnostics.Health.STOPPED -> alpha(p.sub, 0.5f)
+            Diagnostics.Health.WARN -> p.warn
+        })
+        if (diagSummary.text != r.summary) diagSummary.text = r.summary
+        if (diagAppText.text != r.appInfo) diagAppText.text = r.appInfo
+        if (diagSvcText.text != r.services) diagSvcText.text = r.services
+        if (diagLogText.text != r.events) diagLogText.text = r.events
+        if (diagLiveText.text != r.live) diagLiveText.text = r.live
+        lastDiagReport = r.full
     }
 
     private fun enabled(sec: Section) = Components.enabled(this, sec.key)
-
-    private fun logText(o: org.json.JSONObject): String {
-        val log = o.optJSONArray("log")
-        return if (log == null || log.length() == 0) "(no events yet)"
-        else (maxOf(0, log.length() - 8) until log.length()).joinToString("\n") { log.optString(it) }
-    }
 
     private fun showSection(sec: Section, running: Boolean, detail: String) {
         val on = enabled(sec)
@@ -692,20 +628,46 @@ class MainActivity : Activity() {
         setOnClickListener { featureRequest() }
     }
 
-    private fun buildShizukuCard(): LinearLayout {
-        shizukuCard = card()
-        shizukuText = label("", 14.5f, p.fg)
-        shizukuCard.addView(shizukuText)
-        shizukuButton = pillButton("", filled = true, autoFit = true) {
-            if (Shell.state() == Shell.State.NOT_RUNNING) {
-                packageManager.getLaunchIntentForPackage("moe.shizuku.privileged.api")?.let { startActivity(it) }
-                    ?: toast("Shizuku isn't installed")
-            } else if (!Shizuku.isPreV11()) {
-                Shizuku.requestPermission(1)
+    /** First time the engine is connected: show the feature tour (setup itself can't open it while
+     *  the user is still in Settings, Android blocks activity starts from the background). */
+    private fun maybeOpenTour() {
+        if (!resumed || isFinishing || isDestroyed) return
+        if (Shell.state() != Shell.State.READY || SetupPrefs.hasSeenIntro(this)) return
+        if (SetupActivity.isActive || FeatureIntroActivity.isOpen) return
+        startActivity(Intent(this, FeatureIntroActivity::class.java))
+    }
+
+    private fun openSetup(fromUnlock: Boolean = true) {
+        startActivity(Intent(this, SetupActivity::class.java).putExtra("from_unlock", fromUnlock))
+    }
+
+    private fun buildEngineCard(): LinearLayout {
+        engineCard = card()
+        engineText = label("", 14.5f, p.fg)
+        engineCard.addView(engineText)
+        engineButton = pillButton("", filled = true, autoFit = true) {
+            if (!AdbEngine.isPaired(this)) {
+                openSetup(fromUnlock = true)
+            } else if (!engineStarting) {
+                // one tap, like Shizuku's Start: Wireless debugging on if needed, connect, launch SolEngine
+                engineStarting = true
+                engineButton.text = I18n.t("Starting SolEngine…")
+                io.execute {
+                    val r = AdbEngine.start(this, "card button")
+                    main.post {
+                        engineStarting = false
+                        poll()
+                        when (r) {
+                            AdbEngine.Start.OK -> toast("SolEngine started")
+                            AdbEngine.Start.NO_WIFI -> toast(AdbEngine.startMessage(r))
+                            else -> { toast(AdbEngine.startMessage(r)); openSetup(fromUnlock = true) }
+                        }
+                    }
+                }
             }
         }
-        shizukuCard.addView(shizukuButton, LinearLayout.LayoutParams(MATCH_PARENT, 46.dp).apply { topMargin = 14.dp })
-        return shizukuCard
+        engineCard.addView(engineButton, LinearLayout.LayoutParams(MATCH_PARENT, 46.dp).apply { topMargin = 14.dp })
+        return engineCard
     }
 
     private fun buildOverlayCard(): LinearLayout {
@@ -1026,6 +988,42 @@ class MainActivity : Activity() {
             .show()
     }
 
+    private fun buildStatusBarCard(inner: Boolean): LinearLayout {
+        val sbCard = (if (inner) innerCard() else card()).apply {
+            clipChildren = false
+            clipToPadding = false
+        }
+        val sbHeader = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            clipChildren = false
+            clipToPadding = false
+        }
+        sbHeader.addView(
+            label("Lock screen status bar", if (inner) 15.5f else 17f, p.fg, bold = true),
+            LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply { rightMargin = 12.dp },
+        )
+        val sw = Switch(this).apply {
+            isChecked = Components.enabled(this@MainActivity, Components.KEY_SB_LOCK)
+            styleSwitch(this)
+            setOnCheckedChangeListener { _, checked ->
+                HapticPrefs.uiTick(this@MainActivity)
+                Components.setLockStatusBarHidden(this@MainActivity, checked)
+                if (Shell.state() != Shell.State.READY) {
+                    toast("Saved — applies when SolEngine is connected")
+                }
+            }
+        }
+        sbHeader.addView(sw)
+        sbCard.addView(sbHeader)
+        sbCard.addView(
+            label("Hides the operator and status icons on the lock screen.", 12.5f, p.sub),
+            LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 4.dp },
+        )
+        sbCard.setOnClickListener { sw.toggle() }
+        return sbCard
+    }
+
     private fun buildPowerCard(inner: Boolean): LinearLayout {
         val radius = if (inner) 18.dp else 24.dp
         return (if (inner) innerCard() else card()).apply {
@@ -1083,7 +1081,7 @@ class MainActivity : Activity() {
         diagBody.addView(label("App & permissions", 13f, p.fg, bold = true))
         diagAppText = mono(11.5f).apply { setLineSpacing(2.dp.toFloat(), 1f) }
         diagBody.addView(diagAppText, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 4.dp })
-        diagBody.addView(label("Shell services", 13f, p.fg, bold = true),
+        diagBody.addView(label("SolEngine services", 13f, p.fg, bold = true),
             LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 12.dp })
         diagSvcText = mono(11.5f).apply { setLineSpacing(2.dp.toFloat(), 1f) }
         diagBody.addView(diagSvcText, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 4.dp })
@@ -1103,6 +1101,13 @@ class MainActivity : Activity() {
                 toast("Diagnostics copied")
             }
         }, LinearLayout.LayoutParams(MATCH_PARENT, 38.dp).apply { topMargin = 12.dp })
+        diagBody.addView(pillButton("Open setup", filled = false, size = 13.5f, autoFit = true) {
+            val preview = Shell.state() == Shell.State.READY
+            startActivity(Intent(this, SetupActivity::class.java).putExtra("from_unlock", true).putExtra("preview", preview))
+        }, LinearLayout.LayoutParams(MATCH_PARENT, 38.dp).apply { topMargin = 8.dp })
+        diagBody.addView(pillButton("Feature tour", filled = false, size = 13.5f, autoFit = true) {
+            startActivity(Intent(this, FeatureIntroActivity::class.java))
+        }, LinearLayout.LayoutParams(MATCH_PARENT, 38.dp).apply { topMargin = 8.dp })
         diagCard.addView(diagBody)
         makeCollapsible("settings_diag", diagCard, listOf(diagHeader, diagStatusRow), diagChevron, diagBody, defaultOpen = false)
         return diagCard
@@ -1234,8 +1239,85 @@ class MainActivity : Activity() {
         backdropRef = null
         gesturesGroup = null
         gestActiveList = null
+        lockedCards.clear()
         pageScrollY.fill(0)
         pageScrollY[activeTab] = initialScrollY
+
+        fun lockIconView(): View = object : View(this) {
+            private val d = resources.displayMetrics.density
+            private val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                style = android.graphics.Paint.Style.STROKE
+                strokeWidth = 1.8f * d
+                strokeCap = android.graphics.Paint.Cap.ROUND
+                strokeJoin = android.graphics.Paint.Join.ROUND
+                color = p.onAccent
+            }
+            private val bodyRect = android.graphics.RectF()
+            private val shackleRect = android.graphics.RectF()
+            override fun onDraw(canvas: android.graphics.Canvas) {
+                val w = width.toFloat()
+                val h = height.toFloat()
+                val bw = w * 0.66f
+                val bh = h * 0.48f
+                val bx = (w - bw) * 0.5f
+                val by = h - bh - 1.5f * d
+                bodyRect.set(bx, by, bx + bw, by + bh)
+                canvas.drawRoundRect(bodyRect, 2.2f * d, 2.2f * d, paint)
+                val sw = bw * 0.56f
+                val sx = (w - sw) * 0.5f
+                shackleRect.set(sx, by - sw * 0.85f, sx + sw, by + sw * 0.15f)
+                canvas.drawArc(shackleRect, 180f, 180f, false, paint)
+            }
+        }
+
+        fun lockable(content: View): View {
+            val wrap = FrameLayout(this).apply {
+                clipChildren = false
+                clipToPadding = false
+                addView(content, FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+            }
+            val dark = isDark()
+            val veil = GradientDrawable().apply {
+                cornerRadius = 24.dp.toFloat()
+                setColor(if (dark) Color.argb(125, 10, 8, 6) else Color.argb(135, 246, 241, 234))
+                setStroke(1.dp, alpha(p.stroke, if (dark) 0.55f else 0.85f))
+            }
+            val unlockPill = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
+                setPadding(20.dp, 0, 22.dp, 0)
+                background = ripple(accentGradient(21.dp), 21.dp)
+                setOnClickListener { openSetup(fromUnlock = true) }
+                addView(lockIconView(), LinearLayout.LayoutParams(15.dp, 15.dp).apply { rightMargin = 7.dp })
+                addView(label("Unlock", 14f, p.onAccent, bold = true).apply {
+                    maxLines = 1
+                })
+            }
+            val scrim = object : FrameLayout(this@MainActivity) {
+                override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
+                    val w = right - left
+                    val h = bottom - top
+                    val pw = unlockPill.measuredWidth
+                    val ph = unlockPill.measuredHeight
+                    val px = ((w - pw) / 2).coerceAtLeast(0)
+                    val maxTop = (h - ph - 16.dp).coerceAtLeast(0)
+                    val py = (minOf(h / 2, 130.dp) - ph / 2).coerceIn(16.dp.coerceAtMost(maxTop), maxTop)
+                    unlockPill.layout(px, py, px + pw, py + ph)
+                }
+            }.apply {
+                clipChildren = false
+                clipToPadding = false
+                background = veil
+                isClickable = true
+                isFocusable = true
+                visibility = View.GONE
+                setOnClickListener { openSetup(fromUnlock = true) }
+                addView(unlockPill, FrameLayout.LayoutParams(WRAP_CONTENT, 42.dp))
+            }
+            wrap.addView(scrim, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+            lockedCards += content to scrim
+            return wrap
+        }
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -1250,7 +1332,7 @@ class MainActivity : Activity() {
         root.addView(buildUpdateLink(), LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply {
             bottomMargin = 8.dp; leftMargin = (-6).dp
         })
-        root.addView(buildShizukuCard(), cardParams())
+        root.addView(buildEngineCard(), cardParams())
         root.addView(buildOverlayCard(), cardParams())
 
         val pageHost = FrameLayout(this).apply {
@@ -1278,17 +1360,17 @@ class MainActivity : Activity() {
         newPage().apply {
             shortcutsGroup = tabSectionHeader("Shortcuts", BottomNavPill.ICON_SHORTCUTS)
             addView(shortcutsGroup.card, headerCardParams())
-            addView(buildCtsCard(inner = false), cardParams())
+            addView(lockable(buildCtsCard(inner = false)), cardParams())
             addView(buildDoubleCard(inner = false), cardParams())
-            addView(buildHoldCard(inner = false), cardParams())
+            addView(lockable(buildHoldCard(inner = false)), cardParams())
         }
 
         // Page 1: Automation
         newPage().apply {
             automationGroup = tabSectionHeader("Automation", BottomNavPill.ICON_AUTOMATION)
             addView(automationGroup.card, headerCardParams())
-            addView(buildRoutinesCard(inner = false), cardParams())
-            addView(buildProfilesCard(inner = false), cardParams())
+            addView(lockable(buildRoutinesCard(inner = false)), cardParams())
+            addView(lockable(buildProfilesCard(inner = false)), cardParams())
         }
 
         // Page 2: Gestures
@@ -1310,7 +1392,7 @@ class MainActivity : Activity() {
                 clipToPadding = false
             }
             gestSec.body.addView(gestActiveList, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 10.dp })
-            addView(gestSec.card, cardParams())
+            addView(lockable(gestSec.card), cardParams())
 
             val gestSettingsCard = card()
             gestSettingsCard.addView(label("Gesture settings", 17f, p.fg, bold = true))
@@ -1364,7 +1446,7 @@ class MainActivity : Activity() {
             gestSettingsCard.addView(gestIgnoreWrap, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 10.dp })
             renderGestureIgnore()
             renderActiveGesturesList()
-            addView(gestSettingsCard, cardParams())
+            addView(lockable(gestSettingsCard), cardParams())
         }
 
         // Page 3: Gaming
@@ -1372,18 +1454,18 @@ class MainActivity : Activity() {
             gamingGroup = tabSectionHeader("Gaming", BottomNavPill.ICON_GAMING)
             addView(gamingGroup.card, headerCardParams())
             fpsSec = section(Components.KEY_FPS, "FPS counter", collapsible = false, inner = false)
-            addView(fpsSec.card, cardParams())
+            addView(lockable(fpsSec.card), cardParams())
             temp = section(Components.KEY_TEMP, "Temperature overlay", inner = false)
             addTempSettings(temp.body)
-            addView(temp.card, cardParams())
+            addView(lockable(temp.card), cardParams())
             game = section(Components.KEY_GAME, "Frame interpolation", inner = false)
             addGameControls(game.body)
             qsHint(game.body, FiTile::class.java, "Frame interpolation", R.drawable.ic_tile_fi)
-            addView(game.card, cardParams())
+            addView(lockable(game.card), cardParams())
             srSec = section(Components.KEY_SR, "Super resolution", collapsible = false, inner = false)
             qsHint(srSec.body, SrTile::class.java, "Super resolution", R.drawable.ic_tile_sr)
-            addView(srSec.card, cardParams())
-            addView(buildStreamCard(inner = false), cardParams())
+            addView(lockable(srSec.card), cardParams())
+            addView(lockable(buildStreamCard(inner = false)), cardParams())
         }
 
         // Page 4: Audio
@@ -1392,7 +1474,7 @@ class MainActivity : Activity() {
             addView(audioGroup.card, headerCardParams())
             mixSec = section(Components.KEY_MIX, "Play together", collapsible = false, inner = false)
             qsHint(mixSec.body, MixTile::class.java, "Play together", R.drawable.ic_tile_mix)
-            addView(mixSec.card, cardParams())
+            addView(lockable(mixSec.card), cardParams())
             addView(buildFineVolumeCard(inner = false), cardParams())
         }
 
@@ -1410,6 +1492,7 @@ class MainActivity : Activity() {
             addView(buildThemeCard(inner = false), cardParams())
             addView(buildLanguageCard(inner = false), cardParams())
             addView(buildHapticsCard(inner = false), cardParams())
+            addView(lockable(buildStatusBarCard(inner = false)), cardParams())
             addView(buildPowerCard(inner = false), cardParams())
             addView(buildDiagCard(inner = false), cardParams())
             addView(buildSettingsActions(), LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 4.dp })
@@ -1607,7 +1690,7 @@ class MainActivity : Activity() {
                 btn?.isEnabled = true
                 btn?.text = "Restart SolCube"
                 poll()
-                toast("Restarted (Shizuku wasn't running)")
+                toast("Restarted (SolEngine wasn't running)")
             }
         }
     }
@@ -2228,7 +2311,7 @@ class MainActivity : Activity() {
         streamStatus.setTextColor(if (live) p.ok else p.sub)
         (streamDot.background as GradientDrawable).setColor(if (live) p.ok else alpha(p.sub, 0.5f))
         streamDetail.put(when {
-            !shellOk -> "Needs Shizuku"
+            !shellOk -> "Requires setup"
             mode && !helper -> "Laptop not reachable — screen resets in 15 s"
             mode -> "Phone screen matches the laptop. Start the stream when the game is open."
             else -> "Plug in the cable; the laptop helper must be running."
@@ -2272,7 +2355,7 @@ class MainActivity : Activity() {
                 streamBusy = false; last = s; render()
                 when (r) {
                     "no-helper" -> toast("Laptop helper not found — is the cable in and the helper running?")
-                    "no-shell" -> toast("Shizuku isn't ready")
+                    "no-shell" -> toast("SolEngine isn't connected")
                 }
             }
         }
@@ -2319,6 +2402,15 @@ class MainActivity : Activity() {
         card.addView(dpDetail, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 6.dp })
         dpMake = pillButton("Make SolCube the handler", filled = true, autoFit = true) {
             if (dpBusy) return@pillButton
+            if (Shell.state() != Shell.State.READY) {
+                SolCubeDialog.Builder(this)
+                    .setTitle("Requires setup")
+                    .setMessage("Setting vivo's double-press handler automatically needs SolCube's setup. You can also choose SolCube manually in vivo Wallet settings.")
+                    .setPositiveButton("Open setup") { _, _ -> openSetup(fromUnlock = true) }
+                    .setNegativeButton("Cancel", null)
+                    .show()
+                return@pillButton
+            }
             dpBusy = true
             renderDouble()
             io.execute {
@@ -2326,7 +2418,7 @@ class MainActivity : Activity() {
                 main.post {
                     dpBusy = false
                     renderDouble()
-                    if (!ok) toast("Couldn't set it (is Shizuku running?)")
+                    if (!ok) toast("Couldn't set it (SolEngine isn't connected)")
                 }
             }
         }
@@ -2343,7 +2435,7 @@ class MainActivity : Activity() {
         var pending = DoublePress.window(this)
         fun showWindow() { windowLabel.text = "Time between presses: $pending ms" }
         showWindow()
-        val save = Runnable { io.execute { val ok = DoublePress.setWindow(this, pending); if (!ok) main.post { toast("Couldn't save it (is Shizuku running?)") } } }
+        val save = Runnable { io.execute { val ok = DoublePress.setWindow(this, pending); if (!ok) main.post { toast("Couldn't save it (SolEngine isn't connected)") } } }
         fun step(d: Int) {
             pending = (pending + d).coerceIn(DoublePress.WINDOW_MIN, DoublePress.WINDOW_MAX)
             showWindow()
@@ -2644,7 +2736,10 @@ class MainActivity : Activity() {
         val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         rtList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         body.addView(rtList)
-        body.addView(textButton("New routine") { editRoutine(null) }, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply {
+        val rtButtons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        rtButtons.addView(textButton("New routine") { editRoutine(null) })
+        rtButtons.addView(textButton("Add from presets") { pickPresets() })
+        body.addView(rtButtons, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply {
             topMargin = 8.dp; leftMargin = (-12).dp
         })
         card.addView(body)
@@ -2693,6 +2788,29 @@ class MainActivity : Activity() {
         }
     }
 
+    /** Multi-pick of the shipped presets this user doesn't have yet; they're added switched off. */
+    private fun pickPresets() {
+        val missing = Routines.missingPresets(this)
+        if (missing.isEmpty()) { toast("You already have all presets"); return }
+        val all = Routines.load(this) + missing
+        val items = missing.map { r -> "${r.optString("name")}\n${Routines.summary(r, all, ::appName) { GestureStore.name(this, it) }}" }
+        val checked = BooleanArray(missing.size)
+        SolCubeDialog.Builder(this)
+            .setTitle(I18n.t("Add from presets"))
+            .setMultiChoiceItems(items.toTypedArray(), checked) { _, i, on -> checked[i] = on }
+            .setPositiveButton(I18n.t("Add")) { _, _ ->
+                val picks = missing.filterIndexed { i, _ -> checked[i] }
+                if (picks.isNotEmpty()) {
+                    Routines.addPresets(this, picks)
+                    AppLog.add(this, "Presets added: ${picks.joinToString { it.optString("id") }}")
+                    toast("Added — switch them on when you're ready")
+                    renderRoutineList()
+                }
+            }
+            .setNegativeButton(I18n.t("Cancel"), null)
+            .show()
+    }
+
     private fun isGestureRoutine(r: org.json.JSONObject): Boolean =
         r.optJSONObject("trigger")?.optString("type") == "gesture"
 
@@ -2701,7 +2819,7 @@ class MainActivity : Activity() {
         val all = Routines.load(this)
         val visible = all.filterNot(::isGestureRoutine)
         if (visible.isEmpty()) {
-            rtList.addView(label("No routines yet. Tap Add routine below to create one.", 12.5f, p.sub).apply {
+            rtList.addView(label("No routines yet. Tap New routine or Add from presets below.", 12.5f, p.sub).apply {
                 setPadding(0, 8.dp, 0, 4.dp)
             })
             return
@@ -2775,9 +2893,9 @@ class MainActivity : Activity() {
         rtStatus.setTextColor(if (active) p.ok else p.sub)
         (rtDot.background as GradientDrawable).setColor(if (active) p.ok else alpha(p.sub, 0.5f))
         rtDetail.put(when {
-            total == 0 -> "Tap Add routine to create one (gestures live in the Gestures tab)"
+            total == 0 -> "Tap New routine to create one (gestures live in the Gestures tab)"
             !any -> "All routines are off"
-            !shellOk -> "Waiting for Shizuku"
+            !shellOk -> "Waiting for SolEngine"
             st == null -> "Starting…"
             st.optString("error").isNotEmpty() -> "Can't listen for events, checking every 30 s instead"
             else -> "Tap a routine to edit it"
@@ -3342,7 +3460,7 @@ class MainActivity : Activity() {
         showSection(gestSec, running = running, detail = when {
             !on -> "Off"
             paused -> "Paused while testing"
-            !shellOk -> "Waiting for Shizuku"
+            !shellOk -> "Waiting for SolEngine"
             used.isEmpty() -> "No gesture has an action"
             st == null -> "Starting…"
             !running -> "Starting the listener…"
@@ -3719,7 +3837,7 @@ class MainActivity : Activity() {
         profDetail.put(when {
             total == 0 -> "Change settings or launch an app while another is open"
             !any -> "All profiles are off"
-            !shellOk -> "Waiting for Shizuku"
+            !shellOk -> "Waiting for SolEngine"
             st == null -> "Starting…"
             activeName != null -> "Active: $activeName"
             else -> "Tap a profile to edit it"
@@ -4359,7 +4477,7 @@ class MainActivity : Activity() {
                         io.execute {
                             val ok = DoublePress.makeDefault(this)
                             main.post {
-                                if (!ok) toast("Couldn't set it (is Shizuku running?)")
+                                if (!ok) toast("Couldn't set it (SolEngine isn't connected)")
                                 rebuild()
                             }
                         }
@@ -4688,7 +4806,7 @@ class MainActivity : Activity() {
                 Routines.save(this, list)
                 val ok = routinesCmd("run $id") == "ok"
                 main.post {
-                    toast(if (ok) "Running “${r.optString("name")}”" else "Routines engine isn't running (Shizuku?)")
+                    toast(if (ok) "Running “${r.optString("name")}”" else "SolEngine isn't connected")
                     gestUsedKey = ""
                     renderGestureList()
                     renderRoutineList()
@@ -4763,18 +4881,21 @@ class MainActivity : Activity() {
         }
     }
 
-    /** Once: delete the settings file 2.1.1–2.1.2 left in public Downloads (needs Shizuku; retried on each open). */
+    /** Once: delete the settings file 2.1.1–2.1.2 left in public Downloads (needs SolEngine; retried on each open). */
     private fun cleanupOldBackup() {
         val p = Components.prefs(this)
         if (p.getBoolean("old_backup_gone", false) || Shell.state() != Shell.State.READY) return
         io.execute { if (Shell.oneShot(this, "cleanup-old-backup") == "ok") p.edit().putBoolean("old_backup_gone", true).apply() }
     }
 
-    /** On every open with Shizuku: Android's background exemptions (battery whitelist, run in
+    /** On every open with SolEngine: Android's background exemptions (battery whitelist, run in
      *  background, active standby bucket), so the system doesn't put SolCube to sleep. */
     private fun keepAlive() {
         if (Shell.state() != Shell.State.READY) return
-        io.execute { Shell.oneShot(this, "keep-alive") }
+        io.execute {
+            SetupPrefs.grantBasicsOnce(this)
+            Shell.oneShot(this, "keep-alive")
+        }
     }
 
     private fun featureRequest() {

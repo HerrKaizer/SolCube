@@ -30,7 +30,7 @@ SolCube keeps a short log of recent events in memory for the in-app Diagnostics.
 
 ## Permissions and why SolCube needs them
 
-- **Shizuku (shell access):** to change system settings and listen for the power button, touches and gestures. All of this runs on your phone.
+- **SolEngine (shell access through Wireless debugging; it keeps Wireless and USB debugging on):** to change system settings and listen for the power button, touches and gestures. All of this runs on your phone.
 - **Accessibility service:** only used to draw SolCube's overlays above the status bar. It is set up with no access to screen content (`canRetrieveWindowContent="false"`) and doesn't read what you type or see.
 - **Display over other apps:** the temperature pill, notice pill and Circle to Search ripple.
 - **Do Not Disturb access:** so Ring / Vibrate / Silent can be switched directly.

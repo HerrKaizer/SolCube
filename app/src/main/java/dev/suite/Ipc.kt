@@ -7,7 +7,7 @@ import javax.crypto.spec.SecretKeySpec
 
 /**
  * Secrets for SolCube's local connections.
- *  - [secret]: shared by the app and its shell-side listener (handed over through the Shizuku
+ *  - [secret]: shared by the app and its shell-side listener (handed over through the SolEngine
  *    binder in ctsConfig), so the ripple port 127.0.0.1:47321 only talks to the real other side:
  *    no other app can receive the screenshot or make SolCube draw a picture.
  *  - [helperToken]: set by the laptop helper over adb (shell-only receiver); the stream service

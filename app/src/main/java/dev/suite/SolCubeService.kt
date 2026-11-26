@@ -12,13 +12,12 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
 import android.os.Looper
-import rikka.shizuku.Shizuku
 
 /**
  * Process-wide host for SolCube's in-app runtime: the ripple server/keep-alive, temperature pill,
- * stream bubble, Shizuku reconciler, and update check. Hosted inside [SolCubeA11y] whenever the
+ * stream bubble, SolEngine reconciler, and update check. Hosted inside [SolCubeA11y] whenever the
  * accessibility service is available (zero system notifications), falling back to [SolCubeService]
- * only when neither accessibility nor Shizuku can keep the process bound.
+ * only when accessibility can't keep the process bound.
  */
 object SolCubeHost {
     private const val WATCHDOG_MS = 60_000L
@@ -49,7 +48,7 @@ object SolCubeHost {
         override fun run() {
             val c = appCtx ?: return
             Components.reconcile(c)
-            shizukuCheck(false)
+            engineCheck(false)
             // twice-daily GitHub release check (Updates.check returns at once until 12 h have passed)
             runCatching {
                 Updates.check(c)?.let { r ->
@@ -62,45 +61,111 @@ object SolCubeHost {
         }
     }
 
-    // ---- Shizuku stopped warning: a pill (tap opens Shizuku) once it has been down a minute, while
-    // the phone is in use; again on unlock, at most every 15 min, until it runs again.
-    private var shizukuDownSince = 0L
-    private var shizukuWarnedAt = 0L
+    // ---- Engine stopped warning: a pill (tap opens Setup) once it has been down a minute, while
+    // the phone is in use; again on unlock, at most every 15 min, until connected again.
+    private var engineDownSince = 0L
+    private var engineWarnedAt = 0L
 
-    private fun shizukuCheck(unlocked: Boolean) {
+    private fun engineCheck(unlocked: Boolean) {
         val c = appCtx ?: return
         val now = System.currentTimeMillis()
-        if (Shell.state() != Shell.State.NOT_RUNNING || !SolCubeService.anyEnabled(c)) {
-            shizukuDownSince = 0L; shizukuWarnedAt = 0L; return
+        if (SetupActivity.isActive || PairingService.isRunning || !SetupPrefs.hasEverConnected(c) || SetupPrefs.skippedBasic(c) || Shell.state() == Shell.State.READY || !SolCubeService.anyEnabled(c)) {
+            engineDownSince = 0L; engineWarnedAt = 0L; return
         }
-        if (shizukuDownSince == 0L) shizukuDownSince = now
-        if (now - shizukuDownSince < 55_000L) return
+        if (engineDownSince == 0L) engineDownSince = now
+        if (now - engineDownSince < 55_000L) return
         val inUse = c.getSystemService(android.os.PowerManager::class.java).isInteractive &&
             !c.getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked
         if (!inUse) return
         val again = if (unlocked) 15 * 60_000L else Long.MAX_VALUE
-        if (shizukuWarnedAt != 0L && now - shizukuWarnedAt < again) return
-        shizukuWarnedAt = now
-        Island.show(c, "Shizuku stopped · tap to start", ok = false) {
-            val i = c.packageManager.getLaunchIntentForPackage("moe.shizuku.privileged.api")
-                ?: Intent(c, MainActivity::class.java)
-            runCatching { c.startActivity(i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+        if (engineWarnedAt != 0L && now - engineWarnedAt < again) return
+        engineWarnedAt = now
+        Island.show(c, I18n.t("Start SolEngine"), ok = false) {
+            // one tap, like Shizuku's Start; only if that fails, the reconnect screen
+            Thread {
+                val r = AdbEngine.start(c, "pill")
+                if (r == AdbEngine.Start.OK) {
+                    Island.show(c, I18n.t("SolEngine started"))
+                } else {
+                    val i = Intent(c, SetupActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    main.post { runCatching { c.startActivity(i) } }
+                }
+            }.start()
+        }
+    }
+
+    // ---- SolEngine auto-start (reboot, SolCube killed, Wi-Fi back): like Shizuku's Start, no taps.
+    // After a failed try, background tries pause 10 min (on an untrusted network each try would pop up
+    // Android's "Allow wireless debugging on this network?"); a newly connected Wi-Fi gets a fresh try.
+    @Volatile private var autoFailedAt = 0L
+    @Volatile private var autoRunning = false
+    val starting: Boolean get() = autoRunning
+
+    fun autoStart(c: Context) {
+        if (autoRunning || SetupActivity.isActive || PairingService.isRunning) return
+        if (Shell.state() != Shell.State.NOT_RUNNING || !AdbEngine.isPaired(c)) return
+        if (System.currentTimeMillis() - autoFailedAt < 10 * 60_000L) return
+        autoRunning = true
+        Thread {
+            try {
+                val r = AdbEngine.start(c, "auto")
+                autoFailedAt = if (r == AdbEngine.Start.OK) 0L else System.currentTimeMillis()
+                if (r == AdbEngine.Start.OK) bg?.post { Components.reconcile(c) }
+            } finally {
+                autoRunning = false
+            }
+        }.apply { isDaemon = true }.start()
+    }
+
+    private val wifiCallback = object : android.net.ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: android.net.Network) {
+            val c = appCtx ?: return
+            autoFailedAt = 0L
+            bg?.postDelayed({ autoStart(c) }, 3_000L)
+        }
+    }
+
+    /** Screen on/off/unlock pushed to the engine's routines and lock-screen services, so they react at
+     *  once and poll slower instead of checking the lock state every 150 ms–1.5 s on their own. */
+    private val screenReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(c: Context, i: Intent) {
+            val ev = when (i.action) {
+                Intent.ACTION_SCREEN_ON -> "on"
+                Intent.ACTION_SCREEN_OFF -> "off"
+                else -> "unlock"
+            }
+            val b = bg ?: return
+            b.post {
+                for (k in listOf(Shell.Kind.ROUTINES, Shell.Kind.STATUSBAR)) {
+                    Shell.service(k)?.let { s -> runCatching { s.command("screen $ev") } }
+                }
+            }
         }
     }
 
     private val unlockReceiver = object : android.content.BroadcastReceiver() {
-        override fun onReceive(c: Context, i: Intent) { bg?.postDelayed({ shizukuCheck(true) }, 1200) }
-    }
-
-    // Shizuku started (e.g. after a reboot): bring the shell side up.
-    private val binderListener = Shizuku.OnBinderReceivedListener {
-        val c = appCtx ?: return@OnBinderReceivedListener
-        bg?.post {
-            Components.reconcile(c)
-            if (SolCubeService.anyEnabled(c) && SolCubeA11y.instance == null) requestA11yEnable(c)
+        override fun onReceive(c: Context, i: Intent) {
+            bg?.postDelayed({
+                autoStart(c)
+                engineCheck(true)
+            }, 1200)
         }
     }
-    private val deadListener = Shizuku.OnBinderDeadListener { Shell.reset(); bg?.post { shizukuCheck(false) } }
+
+    private val engineListener: () -> Unit = {
+        val c = appCtx
+        if (c != null) {
+            if (Shell.state() == Shell.State.READY) {
+                bg?.post {
+                    Components.reconcile(c)
+                    if (SolCubeService.anyEnabled(c) && SolCubeA11y.instance == null) requestA11yEnable(c)
+                }
+            } else {
+                bg?.post { engineCheck(false) }
+            }
+        }
+    }
+
 
     fun sync(ctx: Context) {
         val app = ctx.applicationContext
@@ -187,9 +252,10 @@ object SolCubeHost {
         stream?.stop(); stream = null
         if (!started) return
         started = false
-        Shizuku.removeBinderReceivedListener(binderListener)
-        Shizuku.removeBinderDeadListener(deadListener)
+        Shell.removeStateListener(engineListener)
+        appCtx?.let { c -> runCatching { c.getSystemService(android.net.ConnectivityManager::class.java)?.unregisterNetworkCallback(wifiCallback) } }
         appCtx?.let { runCatching { it.unregisterReceiver(unlockReceiver) } }
+        appCtx?.let { runCatching { it.unregisterReceiver(screenReceiver) } }
         bg?.removeCallbacksAndMessages(null)
         worker?.quitSafely()
         bg = null; worker = null
@@ -204,11 +270,22 @@ object SolCubeHost {
         worker = wt
         val bh = Handler(wt.looper)
         bg = bh
-        Shizuku.addBinderReceivedListenerSticky(binderListener)
-        Shizuku.addBinderDeadListener(deadListener)
+        Shell.addStateListener(engineListener)
+        runCatching {
+            app.getSystemService(android.net.ConnectivityManager::class.java)?.registerNetworkCallback(
+                android.net.NetworkRequest.Builder().addTransportType(android.net.NetworkCapabilities.TRANSPORT_WIFI).build(),
+                wifiCallback,
+            )
+        }
         runCatching {
             app.registerReceiver(unlockReceiver, android.content.IntentFilter(Intent.ACTION_USER_PRESENT), Context.RECEIVER_EXPORTED)
         }
+        runCatching {
+            app.registerReceiver(screenReceiver, android.content.IntentFilter().apply {
+                addAction(Intent.ACTION_SCREEN_ON); addAction(Intent.ACTION_SCREEN_OFF); addAction(Intent.ACTION_USER_PRESENT)
+            }, Context.RECEIVER_EXPORTED)
+        }
+        bh.post { autoStart(app) }
         bh.postDelayed({ Components.reconcile(app) }, 2000)
         bh.postDelayed(watchdog, WATCHDOG_MS)
     }
@@ -260,7 +337,7 @@ object SolCubeHost {
 }
 
 /**
- * Fallback foreground service when neither [SolCubeA11y] nor Shizuku is available to keep SolCube
+ * Fallback foreground service when [SolCubeA11y] isn't available to keep SolCube
  * bound without triggering "running in the background" notifications.
  */
 class SolCubeService : Service() {
@@ -270,7 +347,7 @@ class SolCubeService : Service() {
         @Volatile var running = false
 
         fun anyEnabled(ctx: Context): Boolean =
-            listOf(Components.KEY_CTS, Components.KEY_GAME, Components.KEY_SR, Components.KEY_TEMP, Components.KEY_FPS, Components.KEY_STREAM, Components.KEY_MIX, Routines.KEY, Profiles.KEY)
+            listOf(Components.KEY_CTS, Components.KEY_GAME, Components.KEY_SR, Components.KEY_TEMP, Components.KEY_FPS, Components.KEY_STREAM, Components.KEY_MIX, Routines.KEY, Profiles.KEY, Components.KEY_SB_LOCK)
                 .any { Components.enabled(ctx, it) }
 
         /** Starts/updates or stops the host runtime (a11y first, FGS fallback). */

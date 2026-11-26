@@ -58,6 +58,8 @@ object Components {
 
     // ------------------------------------------------------------------ status
 
+    const val KEY_SB_LOCK = "sb_hide_lock"
+
     data class Status(
         val shell: Shell.State,
         val cts: JSONObject? = null,
@@ -67,12 +69,13 @@ object Components {
         val mix: JSONObject? = null,
         val routines: JSONObject? = null,
         val profiles: JSONObject? = null,
+        val statusbar: JSONObject? = null,
     )
 
     /** Call off the main thread (binder calls into the shell-side services). */
     fun status(): Status {
         val st = Shell.state()
-        return Status(st, read(Shell.Kind.CTS), read(Shell.Kind.FI), read(Shell.Kind.SR), read(Shell.Kind.STREAM), read(Shell.Kind.MIX), read(Shell.Kind.ROUTINES), read(Shell.Kind.PROFILES))
+        return Status(st, read(Shell.Kind.CTS), read(Shell.Kind.FI), read(Shell.Kind.SR), read(Shell.Kind.STREAM), read(Shell.Kind.MIX), read(Shell.Kind.ROUTINES), read(Shell.Kind.PROFILES), read(Shell.Kind.STATUSBAR))
     }
 
     fun read(k: Shell.Kind) = runCatching { Shell.service(k)?.status()?.let { JSONObject(it) } }.getOrNull()
@@ -290,7 +293,23 @@ object Components {
         if (on || enabled(ctx, KEY_TEMP)) Shell.start(ctx, Shell.Kind.TEMP) else Shell.stop(ctx, Shell.Kind.TEMP)
     }
 
-    /** Starts whatever is enabled but not running (after a reboot, when Shizuku comes back, after a crash). */
+    fun statusBarDaemonWanted(ctx: Context): Boolean = enabled(ctx, KEY_SB_LOCK)
+
+    fun statusBarConfig(ctx: Context): String = JSONObject()
+        .put("hideLock", enabled(ctx, KEY_SB_LOCK))
+        .toString()
+
+    fun setLockStatusBarHidden(ctx: Context, hide: Boolean) {
+        prefs(ctx).edit().putBoolean(KEY_SB_LOCK, hide).commit()
+        SolCubeService.sync(ctx)
+        if (hide) {
+            Shell.start(ctx, Shell.Kind.STATUSBAR)
+        } else {
+            Thread { runCatching { Shell.stop(ctx, Shell.Kind.STATUSBAR) } }.start()
+        }
+    }
+
+    /** Starts whatever is enabled but not running (after a reboot, when SolEngine comes back, after a crash). */
     fun reconcile(ctx: Context) {
         if (Shell.state() != Shell.State.READY) return
         if (ctsServiceWanted(ctx)) {
@@ -305,5 +324,6 @@ object Components {
         if (enabled(ctx, Profiles.KEY)) Shell.start(ctx, Shell.Kind.PROFILES)
         if (enabled(ctx, KEY_TEMP) || enabled(ctx, KEY_FPS)) Shell.start(ctx, Shell.Kind.TEMP)
         if (enabled(ctx, KEY_STREAM)) Shell.start(ctx, Shell.Kind.STREAM)
+        if (enabled(ctx, KEY_SB_LOCK)) Shell.start(ctx, Shell.Kind.STATUSBAR)
     }
 }

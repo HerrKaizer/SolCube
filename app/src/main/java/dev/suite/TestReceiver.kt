@@ -153,6 +153,10 @@ class TestReceiver : BroadcastReceiver() {
                         Components.prefs(ctx).edit().putInt(Components.KEY_FREEZE, ms.coerceIn(0, 600)).commit()
                         Shell.service(Shell.Kind.CTS)?.configure(Components.ctsConfig(ctx))
                     }
+                    "dev.suite.RESET_SETUP" -> {
+                        EngineProvider.resetEngine(ctx)
+                        pending.resultData = "ok"
+                    }
                 }
             } catch (_: Exception) {
             } finally {

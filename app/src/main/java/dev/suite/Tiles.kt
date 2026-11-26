@@ -21,7 +21,7 @@ abstract class FeatureTile : TileService() {
         I18n.init(this)
         val on = !Components.enabled(this, key)
         if (on && Shell.state() != Shell.State.READY) {
-            Island.show(this, I18n.t("Shizuku stopped · open it to start"), ok = false)
+            Island.show(this, I18n.t("Reconnect"), ok = false)
             refresh()
             return
         }

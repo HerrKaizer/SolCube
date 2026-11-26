@@ -205,7 +205,7 @@ object DoublePress {
 
     /**
      * Turns vivo's double-press switch on and makes SolCube the "always" handler, as the shell user
-     * (needs Shizuku). Off the main thread.
+     * (needs SolEngine). Off the main thread.
      */
     fun makeDefault(ctx: Context): Boolean {
         if (!walletSwitchOn(ctx) && Shell.oneShot(ctx, "put system $WALLET_SWITCH 1") != "ok") return false
@@ -264,7 +264,7 @@ object Ringer {
         if (!direct) Thread { Shell.oneShot(ctx, "ringer ${name(next)}") }.start()
     }
 
-    /** Gives SolCube Do Not Disturb access through Shizuku so ring changes are instant. Off the main thread. */
+    /** Gives SolCube Do Not Disturb access through SolEngine so ring changes are instant. Off the main thread. */
     fun ensureAccess(ctx: Context) {
         if (ctx.getSystemService(NotificationManager::class.java).isNotificationPolicyAccessGranted) return
         Shell.oneShot(ctx, "allow-dnd ${ctx.packageName}")

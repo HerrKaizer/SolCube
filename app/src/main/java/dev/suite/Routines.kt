@@ -247,7 +247,7 @@ object Routines {
     fun load(ctx: Context): MutableList<JSONObject> {
         val prefs = Components.prefs(ctx)
         val raw = prefs.getString(PREF, null)
-            ?: return defaults().also { save(ctx, it, push = false); prefs.edit().putInt(VERSION, 5).commit() }
+            ?: return defaults().also { save(ctx, it, push = false); prefs.edit().putInt(VERSION, 5).commit(); localizeNames(it) }
         val list = runCatching { JSONArray(raw).let { a -> (0 until a.length()).map { a.getJSONObject(it) }.toMutableList() } }
             .getOrElse { defaults() }
         if (prefs.getInt(VERSION, 1) < 2) {
@@ -300,6 +300,7 @@ object Routines {
             save(ctx, list, push = false)
             prefs.edit().putInt(VERSION, 5).commit()
         }
+        localizeNames(list)
         return list
     }
 
@@ -1115,27 +1116,72 @@ object Routines {
         }
     }
 
+    /**
+     * Presets for a fresh install. They ship OFF: a new user turns on what fits after reading it (the
+     * old set was the author's own routines, all ON, e.g. "Sleep" closing every app and switching on
+     * airplane mode whenever Do Not Disturb came on). Names are translated, see [localizeNames].
+     */
     private fun defaults(): MutableList<JSONObject> {
-        val office = JSONArray()
-        val weekdays = JSONArray(listOf(1, 2, 3, 4, 5))
+        fun preset(id: String, name: String) =
+            JSONObject().put("id", id).put("name", name).put("nameKey", name).put("on", false)
         return mutableListOf(
-            JSONObject().put("id", "work").put("name", "Work").put("on", true)
-                .put("trigger", JSONObject().put("type", "wifi_connect").put("ssids", office))
-                .put("days", weekdays).put("from", "08:40").put("to", "09:15").put("once", true)
-                .put("wifiGuard", JSONObject().put("on", true).put("from", "08:30").put("to", "09:20").put("minutes", 3))
-                .put("actions", JSONArray(listOf(act("data", "off"), act("ringer", "vibrate"), act("media", "0"), act("vibrate")))),
-            JSONObject().put("id", "leave").put("name", "Leave work").put("on", true)
-                .put("trigger", JSONObject().put("type", "wifi_gone").put("ssids", office).put("minutes", 10))
-                .put("days", weekdays).put("from", "14:00").put("to", "16:00").put("after", "work")
-                .put("actions", JSONArray(listOf(act("data", "restore"), act("ringer", "restore"), act("media", "restore"), act("vibrate")))),
-            JSONObject().put("id", "sleep").put("name", "Sleep").put("on", true)
-                .put("trigger", JSONObject().put("type", "dnd_on"))
-                .put("actions", JSONArray(listOf(act("close_apps"), act("airplane", "on"), act("wifi", "off"),
-                    act("saver", "on"), act("lock"), act("vibrate")))),
-            JSONObject().put("id", "morning").put("name", "Morning").put("on", true)
+            preset("bedtime", "Bedtime")
+                .put("trigger", JSONObject().put("type", "time").put("at", "23:00"))
+                .put("actions", JSONArray(listOf(act("dnd", "on"), act("dark_mode", "on"), act("brightness", "10"), act("vibrate")))),
+            preset("morning", "Wake up")
                 .put("trigger", JSONObject().put("type", "unlock"))
-                .put("from", "05:00").put("to", "12:00").put("after", "sleep")
-                .put("actions", JSONArray(listOf(act("airplane", "off"), act("wifi", "on"), act("saver", "off"), act("dnd", "off"), reviveAction(), act("vibrate")))),
+                .put("from", "05:00").put("to", "11:00").put("after", "bedtime").put("once", true)
+                .put("actions", JSONArray(listOf(act("dnd", "off"), act("auto_brightness", "on"), act("vibrate")))),
+            preset("work", "Work")   // fires only on the Wi-Fi network(s) the user picks (none = never)
+                .put("trigger", JSONObject().put("type", "wifi_connect").put("ssids", JSONArray()))
+                .put("days", JSONArray(listOf(1, 2, 3, 4, 5))).put("from", "08:00").put("to", "10:00").put("once", true)
+                .put("actions", JSONArray(listOf(act("ringer", "vibrate"), act("media", "0"), act("vibrate")))),
+            preset("lowbattery", "Low battery")
+                .put("trigger", JSONObject().put("type", "battery_below").put("percent", 20))
+                .put("actions", JSONArray(listOf(act("saver", "on"), act("dark_mode", "on"), act("vibrate")))),
+            preset("headphones", "Headphones")
+                .put("trigger", JSONObject().put("type", "headphones_connect"))
+                .put("actions", JSONArray(listOf(act("media", "50"), act("media_control", "play")))),
+            preset("gameon", "Game on")
+                .put("trigger", JSONObject().put("type", "game_open"))
+                .put("actions", JSONArray(listOf(act("dnd", "on"), act("boost", "on")))),
+            preset("gameover", "Game over")
+                .put("trigger", JSONObject().put("type", "game_close"))
+                .put("after", "gameon")
+                .put("actions", JSONArray(listOf(act("dnd", "restore"), act("boost", "restore")))),
         )
+    }
+
+    /** Presets the user doesn't have yet (matched by id), names in the app's language. Lets existing
+     *  users add them too; [defaults] alone only reaches fresh installs. */
+    fun missingPresets(ctx: Context): List<JSONObject> {
+        val have = load(ctx).map { it.optString("id") }.toSet()
+        return defaults().filter { it.optString("id") !in have }.also { localizeNames(it) }
+    }
+
+    /** Adds presets (off), pulling in the routine a pick depends on ("Game over" needs "Game on"). */
+    fun addPresets(ctx: Context, picks: List<JSONObject>) {
+        val all = load(ctx)
+        val missing = missingPresets(ctx).associateBy { it.optString("id") }
+        val add = LinkedHashMap<String, JSONObject>()
+        for (p in picks) {
+            p.optString("after").takeIf { it.isNotEmpty() }?.let { dep -> missing[dep]?.let { add.putIfAbsent(dep, it) } }
+            add[p.optString("id")] = p
+        }
+        all.addAll(add.values)
+        save(ctx, all)
+    }
+
+    /** Presets show their name in the app's language until the user renames them ("nameShown" = what
+     *  we last set; a different "name" means the user typed their own). */
+    private fun localizeNames(list: List<JSONObject>) {
+        for (r in list) {
+            val key = r.optString("nameKey")
+            if (key.isEmpty()) continue
+            val shown = r.optString("nameShown", r.optString("name"))
+            if (r.optString("name") != shown) { r.remove("nameKey"); r.remove("nameShown"); continue }
+            val name = I18n.t(key)
+            r.put("name", name).put("nameShown", name)
+        }
     }
 }

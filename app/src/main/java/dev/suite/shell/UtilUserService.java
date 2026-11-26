@@ -98,6 +98,16 @@ public class UtilUserService extends ISolCubeService.Stub {
                 SysSettings.exec("am", "set-standby-bucket", "dev.suite", "active");
                 return "ok";
             }
+            if (cmd.equals("grant-basics")) {
+                // Once, right after the engine first connects: what a user would otherwise have to grant by hand.
+                // (Accessibility is switched on separately, only while a feature needs it.)
+                SysSettings.exec("pm", "grant", "dev.suite", "android.permission.POST_NOTIFICATIONS");
+                SysSettings.exec("appops", "set", "dev.suite", "SYSTEM_ALERT_WINDOW", "allow");
+                SysSettings.exec("cmd", "notification", "allow_dnd", "dev.suite");
+                SysSettings.exec("dumpsys", "deviceidle", "whitelist", "+dev.suite");
+                L.i("basic permissions granted");
+                return "ok";
+            }
             if (cmd.equals("cts")) {   // Circle to Search straight away (no ripple: the listener isn't running)
                 return CtsTrigger.trigger(CtsTrigger.service(), 1) ? "ok" : "failed";
             }

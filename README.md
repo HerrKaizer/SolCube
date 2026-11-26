@@ -19,11 +19,10 @@ Formerly **Suite**. All-in-one Android app for vivo / OriginOS phones. Tested on
 ## Requirements
 
 - A vivo / iQOO phone on OriginOS (tested on OriginOS 7, Android 17)
-- **[Shizuku](https://shizuku.rikka.app/)** installed and running (no root needed)
-- **Developer options → Wireless debugging** (to start Shizuku; needs Wi-Fi once per boot)
+- **Developer options → Wireless debugging** and Wi-Fi, for **SolEngine**, SolCube's own built-in shell engine (no root, no Shizuku). SolEngine leaves Wireless debugging on, together with USB debugging, which Android requires for it, so it can start by itself after a reboot.
 - **Circle to Search triggers only:** the **Google app** set as your default digital assistant. SolCube makes the same call as MiCTS, so MiCTS itself is not needed.
 - **Overlay permission** ("Display over other apps") for the ripple, pill and temperature overlay
-- **Accessibility service "SolCube ripple"**: only used to draw overlays above the status bar. It reads no screen content. SolCube can enable it for you through Shizuku.
+- **Accessibility service "SolCube ripple"**: only used to draw overlays above the status bar. It reads no screen content. SolCube enables it for you through SolEngine.
 - Installing from unknown sources allowed (the APK is debug-signed)
 - **Stream to laptop only:** a PC with adb, scrcpy and the helper script, plus a USB cable
 
@@ -32,36 +31,31 @@ Formerly **Suite**. All-in-one Android app for vivo / OriginOS phones. Tested on
 ### 1. Install the APK
 Download `SolCube.apk` from the [release page](https://github.com/HerrKaizer/SolCube/releases/latest), open it and allow installs from this source when asked. If vivo rejects the install ("User rejected permissions"), unlock the phone and try again with the screen on.
 
-### 2. Enable Developer options and Wireless debugging
-1. Settings → About phone → tap **Software version** (or Build number) 7 times.
-2. Settings → System management → **Developer options**.
-3. Turn on **Wireless debugging** (connect to a Wi-Fi network first).
+### 2. Run SolCube's setup
+Open SolCube. Its setup walks you through it and moves on by itself at each step:
+1. Unhide **Developer options** (tap **Software version** 7 times; SolCube opens the page).
+2. Turn Developer options on.
+3. Connect: SolCube opens **Wireless debugging** → tap **Pair device with pairing code**, then type the code into SolCube's notification.
 
-### 3. Install and start Shizuku
-1. Install Shizuku from the [Play Store or GitHub](https://shizuku.rikka.app/download/).
-2. Open Shizuku → **Start via Wireless debugging**.
-3. In Developer options → Wireless debugging → **Pair device with pairing code**. Pull down the notification Shizuku shows and enter the pairing code in its notification.
-4. Back in Shizuku tap **Start**. It should say "Shizuku is running".
+That's it: the pairing is kept, SolEngine starts by itself after a reboot (on Wi-Fi), restarts itself after an update, and grants SolCube's other permissions (overlay, notifications, Do Not Disturb, accessibility). If it ever isn't running, the card in SolCube has one **Start SolEngine** button.
 
-Shizuku stops when the phone reboots, so repeat step 3 (the pairing is remembered, only Start is needed) after each reboot.
+Coming from Shizuku? Since 5.7.0 SolCube doesn't use Shizuku any more. Setup opens by itself after the update; pair once and you can uninstall Shizuku if nothing else needs it.
 
-### 4. Give SolCube its permissions
-1. Open SolCube. When Shizuku asks, **allow** SolCube.
-2. Allow **Display over other apps** for SolCube when prompted.
-3. Turn on the features you want with each card's **Enable** button.
+### 3. Turn on features
+Turn on the features you want with each card's **Enable** button. Routines → **Add from presets** has ready-made routines (they start switched off).
 
-### 5. Circle to Search (optional)
+### 4. Circle to Search (optional)
 1. Settings → Apps → Default apps → **Digital assistant app** → choose **Google**.
 2. Make sure the Google app is up to date and Circle to Search is enabled in the Google app settings.
 3. In SolCube, enable the Circle to Search card, then hold two fingers on the screen, hold the power button, or hold the navigation bar at the bottom.
 
-### 6. Keep SolCube alive (recommended)
+### 5. Keep SolCube alive (recommended)
 vivo's background cleaner can stop apps. In Settings → Battery → Background power consumption (name varies), allow SolCube to run in the background.
 
 ## Notes
 
-- Everything shell-level runs as Shizuku UserServices. Source is in `app/src/main/java/dev/suite/shell`.
-- Routines, double-press apps and the frame-interpolation game list start empty or generic. Set them up in the app.
+- Everything shell-level runs in SolEngine (`shell/SolCubeDaemon.java`, started over this phone's own Wireless debugging), one process per feature. Source is in `app/src/main/java/dev/suite/shell`.
+- Routines start with switched-off presets; double-press apps and the frame-interpolation game list start empty. Set them up in the app.
 
 ## Updates and your settings
 

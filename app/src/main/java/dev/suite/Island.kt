@@ -187,7 +187,9 @@ object Island {
     /** [still] keeps it out until hide() (for the editor). */
     /** [onTap]: the pill takes a tap (its window is then only as wide as the pill area) and stays out 6 s. */
     fun show(ctx: Context, text: String, ok: Boolean = true, still: Boolean = false, waited: Int = 0, onTap: (() -> Unit)? = null) {
+        if (SetupActivity.isActive || PairingService.isRunning) return
         if (Looper.myLooper() != Looper.getMainLooper()) { main.post { show(ctx, text, ok, still, waited, onTap) }; return }
+        if (SetupActivity.isActive || PairingService.isRunning) return
         current?.let {
             if (!it.removed) {
                 // going back in: let it finish, then come out fresh (starting mid-way looked broken)
@@ -268,7 +270,11 @@ object Island {
         try { wm.addView(view, lp); current = view } catch (e: Exception) { Log.w(TAG, "island", e) }
     }
 
-    fun hide() = main.post { current?.close() }
+    fun hide() = main.post {
+        pending.clear()
+        pendingCtx = null
+        current?.close()
+    }
 
     private class PillView(
         ctx: Context,

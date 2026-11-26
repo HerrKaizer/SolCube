@@ -123,7 +123,7 @@ class RippleHost(private val ctx: Context) {
             it.receiveBufferSize = 1 shl 22
             val input = java.io.DataInputStream(java.io.BufferedInputStream(it.getInputStream(), 1 shl 20))
             val out0 = it.getOutputStream()
-            // Mutual HMAC handshake with the shell listener (secret shared over the Shizuku binder):
+            // Mutual HMAC handshake with the shell listener (secret shared over the SolEngine binder):
             // any app can connect to a localhost port, so prove both ends before drawing anything
             // or accepting a screenshot.
             it.soTimeout = 3000
