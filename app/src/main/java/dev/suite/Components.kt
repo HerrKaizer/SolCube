@@ -246,6 +246,28 @@ object Components {
             if (on && key == KEY_HOLD_ACT) e.putBoolean(KEY_CTS_BUTTON, false)
         }.commit()
         syncCts(ctx)
+        if (on && key != KEY_HOLD_ACT) ensureCtsAssistant(ctx, "switched on", toast = true)
+    }
+
+    /** Circle to Search needs Google as the default assistant with screen access; SolEngine sets both. */
+    fun ensureCtsAssistant(ctx: Context, why: String, toast: Boolean = false) {
+        val wanted = ctsTouch(ctx) || ctsButton(ctx) || ctsNav(ctx) ||
+            DoublePress.action.action(ctx) == PressAction.CTS
+        if (!wanted || Shell.state() != Shell.State.READY) return
+        val app = ctx.applicationContext
+        Thread {
+            val r = runCatching { Shell.oneShot(app, "cts-assistant") }.getOrNull()
+            val msg = when (r) {
+                "set" -> "Google is now the default assistant, so Circle to Search works"
+                "no-google" -> "Circle to Search needs the Google app"
+                "failed" -> "Couldn't make Google the default assistant"
+                else -> return@Thread
+            }
+            AppLog.add(app, "$msg ($why)")
+            if (toast) android.os.Handler(android.os.Looper.getMainLooper()).post {
+                android.widget.Toast.makeText(app, I18n.t(msg), android.widget.Toast.LENGTH_LONG).show()
+            }
+        }.apply { isDaemon = true }.start()
     }
 
     fun setCtsAnimate(ctx: Context, on: Boolean) {

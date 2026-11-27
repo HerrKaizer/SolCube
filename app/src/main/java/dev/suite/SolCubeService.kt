@@ -81,7 +81,7 @@ object SolCubeHost {
         if (engineWarnedAt != 0L && now - engineWarnedAt < again) return
         engineWarnedAt = now
         Island.show(c, I18n.t("Start SolEngine"), ok = false) {
-            // one tap, like Shizuku's Start; only if that fails, the reconnect screen
+            // one tap; only if that fails, the reconnect screen
             Thread {
                 val r = AdbEngine.start(c, "pill")
                 if (r == AdbEngine.Start.OK) {
@@ -94,7 +94,7 @@ object SolCubeHost {
         }
     }
 
-    // ---- SolEngine auto-start (reboot, SolCube killed, Wi-Fi back): like Shizuku's Start, no taps.
+    // ---- SolEngine auto-start (reboot, SolCube killed, Wi-Fi back), no taps.
     // After a failed try, background tries pause 10 min (on an untrusted network each try would pop up
     // Android's "Allow wireless debugging on this network?"); a newly connected Wi-Fi gets a fresh try.
     @Volatile private var autoFailedAt = 0L

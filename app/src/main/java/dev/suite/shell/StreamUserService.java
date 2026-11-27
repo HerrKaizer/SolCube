@@ -14,7 +14,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Stream to laptop, run by Shizuku as a UserService ("dev.suite:stream").
+ * Stream to laptop, run by SolEngine as a feature process ("dev.suite:stream").
  *
  *  - "Wide" mode: the phone's display is resized to the laptop's shape (e.g. 1200x1920 for a
  *    16:10 laptop) so the game fills the laptop screen; the phone keeps showing the game and is

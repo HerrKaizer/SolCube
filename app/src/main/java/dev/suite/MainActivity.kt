@@ -632,9 +632,52 @@ class MainActivity : Activity() {
      *  the user is still in Settings, Android blocks activity starts from the background). */
     private fun maybeOpenTour() {
         if (!resumed || isFinishing || isDestroyed) return
-        if (Shell.state() != Shell.State.READY || SetupPrefs.hasSeenIntro(this)) return
+        if (Shell.state() != Shell.State.READY) return
+        if (SetupPrefs.hasSeenIntro(this)) { maybeAskKeepRunning(); return }
         if (SetupActivity.isActive || FeatureIntroActivity.isOpen) return
         startActivity(Intent(this, FeatureIntroActivity::class.java))
+    }
+
+    private fun vivoPowerIntent() =
+        Intent().setClassName("com.iqoo.powersaving", "com.iqoo.powersaving.BackgroundHighUsageActivity")
+
+    private fun openVivoPower() {
+        try {
+            startActivity(vivoPowerIntent())
+        } catch (_: Exception) {
+            startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+        }
+    }
+
+    /**
+     * Once, right after setup and the tour: vivo freezes apps that may not use power in the background,
+     * and SolEngine can't change that switch, so ask the user to allow SolCube there.
+     */
+    private var keepRunningShown = false
+
+    private fun maybeAskKeepRunning() {
+        if (keepRunningShown) return
+        val pUi = Components.prefs(this)
+        if (pUi.getBoolean(KEY_KEEP_RUNNING_ASKED, false)) return
+        if (packageManager.resolveActivity(vivoPowerIntent(), 0) == null) return
+        keepRunningShown = true
+        // a moment later, once the screen has settled (right after setup / the tour it may still be rebuilding)
+        main.postDelayed({
+            if (!resumed || isFinishing || isDestroyed || SetupActivity.isActive || FeatureIntroActivity.isOpen) {
+                keepRunningShown = false
+                return@postDelayed
+            }
+            // marked as asked only when a button is tapped, so a dialog lost to a rebuild comes back
+            SolCubeDialog.Builder(this)
+                .setTitle("Keep SolCube running")
+                .setMessage("vivo pauses apps in the background to save battery. Allow SolCube there, or Gestures, Routines and Circle to Search can stop after a while.\n\nFind SolCube in the list and turn it on.")
+                .setPositiveButton("Allow") { _, _ ->
+                    pUi.edit().putBoolean(KEY_KEEP_RUNNING_ASKED, true).apply()
+                    openVivoPower()
+                }
+                .setNegativeButton("Later") { _, _ -> pUi.edit().putBoolean(KEY_KEEP_RUNNING_ASKED, true).apply() }
+                .show()
+        }, 700L)
     }
 
     private fun openSetup(fromUnlock: Boolean = true) {
@@ -649,7 +692,7 @@ class MainActivity : Activity() {
             if (!AdbEngine.isPaired(this)) {
                 openSetup(fromUnlock = true)
             } else if (!engineStarting) {
-                // one tap, like Shizuku's Start: Wireless debugging on if needed, connect, launch SolEngine
+                // one tap: Wireless debugging on if needed, connect, launch SolEngine
                 engineStarting = true
                 engineButton.text = I18n.t("Starting SolEngine…")
                 io.execute {
@@ -1030,13 +1073,7 @@ class MainActivity : Activity() {
             background = ripple(glass(radius, level = if (inner) 1 else 0), radius)
             isClickable = true
             isFocusable = true
-            setOnClickListener {
-                try {
-                    startActivity(Intent().setClassName("com.iqoo.powersaving", "com.iqoo.powersaving.BackgroundHighUsageActivity"))
-                } catch (_: Exception) {
-                    startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
-                }
-            }
+            setOnClickListener { openVivoPower() }
             val powerRow = LinearLayout(this@MainActivity).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
@@ -2311,7 +2348,7 @@ class MainActivity : Activity() {
         streamStatus.setTextColor(if (live) p.ok else p.sub)
         (streamDot.background as GradientDrawable).setColor(if (live) p.ok else alpha(p.sub, 0.5f))
         streamDetail.put(when {
-            !shellOk -> "Requires setup"
+            !shellOk -> "Needs the one-minute unlock"
             mode && !helper -> "Laptop not reachable — screen resets in 15 s"
             mode -> "Phone screen matches the laptop. Start the stream when the game is open."
             else -> "Plug in the cable; the laptop helper must be running."
@@ -2404,10 +2441,10 @@ class MainActivity : Activity() {
             if (dpBusy) return@pillButton
             if (Shell.state() != Shell.State.READY) {
                 SolCubeDialog.Builder(this)
-                    .setTitle("Requires setup")
-                    .setMessage("Setting vivo's double-press handler automatically needs SolCube's setup. You can also choose SolCube manually in vivo Wallet settings.")
-                    .setPositiveButton("Open setup") { _, _ -> openSetup(fromUnlock = true) }
-                    .setNegativeButton("Cancel", null)
+                    .setTitle("Set it up yourself")
+                    .setMessage("Without the one-minute unlock, SolCube can't do this for you. Double-press the power button, pick SolCube and tap Always.\n\nIf nothing happens, first turn on “Double press the Power button to quickly swipe cards” in vivo Wallet.")
+                    .setPositiveButton("Unlock instead") { _, _ -> openSetup(fromUnlock = true) }
+                    .setNegativeButton("OK", null)
                     .show()
                 return@pillButton
             }
@@ -2487,7 +2524,14 @@ class MainActivity : Activity() {
         })
         dpMake.visibility = if (ready) View.GONE else View.VISIBLE
         dpMake.text = if (dpBusy) "…" else I18n.t("Set up double press")
-        renderChoices(dpChoices, DoublePress.action, cts = true) { renderDouble() }
+        renderChoices(dpChoices, DoublePress.action, cts = true) {
+            renderDouble()
+            io.execute {
+                val set = DoublePress.ensure(this, "action picked")
+                Components.ensureCtsAssistant(this, "double press", toast = true)
+                if (set) main.post { renderDouble(); toast("Double press is set up") }
+            }
+        }
     }
 
     private fun pressStatusLine(isDouble: Boolean, pa: PressAction): String {
@@ -5533,6 +5577,7 @@ class MainActivity : Activity() {
 
     private companion object {
         const val KEY_HEADER_PASSES = "header_passes"
+        const val KEY_KEEP_RUNNING_ASKED = "keep_running_asked"
         private const val HEADER_BLUR_MASK_SRC = """
 uniform shader src;
 uniform float yTop;

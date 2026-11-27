@@ -5,7 +5,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 /**
- * Circle to Search listener, run by Shizuku as a UserService in its own shell-user process
+ * Circle to Search listener, run by SolEngine in its own shell-user process
  * ("dev.suite:cts"). Two triggers, each switchable from SolCube:
  *   touch  - two-finger hold on the touchscreen
  *   button - power-button hold (takes the power key exclusively while enabled)

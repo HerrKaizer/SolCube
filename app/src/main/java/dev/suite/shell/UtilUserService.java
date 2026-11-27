@@ -108,6 +108,24 @@ public class UtilUserService extends ISolCubeService.Stub {
                 L.i("basic permissions granted");
                 return "ok";
             }
+            if (cmd.equals("cts-assistant")) {
+                // Circle to Search only works with Google as the default digital assistant and with
+                // "Use text from screen" / "Use screenshot" on. vivo ships Jovi there and hides the page.
+                String g = "com.google.android.googlequicksearchbox";
+                if (!SysSettings.exec("pm", "path", g).startsWith("package:")) return "no-google";
+                boolean changed = false;
+                String role = "android.app.role.ASSISTANT";
+                if (!SysSettings.exec("cmd", "role", "get-role-holders", role).contains(g)) {
+                    SysSettings.exec("cmd", "role", "add-role-holder", role, g);
+                    if (!SysSettings.exec("cmd", "role", "get-role-holders", role).contains(g)) return "failed";
+                    changed = true;
+                }
+                for (String k : new String[] { "assist_structure_enabled", "assist_screenshot_enabled" }) {
+                    if (!"1".equals(SysSettings.get("secure", k))) { SysSettings.put("secure", k, "1"); changed = true; }
+                }
+                if (changed) L.i("Google set as default assistant with screen access");
+                return changed ? "set" : "ok";
+            }
             if (cmd.equals("cts")) {   // Circle to Search straight away (no ripple: the listener isn't running)
                 return CtsTrigger.trigger(CtsTrigger.service(), 1) ? "ok" : "failed";
             }

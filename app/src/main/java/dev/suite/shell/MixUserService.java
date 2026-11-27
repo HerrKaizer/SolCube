@@ -20,7 +20,7 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * "Play together", run by Shizuku as a UserService ("dev.suite:mix").
+ * "Play together", run by SolEngine as a feature process ("dev.suite:mix").
  *
  * Android normally pauses the playing app whenever another app asks for audio focus. This
  * registers an external audio-focus policy (shell holds MODIFY_AUDIO_ROUTING), which puts this

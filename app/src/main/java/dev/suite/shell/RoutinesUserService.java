@@ -39,7 +39,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Routines engine, run by Shizuku as a UserService ("dev.suite:routines"). The app sends the
+ * Routines engine, run by SolEngine as a feature process ("dev.suite:routines"). The app sends the
  * routines as JSON (configure); this process watches the triggers and runs the actions as the
  * shell user.
  */

@@ -51,7 +51,7 @@ final class EngineBridge {
     }
 
     private static Bundle callProvider(String method, String arg, Bundle extras) throws Exception {
-        // Like Shizuku's BinderSender: briefly exempt SolCube from Doze / background limits so the provider
+        // Briefly exempt SolCube from Doze / background limits so the provider
         // call can start or wake its process (after a reboot, or when the app was killed).
         SysSettings.exec("cmd", "deviceidle", "tempwhitelist", "-d", "30000", "dev.suite");
         Object am = Class.forName("android.app.ActivityManager").getMethod("getService").invoke(null);

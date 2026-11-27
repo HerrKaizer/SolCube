@@ -33,7 +33,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * Pure-Android Wireless Debugging (ADB-over-TLS) client for SolCube.
  * Pairs once with Android's built-in Wireless Debugging and launches `SolCubeDaemon` (`uid=2000`)
- * straight from SolCube's own APK — no external Shizuku app required.
+ * straight from SolCube's own APK — no other app required.
  */
 object AdbEngine {
     private const val TAG = "SolCube.adb"
@@ -91,7 +91,7 @@ object AdbEngine {
         Settings.Global.getInt(ctx.contentResolver, "adb_wifi_enabled", 0) == 1
     }.getOrDefault(false)
 
-    /** Like Shizuku: stop Android from revoking our pairing after 7 days without a connection
+    /** Stop Android from revoking our pairing after 7 days without a connection
      *  (adb_allowed_connection_time, default 7 days). Needs WRITE_SECURE_SETTINGS (granted by SolEngine). */
     fun keepPairing(ctx: Context) {
         if (ctx.checkSelfPermission(Manifest.permission.WRITE_SECURE_SETTINGS) != PackageManager.PERMISSION_GRANTED) return
@@ -223,7 +223,7 @@ object AdbEngine {
     /** Why a one-tap SolEngine start didn't work (shown to the user). */
     enum class Start { OK, NOT_PAIRED, NO_WIFI, DEV_OFF, NO_PERMISSION, FAILED }
 
-    /** One-tap start, like Shizuku's "Start" button (blocking; call off the main thread). */
+    /** One-tap start (blocking; call off the main thread). */
     fun tryAutoReconnect(ctx: Context): Boolean = start(ctx) == Start.OK
 
     /**
@@ -231,7 +231,7 @@ object AdbEngine {
      *  1. re-attach to an engine that is still running (survives SolCube being killed);
      *  2. if Wireless debugging is on, connect and launch the engine;
      *  3. if it is off, switch it on through WRITE_SECURE_SETTINGS (granted by the engine on first
-     *     connect), connect, and leave it on (Shizuku does the same).
+     *     connect), connect, and leave it on.
      * Always this phone's own adbd on 127.0.0.1 (see [LocalAdb]).
      * A rejected key means the pairing was removed on the phone: only pairing again helps.
      * Uses only standard Android settings, so it behaves the same on every vivo build.
@@ -280,7 +280,7 @@ object AdbEngine {
             if (wasOn) {
                 keepPairing(app)
                 // vivo keeps Wireless debugging on across reboots: then it's just a connect with our saved key,
-                // like Shizuku's Start. Never toggle it here: that would only reset the user's session.
+                // Never toggle it here: that would only reset the user's session.
                 var r = connect(8_000L)
                 if (r == Start.FAILED) { Thread.sleep(1_500); r = connect(8_000L) }   // mDNS can lag after boot
                 return r
@@ -294,7 +294,7 @@ object AdbEngine {
                 Settings.Global.putInt(app.contentResolver, "adb_wifi_enabled", if (on) 1 else 0)
             }.getOrDefault(false)
 
-            // Like Shizuku's boot start: switch Wireless debugging (and USB debugging, which it depends
+            // Boot start: switch Wireless debugging (and USB debugging, which it depends
             // on) on, connect, and leave it on so the next start is just a connect.
             if (!setWifiAdb(true)) return Start.NO_PERMISSION
             runCatching { Settings.Global.putInt(app.contentResolver, Settings.Global.ADB_ENABLED, 1) }

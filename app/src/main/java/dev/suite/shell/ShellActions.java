@@ -869,7 +869,7 @@ public final class ShellActions {
     /**
      * Closes everything: clears recents (like swiping every card away), then force-stops every
      * user-installed app still running, background ones included (KWGT, VPNs, messengers…).
-     * Keeps the launcher, the keyboard, SolCube, Shizuku (SolCube runs on it), except, and extraKeep.
+     * Keeps the launcher, the keyboard, SolCube, Shizuku (other apps may rely on it), except, and extraKeep.
      */
     public static void closeApps(JSONArray except, String extraKeep) {
         Set<String> keep = new HashSet<>();

@@ -217,6 +217,21 @@ object DoublePress {
         return Shell.oneShot(ctx, cmd) == "ok"
     }
 
+    /** The user gave the double press something to do (the card or a routine). */
+    fun wanted(ctx: Context) =
+        Components.prefs(ctx).getString("double_target", null) != null || Routines.hasEnabledTrigger(ctx, "double_press")
+
+    /**
+     * Sets the double press up by itself (vivo's switch + SolCube as handler) once it's wanted, so
+     * nobody has to find a "Set up" button. Returns true when it changed something. Off the main thread.
+     */
+    fun ensure(ctx: Context, why: String): Boolean {
+        if (!wanted(ctx) || ready(ctx) || Shell.state() != Shell.State.READY) return false
+        val ok = runCatching { makeDefault(ctx) }.getOrDefault(false) && ready(ctx)
+        AppLog.add(ctx, if (ok) "Double press: set up for SolCube ($why)" else "Double press: couldn't set it up ($why)")
+        return ok
+    }
+
     fun vibrateOnce(ctx: Context) {
         HapticPrefs.playSlot(ctx, HapticPrefs.SLOT_DOUBLE_PRESS)
     }

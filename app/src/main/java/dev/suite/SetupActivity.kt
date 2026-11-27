@@ -387,8 +387,9 @@ class SetupActivity : Activity() {
         }
         val stepScroll = ScrollView(this).apply {
             isVerticalScrollBarEnabled = false
-            clipChildren = false
-            clipToPadding = false
+            // a tall step scrolls inside the card: clip to it and fade the edges so nothing slides over the logo
+            isVerticalFadingEdgeEnabled = true
+            setFadingEdgeLength(28.dp)
             addView(stepHost, FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         }
         popupCard.addView(stepScroll, FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
@@ -885,7 +886,7 @@ class SetupActivity : Activity() {
         clipChildren = false
         clipToPadding = false
         val chips = FlowRow(this@SetupActivity, hGap = 8.dp, vGap = 6.dp)
-        listOf("No root", "No PC", "Resets on restart").forEach {
+        listOf("No root", "No PC", "Undo anytime").forEach {
             chips.addView(showcasePill(it).apply {
                 textSize = 12.5f
                 setPadding(12.dp, 6.dp, 12.dp, 6.dp)
@@ -893,21 +894,28 @@ class SetupActivity : Activity() {
         }
         addView(chips, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = 14.dp })
 
-        addView(label("Unlock full power", 25f, p.fg, bold = true).apply { typeface = fontBold })
+        addView(label("One-minute unlock", 25f, p.fg, bold = true).apply { typeface = fontBold })
         addView(
             TextView(this@SetupActivity).apply {
                 text = richText(
-                    "SolCube uses Android's built-in ***Wireless debugging*** to power *Circle to Search*, *Frame gen*, *Gestures* and *Routines*. It stays on (with USB debugging, which it needs) so SolEngine can start by itself; nothing else is changed.",
+                    "*Circle to Search*, *Frame gen*, *Gestures* and *Routines* need one permission that Android only gives through its own settings. Three short steps, about a minute, and you never do it again.",
                 )
                 textSize = 16f
                 setTextColor(p.sub)
                 typeface = fontRegular
                 setLineSpacing(5.dp.toFloat(), 1f)
             },
-            LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 10.dp; bottomMargin = 22.dp },
+            LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 10.dp },
         )
         addView(
-            pillButton("Continue  →", filled = true, size = 16.5f) {
+            label("Is this safe?", 14.5f, p.link, bold = true).apply {
+                setPadding(0, 8.dp, 16.dp, 8.dp)
+                setOnClickListener { showSafety() }
+            },
+            LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = 4.dp; bottomMargin = 12.dp },
+        )
+        addView(
+            pillButton("Let's go  →", filled = true, size = 16.5f) {
                 transitionTo(if (previewMode) Step.UNHIDE_DEV else devStep(), forward = true)
             },
             LinearLayout.LayoutParams(MATCH_PARENT, 54.dp),
@@ -931,6 +939,14 @@ class SetupActivity : Activity() {
         addView(showcasePill(badgeText, accent = true).apply {
             textSize = 12.5f
             setPadding(12.dp, 6.dp, 12.dp, 6.dp)
+            // preview (Settings → Diagnostics → Open setup): tap the step badge to see the next screen
+            if (previewMode) setOnClickListener {
+                when (currentStep) {
+                    Step.UNHIDE_DEV -> transitionTo(Step.ENABLE_DEV, forward = true)
+                    Step.ENABLE_DEV -> transitionTo(Step.CONNECT, forward = true)
+                    else -> confirmBasicMode()
+                }
+            }
         })
     }
 
@@ -940,11 +956,11 @@ class SetupActivity : Activity() {
         clipToPadding = false
         addView(stepHeaderRow("Step 1 of 3") { transitionTo(Step.INTRO, forward = false) },
             LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = 14.dp })
-        addView(label("Unhide Developer options", 25f, p.fg, bold = true).apply { typeface = fontBold })
+        addView(label("Show hidden settings", 25f, p.fg, bold = true).apply { typeface = fontBold })
         addView(
             TextView(this@SetupActivity).apply {
                 text = richText(
-                    "Open *About phone*, tap ***Version information*** *(if shown)*, then tap ***Software version*** or ***Build number*** ***7 times***.",
+                    "Open *About phone*, tap ***Version information*** *(if shown)*, then tap ***Software version*** or ***Build number*** ***7 times***. Android then says *“You are now a developer”*. That's just the name of these settings.",
                 )
                 textSize = 16f
                 setTextColor(p.sub)
@@ -978,7 +994,7 @@ class SetupActivity : Activity() {
                 override fun onViewDetachedFromWindow(v: View) { cancel() }
             })
         }
-        devStatusLabel = label("Waiting for Developer options…", 14f, p.sub)
+        devStatusLabel = label("Waiting… SolCube moves on by itself", 14f, p.sub)
         addView(dot, LinearLayout.LayoutParams(8.dp, 8.dp).apply { rightMargin = 9.dp })
         addView(devStatusLabel, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
     }
@@ -989,11 +1005,11 @@ class SetupActivity : Activity() {
         clipToPadding = false
         addView(stepHeaderRow("Step 2 of 3") { transitionTo(Step.UNHIDE_DEV, forward = false) },
             LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = 14.dp })
-        addView(label("Turn on Developer options", 25f, p.fg, bold = true).apply { typeface = fontBold })
+        addView(label("Switch them on", 25f, p.fg, bold = true).apply { typeface = fontBold })
         addView(
             TextView(this@SetupActivity).apply {
                 text = richText(
-                    "Tap below to open *Developer options*, then switch ***Developer options*** ***ON*** at the top.",
+                    "Tap below and turn on the switch at the top, called ***Developer options***. Then come back here.",
                 )
                 textSize = 16f
                 setTextColor(p.sub)
@@ -1026,16 +1042,18 @@ class SetupActivity : Activity() {
             }),
             LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = 14.dp },
         )
-        addView(label(if (reconnect) "Reconnect SolCube" else "Connect SolCube", 25f, p.fg, bold = true).apply {
+        addView(label(if (reconnect) "Reconnect SolCube" else "Link SolCube", 25f, p.fg, bold = true).apply {
             typeface = fontBold
         })
 
-        wifiBanner = label("Connect to Wi-Fi first", 13.5f, p.warn, bold = true).apply {
-            setPadding(12.dp, 7.dp, 12.dp, 7.dp)
+        wifiBanner = label("", 13.5f, p.sub).apply {
+            text = richText("**Connect to Wi-Fi** to continue.")
+            setLineSpacing(3.dp.toFloat(), 1f)
+            setPadding(14.dp, 10.dp, 14.dp, 10.dp)
             background = GradientDrawable().apply {
                 cornerRadius = 12.dp.toFloat()
-                setColor(alpha(p.warn, 0.14f))
-                setStroke(1.dp, alpha(p.warn, 0.4f))
+                setColor(alpha(p.accent, 0.10f))
+                setStroke(1.dp, alpha(p.accent, 0.35f))
             }
             visibility = View.GONE
         }
@@ -1044,7 +1062,7 @@ class SetupActivity : Activity() {
         if (reconnect) {
             addView(
                 TextView(this@SetupActivity).apply {
-                    text = richText("Tap ***Start***: SolCube switches *Wireless debugging* on if needed and reconnects. Needs ***Wi-Fi***.")
+                    text = richText("SolCube paused, usually after a restart without Wi-Fi. Tap ***Start*** and it reconnects by itself.")
                     textSize = 16f
                     setTextColor(p.sub)
                     typeface = fontRegular
@@ -1055,9 +1073,9 @@ class SetupActivity : Activity() {
         } else {
             val stepsBox = LinearLayout(this@SetupActivity).apply { orientation = LinearLayout.VERTICAL }
             listOf(
-                "**1.** Turn on ***Use wireless debugging*** and tap ***Allow***",
+                "**1.** Turn on ***Use wireless debugging***, then tap ***Allow***",
                 "**2.** Tap ***Pair device with pairing code***",
-                "**3.** Pull down notifications & tap ***Enter code*** *(6 digits)*",
+                "**3.** Pull down notifications, tap ***Enter code*** and type the 6 digits",
             ).forEach { line ->
                 stepsBox.addView(
                     TextView(this@SetupActivity).apply {
@@ -1070,7 +1088,9 @@ class SetupActivity : Activity() {
                     LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 9.dp },
                 )
             }
-            addView(stepsBox, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = 20.dp })
+            addView(stepsBox, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = 12.dp })
+            addView(PairHintView(this@SetupActivity, p, fontRegular, fontBold),
+                LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = 16.dp })
         }
 
         if (reconnect) {
@@ -1099,7 +1119,7 @@ class SetupActivity : Activity() {
         statusDot = View(this@SetupActivity).apply {
             background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(alpha(p.sub, 0.5f)) }
         }
-        statusLabel = label("Waiting to start", 14f, p.sub)
+        statusLabel = label("Ready when you are", 14f, p.sub)
         statusRow.addView(statusDot, LinearLayout.LayoutParams(8.dp, 8.dp).apply { rightMargin = 9.dp })
         statusRow.addView(statusLabel, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
         addView(statusRow, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 14.dp })
@@ -1116,13 +1136,13 @@ class SetupActivity : Activity() {
         val lbl = statusLabel ?: return
         val dot = statusDot ?: return
         val msg = when (snap.phase) {
-            PairingService.Phase.IDLE -> engineMsg ?: if (isReconnectMode()) "Ready to reconnect" else "Waiting to start"
-            PairingService.Phase.WATCHING -> if (isReconnectMode()) "Waiting for Wireless debugging…" else "Watching for pairing dialog…"
-            PairingService.Phase.PAIRING_READY -> "Pairing dialog detected — tap Enter code in the top notification"
-            PairingService.Phase.PAIRING -> "Checking pairing code…"
+            PairingService.Phase.IDLE -> engineMsg ?: if (isReconnectMode()) "Ready to reconnect" else "Ready when you are"
+            PairingService.Phase.WATCHING -> if (isReconnectMode()) "Waiting for Wireless debugging…" else "Waiting for you to tap Pair device…"
+            PairingService.Phase.PAIRING_READY -> "Got it. Now pull down notifications and tap Enter code"
+            PairingService.Phase.PAIRING -> "Checking the code…"
             PairingService.Phase.CONNECTING -> "Starting SolCube…"
-            PairingService.Phase.READY -> "Connected!"
-            PairingService.Phase.ERROR -> snap.error.ifEmpty { "Could not connect — please try again" }
+            PairingService.Phase.READY -> "All set!"
+            PairingService.Phase.ERROR -> snap.error.ifEmpty { "That didn't work. Tap the button to try again; nothing was changed." }
         }
         lbl.text = I18n.t(msg)
         val dotColor = when (snap.phase) {
@@ -1343,6 +1363,50 @@ class SetupActivity : Activity() {
             .start()
     }
 
+    /** "Is this safe?" on the intro: plain answers, one button. */
+    private fun showSafety() {
+        val dark = Look.isDark(this)
+        val dens = resources.displayMetrics.density
+        val d = android.app.Dialog(this)
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(26.dp, 28.dp, 26.dp, 24.dp)
+            background = LiquidGlass(
+                p, 30.dp.toFloat(), dark, dens, level = 0,
+                tint = if (dark) Color.argb(236, 0x11, 0x0E, 0x0A) else Color.argb(244, 0xFB, 0xF8, 0xF3),
+                stroke = if (dark) Color.argb(46, 255, 232, 190) else Color.argb(45, 40, 30, 18),
+            )
+        }
+        box.addView(label("Is this safe?", 23f, p.fg, bold = true).apply { typeface = fontBold; letterSpacing = -0.01f })
+        listOf(
+            "**Yes.** SolCube uses ***Wireless debugging***, a switch built into Android. It gives SolCube extra abilities without rooting your phone.",
+            "It only connects SolCube to this phone. Nothing goes over the internet, and SolCube collects no data.",
+            "It stays on, together with ***USB debugging***, so SolCube can start by itself after a restart.",
+            "To undo it, turn off ***Developer options*** in Settings.",
+        ).forEach { t ->
+            box.addView(TextView(this).apply {
+                text = richText(t)
+                textSize = 15.5f
+                setTextColor(p.sub)
+                typeface = fontRegular
+                setLineSpacing(5.dp.toFloat(), 1f)
+            }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 12.dp })
+        }
+        box.addView(pillButton("Got it", filled = true, size = 15f) { d.dismiss() },
+            LinearLayout.LayoutParams(MATCH_PARENT, 50.dp).apply { topMargin = 24.dp })
+        d.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE)
+        d.setContentView(box)
+        d.window?.apply {
+            setBackgroundDrawable(GradientDrawable().apply { cornerRadius = 30.dp.toFloat(); setColor(Color.TRANSPARENT) })
+            setLayout(minOf(resources.displayMetrics.widthPixels - 32.dp, 420.dp), WRAP_CONTENT)
+            setBackgroundBlurRadius(32.dp)
+            setDimAmount(if (dark) 0.65f else 0.35f)
+            addFlags(android.view.WindowManager.LayoutParams.FLAG_BLUR_BEHIND)
+            attributes = attributes.apply { blurBehindRadius = 18.dp }
+        }
+        d.show()
+    }
+
     private fun confirmBasicMode() {
         val dark = Look.isDark(this)
         val dens = resources.displayMetrics.density
@@ -1358,13 +1422,13 @@ class SetupActivity : Activity() {
                 stroke = if (dark) Color.argb(46, 255, 232, 190) else Color.argb(45, 40, 30, 18),
             )
         }
-        box.addView(label("Use basic mode?", 23f, p.fg, bold = true).apply {
+        box.addView(label("Skip for now?", 23f, p.fg, bold = true).apply {
             typeface = fontBold
             letterSpacing = -0.01f
         })
         box.addView(
             TextView(this).apply {
-                text = richText("*Circle to Search*, *Frame-Gen*, *Gestures*, *Play Together*, and *Routines* will stay ***locked***.")
+                text = richText("*Circle to Search*, *Frame gen*, *Gestures*, *Play together* and *Routines* need the one-minute unlock, so they stay ***locked*** for now.")
                 textSize = 15.5f
                 setTextColor(p.sub)
                 typeface = fontRegular
@@ -1374,7 +1438,7 @@ class SetupActivity : Activity() {
         )
         box.addView(
             TextView(this).apply {
-                text = richText("You can still use **Fine Volume** & **Double Power Press**, and unlock everything anytime.")
+                text = richText("You can still use **Fine volume** and **Double power press**. Tap any locked card to unlock it later.")
                 textSize = 15.5f
                 setTextColor(p.sub)
                 typeface = fontRegular
@@ -1388,7 +1452,7 @@ class SetupActivity : Activity() {
             clipToPadding = false
         }
         btnRow.addView(
-            pillButton("Basic mode", filled = false, size = 15f) {
+            pillButton("Skip for now", filled = false, size = 15f) {
                 d.dismiss()
                 if (previewMode) { finish(); return@pillButton }
                 SetupPrefs.setSkippedBasic(this, true)
@@ -1398,7 +1462,7 @@ class SetupActivity : Activity() {
             LinearLayout.LayoutParams(0, 50.dp, 1f),
         )
         btnRow.addView(
-            pillButton("Finish setup", filled = true, size = 15f) { d.dismiss() },
+            pillButton("Set it up", filled = true, size = 15f) { d.dismiss() },
             LinearLayout.LayoutParams(0, 50.dp, 1.25f).apply { leftMargin = 12.dp },
         )
         box.addView(btnRow, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = 24.dp })

@@ -100,7 +100,7 @@ object Shell {
         val running = runCatching { d.version() }.getOrDefault(0)
         if (running != engineVersion(context)) upgradeStaleEngine(context)
         SetupPrefs.markConnected(context)
-        AdbEngine.keepPairing(context)   // like Shizuku: Android must never auto-revoke the pairing
+        AdbEngine.keepPairing(context)   // Android must never auto-revoke the pairing
         runCatching {
             daemonBinder.linkToDeath({
                 if (daemon?.asBinder() === daemonBinder) {
@@ -121,7 +121,11 @@ object Shell {
             }
         }
         AppLog.add(context, "SolEngine connected")
-        Thread { runCatching { SetupPrefs.grantBasicsOnce(context) } }.apply { isDaemon = true }.start()
+        Thread {
+            runCatching { SetupPrefs.grantBasicsOnce(context) }
+            runCatching { DoublePress.ensure(context, "engine start") }
+        }.apply { isDaemon = true }.start()
+        Components.ensureCtsAssistant(context, "engine start")
         notifyStateChanged()
     }
 

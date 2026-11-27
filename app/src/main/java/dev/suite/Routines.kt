@@ -312,6 +312,10 @@ object Routines {
         Components.prefs(ctx).edit().putString(PREF, JSONArray(list).toString()).putBoolean(KEY, any).commit()
         if (!push) return
         SolCubeService.sync(ctx)
+        if (hasEnabledTrigger(ctx, "double_press")) {
+            val app = ctx.applicationContext
+            Thread { runCatching { DoublePress.ensure(app, "routine") } }.apply { isDaemon = true }.start()
+        }
         if (!any) {
             Shell.stop(ctx, Shell.Kind.ROUTINES)
         } else {

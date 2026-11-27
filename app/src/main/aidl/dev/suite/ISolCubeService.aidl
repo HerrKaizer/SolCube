@@ -1,8 +1,8 @@
 package dev.suite;
 
-// Shell-side half of a SolCube section, run by Shizuku as a UserService (adb shell user).
+// Shell-side half of a SolCube section, run by SolEngine as a feature process (adb shell user).
 interface ISolCubeService {
-    // Shizuku's reserved destroy transaction: clean up and exit the process.
+    // Reserved destroy transaction: clean up and exit the process.
     void destroy() = 16777114;
 
     // JSON: state + recent log lines.

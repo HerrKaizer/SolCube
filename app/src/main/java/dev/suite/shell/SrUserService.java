@@ -5,7 +5,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 /**
- * vivo super resolution (SR), run by Shizuku as a UserService ("dev.suite:sr"). Turns SR on,
+ * vivo super resolution (SR), run by SolEngine as a feature process ("dev.suite:sr"). Turns SR on,
  * rewrites it if vivo resets it (checked every 5 s), and turns it off when stopped.
  */
 public class SrUserService extends ISolCubeService.Stub {

@@ -9,7 +9,7 @@ import android.service.quicksettings.TileService
 
 /**
  * Quick Settings tiles for Frame interpolation, Super resolution and Play together. They flip the
- * same switch as the card in SolCube (and show its state); the shell side still needs Shizuku.
+ * same switch as the card in SolCube (and show its state); the shell side needs SolEngine.
  */
 abstract class FeatureTile : TileService() {
     abstract val key: String

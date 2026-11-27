@@ -14,7 +14,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * Finds THIS phone's Wireless debugging services over mDNS (as Shizuku's AdbMdns does): a service
+ * Finds THIS phone's Wireless debugging services over mDNS: a service
  * only counts if its address belongs to one of our own network interfaces and its port is really
  * bound here. Other phones/TVs on the same Wi-Fi advertise the same service types and must be
  * ignored. Pairing and connecting then always go to 127.0.0.1:<port>, which keeps working when the

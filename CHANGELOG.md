@@ -2,6 +2,30 @@
 
 Newest first. Every build bumps `versionCode`/`versionName` in `app/build.gradle.kts`; release tags are `v<versionName>`.
 
+## 5.7.14
+- Setup step 3 fits on the screen again: the Wi-Fi note is one short line (and only shows off Wi-Fi, also in preview), the intro sentence is gone since the picture shows it, and a step that still has to scroll stays inside its card with faded edges instead of sliding over the logo.
+
+## 5.7.13
+- Old Shizuku wording removed from code comments and unused translations.
+
+## 5.7.12
+- After setup and the tour, SolCube asks once to "Keep SolCube running" and opens vivo's background power page (vivo freezes apps that aren't allowed there, and SolEngine can't change it). Only marked as asked once a button is tapped.
+- Setup step 3: a small looping picture shows the pairing code, pulling down the notification shade, tapping "Enter code" and typing the digits.
+- Double power press without SolEngine: the card explains how to pick SolCube yourself ("Always" in the chooser, vivo Wallet switch) instead of "Requires setup".
+- "Requires setup" is now "Needs the one-minute unlock"; step 3 no longer repeats "Last step:" under the "Final step" badge.
+- 5.7.9–5.7.11 were test builds of the above.
+
+## 5.7.8
+- Setup wording rewritten to be less technical (all 9 languages): "One-minute unlock" intro with an "Is this safe?" explainer (the debugging terms moved there), "Undo anytime" replaces the outdated "Resets on restart" chip, step 1 prepares for "You are now a developer", step 3 explains the code first, a calm gold Wi-Fi note instead of a red warning, friendlier pairing status lines, "Skip for now?" instead of "Use basic mode?".
+- Setup preview (Diagnostics → Open setup): tap the step badge to see the next screen.
+- 5.7.5–5.7.7 were test builds of the above.
+
+## 5.7.4
+- Double power press sets itself up (vivo's switch on + SolCube as the handler) as soon as an action is picked, a double-press routine is saved, or SolEngine starts while one is wanted. If the double press opens Circle to Search, Google is made the default assistant too.
+
+## 5.7.3
+- Circle to Search: SolEngine makes Google the default digital assistant and turns on "Use text from screen" and "Use screenshot" (when a CTS trigger is switched on, and at each engine start while one is on). vivo ships its own assistant there and hides the page, which left users stuck.
+
 ## 5.7.2
 - Diagnostics: an app event repeated within 10 s is logged once, even with other lines in between (5.7.1 only caught back-to-back repeats).
 

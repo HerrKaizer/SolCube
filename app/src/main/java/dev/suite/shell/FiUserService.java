@@ -13,7 +13,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 /**
- * vivo GameCube frame interpolation (FI) controller, run by Shizuku as a
+ * vivo GameCube frame interpolation (FI) controller, run by SolEngine as a
  * UserService in its own shell-user process ("dev.suite:fi"). Mirrors the tested fi.sh loop from
  * the project brief. Settings go through {@link SysSettings} (in-process binder calls), the game
  * PID is found by scanning /proc and the battery temperature comes from sysfs, so the loop

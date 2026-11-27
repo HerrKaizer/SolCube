@@ -1,69 +1,91 @@
 ﻿# SolCube
 
-Formerly **Suite**. All-in-one Android app for vivo / OriginOS phones. Tested on a vivo X300 Ultra running OriginOS 7; other devices may not work.
+**An all-in-one toolkit for vivo and iQOO phones.** Instant Circle to Search, gestures, frame generation for games, routines and more, in one app.
 
-**Download:** [latest release](https://github.com/HerrKaizer/SolCube/releases/latest) (debug-signed APK)
+No root. No computer. No other apps to install.
 
-## Features
+**[⬇ Download the latest version](https://github.com/HerrKaizer/SolCube/releases/latest)** (file: `SolCube.apk`)
 
-- **Circle to Search** triggers: two-finger hold, power-button hold and navigation-bar hold, with ripple and haptics
-- **Frame interpolation** for games vivo doesn't support (per-game 45→90 or 60→120 fps, pauses when hot)
-- **Super resolution** toggle
-- **Temperature overlay** (CPU / GPU / battery)
-- **Play together**: audio mixing (several apps play at once)
-- **Routines** (beta): Wi-Fi, DND, unlock and time triggers with actions like data, ringer, airplane mode, close apps
-- **Double power press**: open an app (optionally turning NFC on while it is open), Circle to Search, or switch sound mode: Ring › Vibrate › Silent, silent on/off, vibrate on/off. SolCube turns on vivo Wallet's double-press switch for you ("Set up double press")
-- **Power button hold**: instead of Circle to Search, the hold can open an app or switch sound mode
-- **Stream to laptop** (beta, scrcpy based)
+> Made and tested on a vivo X300 Ultra with OriginOS 7. Other vivo and iQOO phones on OriginOS should work, but some features may not.
 
-## Requirements
+## What SolCube can do
 
-- A vivo / iQOO phone on OriginOS (tested on OriginOS 7, Android 17)
-- **Developer options → Wireless debugging** and Wi-Fi, for **SolEngine**, SolCube's own built-in shell engine (no root, no Shizuku). SolEngine leaves Wireless debugging on, together with USB debugging, which Android requires for it, so it can start by itself after a reboot.
-- **Circle to Search triggers only:** the **Google app** set as your default digital assistant. SolCube makes the same call as MiCTS, so MiCTS itself is not needed.
-- **Overlay permission** ("Display over other apps") for the ripple, pill and temperature overlay
-- **Accessibility service "SolCube ripple"**: only used to draw overlays above the status bar. It reads no screen content. SolCube enables it for you through SolEngine.
-- Installing from unknown sources allowed (the APK is debug-signed)
-- **Stream to laptop only:** a PC with adb, scrcpy and the helper script, plus a USB cable
+- **Circle to Search, anywhere.** Hold two fingers on the screen, hold the power button or hold the navigation bar, and Circle to Search opens straight away, with a small ripple and vibration.
+- **Smoother games.** Frame generation for games vivo doesn't support (45→90 or 60→120 fps), with a live FPS counter. It pauses by itself when the phone gets hot.
+- **Super resolution** for sharper games.
+- **Gestures.** Draw a shape over any app to open an app or run an action.
+- **Routines.** Let the phone do things for you: for example silent at bedtime, mobile data off on Wi-Fi, Do Not Disturb at work. Ready-made presets included.
+- **Double-press the power button** to open an app, start Circle to Search or switch between ring, vibrate and silent.
+- **Hold the power button** for something other than the assistant.
+- **Play together:** let two apps play sound at the same time, plus volume in 1% steps.
+- **Temperature overlay:** CPU, GPU and battery temperature in a small pill.
+- **Stream to laptop** (beta): show your phone on a PC over a USB cable.
 
-## Setup guide
+## What you need
 
-### 1. Install the APK
-Download `SolCube.apk` from the [release page](https://github.com/HerrKaizer/SolCube/releases/latest), open it and allow installs from this source when asked. If vivo rejects the install ("User rejected permissions"), unlock the phone and try again with the screen on.
+- A **vivo or iQOO phone** with OriginOS.
+- **Wi-Fi** for the one-minute setup.
+- The **Google app**, for Circle to Search. SolCube makes it your default assistant for you.
 
-### 2. Run SolCube's setup
-Open SolCube. Its setup walks you through it and moves on by itself at each step:
-1. Unhide **Developer options** (tap **Software version** 7 times; SolCube opens the page).
-2. Turn Developer options on.
-3. Connect: SolCube opens **Wireless debugging** → tap **Pair device with pairing code**, then type the code into SolCube's notification.
+## Install
 
-That's it: the pairing is kept, SolEngine starts by itself after a reboot (on Wi-Fi), restarts itself after an update, and grants SolCube's other permissions (overlay, notifications, Do Not Disturb, accessibility). If it ever isn't running, the card in SolCube has one **Start SolEngine** button.
+1. **Download** `SolCube.apk` from the [latest release](https://github.com/HerrKaizer/SolCube/releases/latest).
+2. **Open the file** and allow installing from this source when your phone asks. If vivo says the install was rejected, unlock the phone and try again with the screen on.
+3. **Open SolCube** and follow the **one-minute unlock**. It has three short steps, and SolCube moves on by itself after each one:
+   1. **Show hidden settings:** tap *Software version* 7 times. Android then says "You are now a developer". That's just the name of these settings.
+   2. **Switch them on:** turn on *Developer options*.
+   3. **Link SolCube:** Android shows a 6-digit code, and you type it into a SolCube notification. SolCube shows you how.
+4. **Keep SolCube running:** when SolCube asks, allow it in vivo's battery settings. Otherwise vivo may pause it in the background to save battery.
+5. **Turn on what you want.** Each feature has its own card. In Routines, **Add from presets** gives you ready-made routines.
 
-Coming from Shizuku? Since 5.7.0 SolCube doesn't use Shizuku any more. Setup opens by itself after the update; pair once and you can uninstall Shizuku if nothing else needs it.
+You only do the unlock once. After that, SolCube starts by itself, also after a restart.
 
-### 3. Turn on features
-Turn on the features you want with each card's **Enable** button. Routines → **Add from presets** has ready-made routines (they start switched off).
+Don't want the unlock yet? Tap **Use basic features only** during setup. You can unlock everything later from any locked card.
 
-### 4. Circle to Search (optional)
-1. Settings → Apps → Default apps → **Digital assistant app** → choose **Google**.
-2. Make sure the Google app is up to date and Circle to Search is enabled in the Google app settings.
-3. In SolCube, enable the Circle to Search card, then hold two fingers on the screen, hold the power button, or hold the navigation bar at the bottom.
+## Updating
 
-### 5. Keep SolCube alive (recommended)
-vivo's background cleaner can stop apps. In Settings → Battery → Background power consumption (name varies), allow SolCube to run in the background.
+SolCube tells you when a new version is out. Download it and install it over the one you have; **don't uninstall first**.
 
-## Notes
+## Questions
 
-- Everything shell-level runs in SolEngine (`shell/SolCubeDaemon.java`, started over this phone's own Wireless debugging), one process per feature. Source is in `app/src/main/java/dev/suite/shell`.
-- Routines start with switched-off presets; double-press apps and the frame-interpolation game list start empty. Set them up in the app.
+**Is the unlock safe?**
+Yes. SolCube uses *Wireless debugging*, a switch built into Android. It only connects SolCube to your own phone, nothing goes over the internet, and your phone isn't rooted. To undo it, turn off *Developer options* in Settings.
 
-## Updates and your settings
+**Something stopped working.**
+Open SolCube. If its engine isn't running, the card at the top has a **Start** button. Settings → **Diagnostics** shows what's running and has a **Copy report** button for bug reports.
 
-- SolCube checks GitHub twice a day. While a new version is out, a pop-up with the release notes opens every time you open SolCube. "Check for updates" at the bottom of the app checks right away.
-- Install the new APK over the old one. **Don't uninstall first**: updating keeps all settings and routines.
-- Settings are also part of Android's Google backup, so they come back after a reinstall or on a new phone.
-- Missing something? Tap **Can't find a feature?** in the app, or DM [u/HerrKaizer__](https://www.reddit.com/user/HerrKaizer__/) on Reddit.
+**Missing a feature?**
+Tap **Can't find a feature?** at the bottom of the app, or message [u/HerrKaizer__](https://www.reddit.com/user/HerrKaizer__/) on Reddit.
 
 ## Privacy
 
-SolCube collects no data: no accounts, analytics, ads or tracking. Everything runs on your phone; the only network request is the update check to GitHub. Full details in the [Privacy Policy](PRIVACY.md).
+SolCube collects no data: no accounts, analytics, ads or tracking. Everything runs on your phone. The only thing it does online is check GitHub for updates. Full details in the [Privacy Policy](PRIVACY.md).
+
+## For techies
+
+### Why SolCube needs SolEngine
+
+Normal Android apps can't change most system settings, listen to the power button and raw touches, set default apps or control other apps. The **shell user** (uid 2000, what `adb shell` runs as) can. Root isn't needed, but something has to run as the shell user.
+
+**SolEngine** is SolCube's own way to get there, built into the app:
+
+1. During setup, SolCube pairs with the phone's **own** `adbd` through Wireless debugging (ADB over TLS). It finds the pairing and connect ports over mDNS and connects to `127.0.0.1`, so no computer is involved. The pairing key stays in SolCube's private storage and never leaves the phone.
+2. Over that connection it starts `SolCubeDaemon` from SolCube's own APK with `app_process`, running as uid 2000.
+3. The daemon starts one small process per feature (`dev.suite:cts`, `:routines`, `:fi` and so on), each a Binder service that only SolCube can talk to (HMAC handshake). Features you don't use don't run.
+4. It sets `adb_allowed_connection_time` so Android doesn't drop the pairing after 7 days, and grants SolCube `WRITE_SECURE_SETTINGS`.
+
+After a reboot, SolCube switches Wireless debugging back on through `WRITE_SECURE_SETTINGS` and starts the engine again as soon as the phone is on Wi-Fi. Android only allows Wireless debugging on Wi-Fi; once running, the engine keeps working on mobile data. USB debugging stays on because Android ties Wireless debugging to it. After an app update the engine notices the new APK and restarts itself.
+
+Earlier versions (before 5.7) relied on a separate helper app for this; SolCube no longer needs it.
+
+### How the features work
+
+- **Circle to Search:** a listener reads the touch screen and power key input devices directly, and on a long press it calls `IVoiceInteractionManagerService.showSessionFromSession` the same way MiCTS does. It also makes Google the `ASSISTANT` role holder and switches on screen context, which Circle to Search needs.
+- **Frame generation and super resolution:** vivo's GameCube is driven by system settings. SolCube writes them per game, watches the game's process and the battery temperature, and pauses when it gets hot.
+- **Routines and gestures:** run in their own shell processes, so they keep working while SolCube's screen is closed. Screen on/off and unlock events come from SolCube's app process.
+- **Double power press:** vivo sends an intent on a double press. SolCube switches on vivo's own setting and becomes the preferred handler for it.
+- **Overlays:** the ripple, pills and temperature overlay are drawn by an accessibility service that is configured with no access to screen content (`canRetrieveWindowContent="false"`). It exists only so overlays can sit above the status bar.
+
+### Source
+
+Kotlin and Java. The ADB pairing and connection use [libadb-android](https://github.com/MuntashirAkon/libadb-android) and Conscrypt; everything else is SolCube's own code. App code is in [`app/src/main/java/dev/suite`](app/src/main/java/dev/suite), and everything that runs as the shell user is in [`.../shell`](app/src/main/java/dev/suite/shell). Build with Gradle (`assembleDebug`). The release APK is debug-signed. Changes per version are in [CHANGELOG.md](CHANGELOG.md).

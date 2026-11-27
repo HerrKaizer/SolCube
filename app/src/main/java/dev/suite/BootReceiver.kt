@@ -6,7 +6,7 @@ import android.content.Intent
 
 /**
  * Brings enabled sections back after a reboot or an update of SolCube itself.
- * After a reboot it also starts SolEngine like Shizuku's "start on boot": Wireless debugging on
+ * After a reboot it also starts SolEngine: Wireless debugging on
  * (WRITE_SECURE_SETTINGS), connect to this phone's adbd with the saved pairing, launch the engine.
  * If Wi-Fi isn't up yet, SolCubeHost retries as soon as it connects. After an update the running
  * engine restarts itself from the new APK, so nothing is needed here.

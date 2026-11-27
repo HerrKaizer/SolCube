@@ -7,7 +7,7 @@ import java.net.Socket;
  * Keeps SolCube's ripple overlay available while SolCube itself is closed.
  *
  * vivo's cleaner force-stops SolCube when it is swiped away / cleaned, which takes the ripple
- * overlay (in SolCube's own process) with it, while this listener (a Shizuku UserService) keeps
+ * overlay (in SolCube's own process) with it, while this listener (a SolEngine feature process) keeps
  * running. So the listener checks every few seconds that the ripple answers on its localhost
  * port and, if not, restarts SolCube's service as the shell user
  * (`am start-foreground-service`). SolCube has no notification permission, so nothing shows up

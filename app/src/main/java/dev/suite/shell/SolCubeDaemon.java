@@ -82,7 +82,7 @@ public final class SolCubeDaemon extends ISolCubeDaemon.Stub {
             }
         }
 
-        // Like Shizuku's starter: anything left from an older engine (a hung engine, or feature
+        // Anything left from an older engine (a hung engine, or feature
         // processes orphaned by one that crashed) is killed by name before we take over.
         killStale();
 
@@ -112,7 +112,7 @@ public final class SolCubeDaemon extends ISolCubeDaemon.Stub {
     private android.os.FileObserver apkObserver;   // field: a collected FileObserver stops watching
 
     /**
-     * SolCube updated or uninstalled. Like Shizuku's ApkChangedObservers: inotify on the APK's FOLDER
+     * SolCube updated or uninstalled. inotify on the APK's FOLDER
      * (the file itself stays open by running processes, so DELETE_SELF wouldn't fire) for "base.apk"
      * being deleted; a slow poll stays as a safety net.
      */

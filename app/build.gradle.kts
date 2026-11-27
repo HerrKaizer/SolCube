@@ -13,8 +13,8 @@ android {
         targetSdk = 34
         // Conscrypt's native TLS library: phone CPUs only (x86 builds are for emulators/PCs).
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
-        versionCode = 184
-        versionName = "5.7.2"   // changes: CHANGELOG.md
+        versionCode = 196
+        versionName = "5.7.14"   // changes: CHANGELOG.md
     }
 
     buildTypes {

@@ -17,6 +17,7 @@
 
     <!-- to show game names (apps with a launcher icon), and who handles the double power press -->
     <queries>
+        <package android:name="com.iqoo.powersaving" />
         <intent>
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
